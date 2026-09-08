@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="el">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Arvio — τοπικό</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #1c1916;
+        --muted: #5c564e;
+        --bg: #f3efe6;
+        --panel: #fffaf2;
+        --accent: #0f6a5a;
+      }
+      body {
+        margin: 0;
+        font-family: "Iowan Old Style", "Palatino Linotype", Palatino, serif;
+        background:
+          radial-gradient(1200px 500px at 10% -10%, #dceee8, transparent),
+          var(--bg);
+        color: var(--ink);
+      }
+      header,
+      main {
+        max-width: 42rem;
+        margin: 0 auto;
+        padding: 1.5rem;
+      }
+      h1 {
+        font-size: 2rem;
+        letter-spacing: -0.03em;
+        margin: 0 0 0.35rem;
+      }
+      .code {
+        font-size: 2.4rem;
+        letter-spacing: 0.35em;
+        font-family: ui-monospace, monospace;
+        color: var(--accent);
+      }
+      ul {
+        list-style: none;
+        padding: 0;
+      }
+      li {
+        background: var(--panel);
+        margin: 0.4rem 0;
+        padding: 0.7rem 0.9rem;
+        border-left: 4px solid var(--accent);
+      }
+      .muted {
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Arvio</h1>
+      <p class="muted">Τοπικό περιβάλλον — λειτουργεί χωρίς cloud όταν το LAN είναι ζωντανό.</p>
+      <p>Κωδικός παρουσίας</p>
+      <p class="code" id="code">------</p>
+      <p class="muted" id="meta"></p>
+    </header>
+    <main>
+      <h2>Συσκευές</h2>
+      <ul id="list"></ul>
+    </main>
+    <script>
+      async function refresh() {
+        const res = await fetch("/api/status");
+        const data = await res.json();
+        document.getElementById("code").textContent = data.presence_code || "------";
+        document.getElementById("meta").textContent = data.ha_ok
+          ? "Home Assistant: εντάξει · hub " + (data.hub_id || "εκκρεμεί enroll")
+          : "Home Assistant μη διαθέσιμο: " + (data.error || "");
+        const list = document.getElementById("list");
+        list.innerHTML = "";
+        for (const e of data.entities || []) {
+          const li = document.createElement("li");
+          li.textContent = e.name + " — " + e.state;
+          list.appendChild(li);
+        }
+        if (!(data.entities || []).length) {
+          const li = document.createElement("li");
+          li.textContent = "Δεν βρέθηκαν lights/switches ακόμα.";
+          list.appendChild(li);
+        }
+      }
+      refresh();
+      setInterval(refresh, 5000);
+    </script>
+  </body>
+</html>

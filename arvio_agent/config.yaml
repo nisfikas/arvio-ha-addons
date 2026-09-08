@@ -1,8 +1,8 @@
 name: "Arvio Agent"
-version: "0.1.0"
+version: "0.1.1"
 slug: arvio_agent
 description: "Local Arvio gateway for Home Assistant OS (lab). Enrolls with Arvio cloud and serves a simple local UI."
-url: "https://github.com/nisfikas/arvio-ha-addons"
+url: "https://github.com/sfk/arvio"
 arch:
   - aarch64
   - amd64
@@ -22,7 +22,7 @@ ports_description:
   8099/tcp: "Arvio local UI and agent API"
 options:
   cloud_url: "http://192.168.68.71:8787"
-  serial: "rpi-lab-1"
+  serial: ""
 schema:
   cloud_url: str
   serial: str?
