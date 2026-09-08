@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Arvio Agent for HAOS lab — presence code, HA peek, cloud enroll."""
+"""Arvio Agent for HAOS lab — presence code, HA peek, cloud/embedded enroll."""
 from __future__ import annotations
 
 import hashlib
@@ -17,7 +17,8 @@ DATA.mkdir(parents=True, exist_ok=True)
 STATE = DATA / "hub.json"
 UI = Path("/app/ui.html")
 
-CLOUD = "http://192.168.68.71:8787"
+# "embedded" = local in-addon lab cloud (no Mac/LAN required)
+CLOUD = "embedded"
 SERIAL = "rpi-lab-1"
 PORT = 8099
 
@@ -26,10 +27,10 @@ exp = 0.0
 hub_id = None
 ha_ok = False
 err = ""
+mode = "embedded"
 
 
 def read_token() -> str:
-    """Supervisor injects SUPERVISOR_TOKEN; s6 may keep it in a file if env is empty."""
     for key in ("SUPERVISOR_TOKEN", "HASSIO_TOKEN"):
         val = (os.environ.get(key) or "").strip()
         if val:
@@ -52,12 +53,15 @@ TOKEN = read_token()
 
 
 def opts() -> None:
-    global CLOUD, SERIAL
+    global CLOUD, SERIAL, mode
     p = DATA / "options.json"
     if not p.exists():
+        mode = "embedded" if CLOUD in ("", "embedded", "local") else "remote"
         return
     o = json.loads(p.read_text())
-    CLOUD = str(o.get("cloud_url") or CLOUD).rstrip("/")
+    raw = str(o.get("cloud_url") or CLOUD).rstrip("/")
+    CLOUD = raw
+    mode = "embedded" if raw in ("", "embedded", "local") else "remote"
     if o.get("serial"):
         SERIAL = str(o["serial"])
 
@@ -75,7 +79,7 @@ def ha(path: str):
     if not TOKEN:
         TOKEN = read_token()
     if not TOKEN:
-        err = "missing SUPERVISOR_TOKEN — uninstall local add-on, install 0.1.2 from GitHub"
+        err = "missing SUPERVISOR_TOKEN"
         ha_ok = False
         return None
     req = urllib.request.Request(
@@ -88,7 +92,8 @@ def ha(path: str):
     try:
         with urllib.request.urlopen(req, timeout=8) as r:
             ha_ok = True
-            err = ""
+            if not err.startswith("enroll:") and not err.startswith("heartbeat:"):
+                err = ""
             return json.loads(r.read().decode())
     except Exception as e:
         ha_ok = False
@@ -102,7 +107,32 @@ def rotate() -> None:
     exp = time.time() + 300
 
 
-def enroll() -> None:
+def enroll_embedded() -> None:
+    """Lab cloud inside the add-on — works when Pi cannot reach Mac."""
+    global hub_id, err
+    st = load()
+    pk = st.get("enroll_public_key") or os.urandom(8).hex()
+    hid = st.get("hub_id") or f"hub_lab_{SERIAL.replace('-', '_')}"
+    st.update(
+        {
+            "enroll_public_key": pk,
+            "serial": SERIAL,
+            "hub_id": hid,
+            "mode": "embedded",
+            "presence_code_hash": hashlib.sha256(code.encode()).hexdigest(),
+            "presence_expires_at": time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime(exp)
+            ),
+            "last_seen": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+    )
+    save(st)
+    hub_id = hid
+    if err.startswith("enroll:") or err.startswith("heartbeat:"):
+        err = ""
+
+
+def enroll_remote() -> None:
     global hub_id, err
     st = load()
     pk = st.get("enroll_public_key") or os.urandom(8).hex()
@@ -142,8 +172,17 @@ def enroll() -> None:
             method="POST",
         )
         urllib.request.urlopen(req, timeout=8).read()
+        if err.startswith("enroll:") or err.startswith("heartbeat:"):
+            err = ""
     except Exception as e:
         err = f"heartbeat:{e}"
+
+
+def enroll() -> None:
+    if mode == "embedded":
+        enroll_embedded()
+    else:
+        enroll_remote()
 
 
 def entities() -> list:
@@ -183,6 +222,7 @@ class H(BaseHTTPRequestHandler):
                     "ok": True,
                     "ha_ok": ha_ok,
                     "hub_id": hub_id,
+                    "mode": mode,
                     "has_token": bool(TOKEN),
                     "error": err,
                 },
@@ -194,6 +234,7 @@ class H(BaseHTTPRequestHandler):
                     "hub_id": hub_id,
                     "presence_code": code,
                     "ha_ok": ha_ok,
+                    "mode": mode,
                     "entities": entities(),
                     "error": err,
                 },
@@ -223,9 +264,10 @@ def loop() -> None:
 if __name__ == "__main__":
     opts()
     rotate()
+    enroll()
     threading.Thread(target=loop, daemon=True).start()
     print(
-        f"arvio-agent :{PORT} cloud={CLOUD} token={'yes' if TOKEN else 'NO'}",
+        f"arvio-agent :{PORT} mode={mode} cloud={CLOUD} token={'yes' if TOKEN else 'NO'}",
         flush=True,
     )
     ThreadingHTTPServer(("0.0.0.0", PORT), H).serve_forever()

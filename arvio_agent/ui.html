@@ -70,8 +70,9 @@
         const res = await fetch("/api/status");
         const data = await res.json();
         document.getElementById("code").textContent = data.presence_code || "------";
+        const mode = data.mode === "embedded" ? " · lab embedded" : "";
         document.getElementById("meta").textContent = data.ha_ok
-          ? "Home Assistant: εντάξει · hub " + (data.hub_id || "εκκρεμεί enroll")
+          ? "Home Assistant: εντάξει · hub " + (data.hub_id || "εκκρεμεί enroll") + mode
           : "Home Assistant μη διαθέσιμο: " + (data.error || "");
         const list = document.getElementById("list");
         list.innerHTML = "";
