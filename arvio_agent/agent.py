@@ -17,11 +17,6 @@ DATA.mkdir(parents=True, exist_ok=True)
 STATE = DATA / "hub.json"
 UI = Path("/app/ui.html")
 
-TOKEN = (
-    os.environ.get("SUPERVISOR_TOKEN")
-    or os.environ.get("HASSIO_TOKEN")
-    or ""
-).strip()
 CLOUD = "http://192.168.68.71:8787"
 SERIAL = "rpi-lab-1"
 PORT = 8099
@@ -31,6 +26,29 @@ exp = 0.0
 hub_id = None
 ha_ok = False
 err = ""
+
+
+def read_token() -> str:
+    """Supervisor injects SUPERVISOR_TOKEN; s6 may keep it in a file if env is empty."""
+    for key in ("SUPERVISOR_TOKEN", "HASSIO_TOKEN"):
+        val = (os.environ.get(key) or "").strip()
+        if val:
+            return val
+    for path in (
+        Path("/var/run/s6/container_environment/SUPERVISOR_TOKEN"),
+        Path("/run/s6/container_environment/SUPERVISOR_TOKEN"),
+    ):
+        try:
+            if path.is_file():
+                val = path.read_text(encoding="utf-8").strip()
+                if val:
+                    return val
+        except OSError:
+            pass
+    return ""
+
+
+TOKEN = read_token()
 
 
 def opts() -> None:
@@ -53,9 +71,11 @@ def load() -> dict:
 
 
 def ha(path: str):
-    global ha_ok, err
+    global ha_ok, err, TOKEN
     if not TOKEN:
-        err = "missing SUPERVISOR_TOKEN (restart add-on after update)"
+        TOKEN = read_token()
+    if not TOKEN:
+        err = "missing SUPERVISOR_TOKEN — uninstall local add-on, install 0.1.2 from GitHub"
         ha_ok = False
         return None
     req = urllib.request.Request(
