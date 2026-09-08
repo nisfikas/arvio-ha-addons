@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="el">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Arvio Partner — claim</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Source+Sans+3:wght@400;600&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --ink: #1a1714;
+        --muted: #5e574e;
+        --bg: #ebe4d8;
+        --panel: #f7f1e6;
+        --line: #cfc4b2;
+        --accent: #0d5c4d;
+        --danger: #8b2e1f;
+        --ok: #0d5c4d;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Source Sans 3", sans-serif;
+        color: var(--ink);
+        background:
+          radial-gradient(900px 420px at 100% -10%, #d5e8e1, transparent 60%),
+          linear-gradient(165deg, #f3eee4, var(--bg));
+      }
+      header {
+        padding: 1.75rem 1.5rem 0.5rem;
+        max-width: 36rem;
+        margin: 0 auto;
+      }
+      h1 {
+        font-family: Fraunces, serif;
+        font-weight: 700;
+        font-size: clamp(2rem, 6vw, 2.6rem);
+        letter-spacing: -0.03em;
+        margin: 0;
+      }
+      .sub {
+        color: var(--muted);
+        margin: 0.35rem 0 0;
+      }
+      main {
+        max-width: 36rem;
+        margin: 0 auto;
+        padding: 1rem 1.5rem 3rem;
+      }
+      .step {
+        display: none;
+        animation: rise 0.45s ease both;
+      }
+      .step.on {
+        display: block;
+      }
+      @keyframes rise {
+        from {
+          opacity: 0;
+          transform: translateY(8px);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+      .badge {
+        display: inline-block;
+        font-size: 0.75rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--accent);
+        margin-bottom: 0.75rem;
+      }
+      h2 {
+        font-family: Fraunces, serif;
+        font-size: 1.45rem;
+        margin: 0 0 0.5rem;
+      }
+      p {
+        color: var(--muted);
+        line-height: 1.45;
+      }
+      label {
+        display: block;
+        font-size: 0.85rem;
+        margin: 1rem 0 0.35rem;
+        color: var(--muted);
+      }
+      input {
+        width: 100%;
+        padding: 0.85rem 0.95rem;
+        border: 1px solid var(--line);
+        background: var(--panel);
+        border-radius: 2px;
+        font: inherit;
+        font-size: 1.15rem;
+        letter-spacing: 0.12em;
+      }
+      .row {
+        display: flex;
+        gap: 0.6rem;
+        flex-wrap: wrap;
+        margin-top: 1.25rem;
+      }
+      button {
+        font: inherit;
+        font-weight: 600;
+        border: 0;
+        cursor: pointer;
+        padding: 0.85rem 1.2rem;
+        background: var(--accent);
+        color: #f4faf7;
+        border-radius: 2px;
+      }
+      button.ghost {
+        background: transparent;
+        color: var(--accent);
+        border: 1px solid var(--accent);
+      }
+      button:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+      .msg {
+        margin-top: 1rem;
+        min-height: 1.4rem;
+        font-size: 0.95rem;
+      }
+      .msg.err {
+        color: var(--danger);
+      }
+      .msg.ok {
+        color: var(--ok);
+      }
+      .mono {
+        font-family: ui-monospace, monospace;
+        font-size: 0.9rem;
+        word-break: break-all;
+      }
+      nav.links {
+        margin-top: 2rem;
+        font-size: 0.9rem;
+      }
+      nav.links a {
+        color: var(--accent);
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Arvio</h1>
+      <p class="sub">Partner — claim hub με φυσική παρουσία</p>
+    </header>
+    <main>
+      <section class="step on" id="s0">
+        <div class="badge">Βήμα 1</div>
+        <h2>Εργαστήριο</h2>
+        <p>Δημιουργία partner / πελάτη / site και σύνδεση με το τοπικό hub.</p>
+        <div class="row">
+          <button type="button" id="btnBoot">Εκκίνηση lab bootstrap</button>
+        </div>
+        <p class="msg" id="m0"></p>
+      </section>
+
+      <section class="step" id="s1">
+        <div class="badge">Βήμα 2</div>
+        <h2>Έκδοση claim</h2>
+        <p>Hub: <span class="mono" id="hubLabel">—</span></p>
+        <div class="row">
+          <button type="button" id="btnClaim">Έκδοση claim</button>
+        </div>
+        <p class="msg" id="m1"></p>
+      </section>
+
+      <section class="step" id="s2">
+        <div class="badge">Βήμα 3</div>
+        <h2>Κωδικός παρουσίας</h2>
+        <p>Διάβασε τον 6ψήφιο από την οθόνη του hub (π.χ. :8099) και πληκτρολόγησέ τον.</p>
+        <label for="code">Κωδικός</label>
+        <input id="code" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="one-time-code" />
+        <div class="row">
+          <button type="button" id="btnPresence">Επιβεβαίωση παρουσίας</button>
+        </div>
+        <p class="msg" id="m2"></p>
+      </section>
+
+      <section class="step" id="s3">
+        <div class="badge">Βήμα 4</div>
+        <h2>Ολοκλήρωση claim</h2>
+        <p>Σύνδεση του hub στο site του πελάτη.</p>
+        <div class="row">
+          <button type="button" id="btnRedeem">Claim στο site</button>
+        </div>
+        <p class="msg" id="m3"></p>
+      </section>
+
+      <section class="step" id="s4">
+        <div class="badge">Ολοκληρώθηκε</div>
+        <h2>Hub claimed</h2>
+        <p class="mono" id="done"></p>
+        <div class="row">
+          <a href="/home"><button type="button">Άνοιγμα Arvio Home</button></a>
+          <a href="/"><button type="button" class="ghost">Hub UI</button></a>
+        </div>
+      </section>
+
+      <nav class="links">
+        <a href="/">Hub</a> · <a href="/home">Home</a>
+      </nav>
+    </main>
+    <script>
+      const api = "";
+      let hubId = "";
+      let claimId = "";
+      let token = "";
+      let partnerOrgId = "";
+      let siteId = "";
+
+      function show(id) {
+        document.querySelectorAll(".step").forEach((el) => el.classList.remove("on"));
+        document.getElementById(id).classList.add("on");
+      }
+      function msg(id, text, ok) {
+        const el = document.getElementById(id);
+        el.textContent = text;
+        el.className = "msg " + (ok ? "ok" : text ? "err" : "");
+      }
+      async function j(path, opts) {
+        const res = await fetch(api + path, {
+          headers: { "Content-Type": "application/json" },
+          ...opts,
+        });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || res.statusText);
+        return body;
+      }
+
+      document.getElementById("btnBoot").onclick = async () => {
+        msg("m0", "…");
+        try {
+          const boot = await j("/v1/lab/bootstrap", { method: "POST", body: "{}" });
+          partnerOrgId = boot.partner_org_id;
+          siteId = boot.site_id;
+          const st = await j("/api/status");
+          hubId = st.hub_id;
+          if (!hubId) throw new Error("Δεν βρέθηκε hub — περίμενε enroll");
+          document.getElementById("hubLabel").textContent = hubId + " · " + (st.state || "");
+          msg("m0", "Bootstrap OK", true);
+          show("s1");
+        } catch (e) {
+          msg("m0", e.message);
+        }
+      };
+
+      document.getElementById("btnClaim").onclick = async () => {
+        msg("m1", "…");
+        try {
+          const c = await j("/v1/hubs/" + hubId + "/claims", {
+            method: "POST",
+            body: "{}",
+          });
+          claimId = c.claim_id;
+          token = c.token;
+          msg("m1", "Claim " + claimId, true);
+          show("s2");
+        } catch (e) {
+          msg("m1", e.message);
+        }
+      };
+
+      document.getElementById("btnPresence").onclick = async () => {
+        msg("m2", "…");
+        try {
+          const code = document.getElementById("code").value.trim();
+          await j("/v1/claims/" + claimId + "/presence", {
+            method: "POST",
+            body: JSON.stringify({ code }),
+          });
+          msg("m2", "Παρουσία OK", true);
+          show("s3");
+        } catch (e) {
+          msg("m2", e.message);
+        }
+      };
+
+      document.getElementById("btnRedeem").onclick = async () => {
+        msg("m3", "…");
+        try {
+          const hub = await j("/v1/claims/" + claimId + "/redeem", {
+            method: "POST",
+            body: JSON.stringify({
+              token,
+              site_id: siteId,
+              user_id: "tech_lab",
+              org_id: partnerOrgId,
+              org_type: "partner",
+            }),
+          });
+          document.getElementById("done").textContent =
+            hub.hub_id + " → " + hub.site_id + " (" + hub.state + ")";
+          msg("m3", "Claim ολοκληρώθηκε", true);
+          show("s4");
+        } catch (e) {
+          msg("m3", e.message);
+        }
+      };
+    </script>
+  </body>
+</html>

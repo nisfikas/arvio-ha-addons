@@ -1,5 +1,5 @@
 name: "Arvio Agent"
-version: "0.1.3"
+version: "0.1.4"
 slug: arvio_agent
 description: "Local Arvio gateway for Home Assistant OS (lab). Enrolls with Arvio cloud and serves a simple local UI."
 url: "https://github.com/nisfikas/arvio-ha-addons"

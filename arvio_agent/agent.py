@@ -1,23 +1,25 @@
 #!/usr/bin/env python3
-"""Arvio Agent for HAOS lab — presence code, HA peek, cloud/embedded enroll."""
+"""Arvio Agent — HA peek, embedded/remote enroll, claim lab API, Home controls."""
 from __future__ import annotations
 
 import hashlib
 import json
 import os
 import random
+import secrets
 import threading
 import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlparse
 
 DATA = Path("/data")
 DATA.mkdir(parents=True, exist_ok=True)
 STATE = DATA / "hub.json"
-UI = Path("/app/ui.html")
+LAB = DATA / "lab_store.json"
+APP = Path("/app")
 
-# "embedded" = local in-addon lab cloud (no Mac/LAN required)
 CLOUD = "embedded"
 SERIAL = "rpi-lab-1"
 PORT = 8099
@@ -28,6 +30,9 @@ hub_id = None
 ha_ok = False
 err = ""
 mode = "embedded"
+hub_state = "prepared"
+
+TOKEN = ""
 
 
 def read_token() -> str:
@@ -49,32 +54,48 @@ def read_token() -> str:
     return ""
 
 
-TOKEN = read_token()
-
-
 def opts() -> None:
     global CLOUD, SERIAL, mode
     p = DATA / "options.json"
-    if not p.exists():
-        mode = "embedded" if CLOUD in ("", "embedded", "local") else "remote"
-        return
-    o = json.loads(p.read_text())
-    raw = str(o.get("cloud_url") or CLOUD).rstrip("/")
-    CLOUD = raw
-    mode = "embedded" if raw in ("", "embedded", "local") else "remote"
-    if o.get("serial"):
-        SERIAL = str(o["serial"])
+    if p.exists():
+        o = json.loads(p.read_text())
+        raw = str(o.get("cloud_url") or CLOUD).rstrip("/")
+        CLOUD = raw
+        if o.get("serial"):
+            SERIAL = str(o["serial"])
+    mode = "embedded" if CLOUD in ("", "embedded", "local") else "remote"
 
 
-def save(s: dict) -> None:
+def save_hub(s: dict) -> None:
     STATE.write_text(json.dumps(s, indent=2))
 
 
-def load() -> dict:
+def load_hub() -> dict:
     return json.loads(STATE.read_text()) if STATE.exists() else {}
 
 
-def ha(path: str):
+def load_lab() -> dict:
+    if LAB.exists():
+        return json.loads(LAB.read_text())
+    return {
+        "orgs": {},
+        "sites": {},
+        "claims": {},
+        "claim_tokens": {},
+        "support_grants": {},
+        "bootstrapped": False,
+    }
+
+
+def save_lab(s: dict) -> None:
+    LAB.write_text(json.dumps(s, indent=2))
+
+
+def sha(s: str) -> str:
+    return hashlib.sha256(s.encode()).hexdigest()
+
+
+def ha(path: str, method: str = "GET", body: dict | None = None):
     global ha_ok, err, TOKEN
     if not TOKEN:
         TOKEN = read_token()
@@ -82,19 +103,23 @@ def ha(path: str):
         err = "missing SUPERVISOR_TOKEN"
         ha_ok = False
         return None
+    data = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(
         f"http://supervisor/core/api{path}",
+        data=data,
+        method=method,
         headers={
             "Authorization": f"Bearer {TOKEN}",
             "Content-Type": "application/json",
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=8) as r:
+        with urllib.request.urlopen(req, timeout=10) as r:
             ha_ok = True
+            raw = r.read().decode()
             if not err.startswith("enroll:") and not err.startswith("heartbeat:"):
                 err = ""
-            return json.loads(r.read().decode())
+            return json.loads(raw) if raw else {}
     except Exception as e:
         ha_ok = False
         err = str(e)
@@ -108,36 +133,37 @@ def rotate() -> None:
 
 
 def enroll_embedded() -> None:
-    """Lab cloud inside the add-on — works when Pi cannot reach Mac."""
-    global hub_id, err
-    st = load()
-    pk = st.get("enroll_public_key") or os.urandom(8).hex()
+    global hub_id, err, hub_state
+    st = load_hub()
+    pk = st.get("enroll_public_key") or secrets.token_hex(8)
     hid = st.get("hub_id") or f"hub_lab_{SERIAL.replace('-', '_')}"
+    hub_state = st.get("state") or "prepared"
     st.update(
         {
             "enroll_public_key": pk,
             "serial": SERIAL,
             "hub_id": hid,
+            "state": hub_state,
             "mode": "embedded",
-            "presence_code_hash": hashlib.sha256(code.encode()).hexdigest(),
+            "presence_code_hash": sha(code),
             "presence_expires_at": time.strftime(
                 "%Y-%m-%dT%H:%M:%SZ", time.gmtime(exp)
             ),
             "last_seen": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
     )
-    save(st)
+    save_hub(st)
     hub_id = hid
     if err.startswith("enroll:") or err.startswith("heartbeat:"):
         err = ""
 
 
 def enroll_remote() -> None:
-    global hub_id, err
-    st = load()
-    pk = st.get("enroll_public_key") or os.urandom(8).hex()
+    global hub_id, err, hub_state
+    st = load_hub()
+    pk = st.get("enroll_public_key") or secrets.token_hex(8)
     st.update({"enroll_public_key": pk, "serial": SERIAL})
-    save(st)
+    save_hub(st)
     try:
         req = urllib.request.Request(
             f"{CLOUD}/v1/hubs/enroll",
@@ -150,8 +176,10 @@ def enroll_remote() -> None:
         with urllib.request.urlopen(req, timeout=8) as r:
             body = json.loads(r.read().decode())
             hub_id = body.get("hub_id")
+            hub_state = body.get("state") or "prepared"
             st["hub_id"] = hub_id
-            save(st)
+            st["state"] = hub_state
+            save_hub(st)
     except Exception as e:
         err = f"enroll:{e}"
         hub_id = st.get("hub_id")
@@ -160,7 +188,7 @@ def enroll_remote() -> None:
         return
     try:
         payload = {
-            "presence_code_hash": hashlib.sha256(code.encode()).hexdigest(),
+            "presence_code_hash": sha(code),
             "presence_expires_at": time.strftime(
                 "%Y-%m-%dT%H:%M:%SZ", time.gmtime(exp)
             ),
@@ -200,34 +228,213 @@ def entities() -> list:
                     "name": (e.get("attributes") or {}).get(
                         "friendly_name", eid
                     ),
+                    "domain": eid.split(".", 1)[0],
                 }
             )
     return out[:80]
 
 
+def call_service(domain: str, service: str, entity_id: str) -> dict:
+    result = ha(
+        f"/services/{domain}/{service}",
+        method="POST",
+        body={"entity_id": entity_id},
+    )
+    if result is None:
+        raise RuntimeError(err or "HA service failed")
+    return {"ok": True, "entity_id": entity_id, "service": f"{domain}.{service}"}
+
+
+def lab_bootstrap() -> dict:
+    lab = load_lab()
+    if lab.get("bootstrapped"):
+        return {
+            "ok": True,
+            "already": True,
+            "partner_org_id": lab.get("partner_org_id"),
+            "customer_org_id": lab.get("customer_org_id"),
+            "site_id": lab.get("site_id"),
+        }
+    partner_id = "org_partner_lab"
+    customer_id = "org_customer_lab"
+    site_id = "site_lab_home"
+    lab["orgs"][partner_id] = {
+        "org_id": partner_id,
+        "type": "partner",
+        "name": "SFK Lab Partner",
+    }
+    lab["orgs"][customer_id] = {
+        "org_id": customer_id,
+        "type": "customer",
+        "name": "Lab Customer",
+    }
+    lab["sites"][site_id] = {
+        "site_id": site_id,
+        "customer_org_id": customer_id,
+        "name": "Lab Home",
+    }
+    lab["support_grants"][site_id] = partner_id
+    lab["partner_org_id"] = partner_id
+    lab["customer_org_id"] = customer_id
+    lab["site_id"] = site_id
+    lab["bootstrapped"] = True
+    save_lab(lab)
+    return {
+        "ok": True,
+        "partner_org_id": partner_id,
+        "customer_org_id": customer_id,
+        "site_id": site_id,
+    }
+
+
+def issue_claim(hid: str) -> dict:
+    global hub_state
+    st = load_hub()
+    if st.get("hub_id") != hid:
+        raise ValueError("Hub not found")
+    state = st.get("state") or "prepared"
+    if state not in ("prepared", "assigned"):
+        raise ValueError(f"Cannot issue claim in hub state {state}")
+    lab = load_lab()
+    token = secrets.token_urlsafe(24)
+    claim_id = f"claim_{secrets.token_hex(4)}"
+    expires = time.time() + 30 * 60
+    claim = {
+        "claim_id": claim_id,
+        "hub_id": hid,
+        "token_hash": sha(token),
+        "state": "issued",
+        "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(expires)),
+        "presence_verified": False,
+    }
+    lab["claims"][claim_id] = claim
+    lab["claim_tokens"][claim_id] = token
+    save_lab(lab)
+    if state == "prepared":
+        hub_state = "assigned"
+        st["state"] = "assigned"
+        save_hub(st)
+    return {
+        "claim_id": claim_id,
+        "token": token,
+        "expires_at": claim["expires_at"],
+    }
+
+
+def confirm_presence(claim_id: str, user_code: str) -> dict:
+    lab = load_lab()
+    claim = lab["claims"].get(claim_id)
+    if not claim:
+        raise ValueError("Claim not found")
+    # Same-process presence: live code + expiry (also persisted hash for audit)
+    if time.time() > exp or user_code.strip() != code:
+        raise ValueError("Invalid or expired presence code")
+    claim["state"] = "presence_pending"
+    claim["presence_verified"] = True
+    lab["claims"][claim_id] = claim
+    save_lab(lab)
+    return {"claim_id": claim_id, "state": claim["state"]}
+
+
+def redeem_claim(claim_id: str, token: str, site_id: str, actor: dict) -> dict:
+    global hub_state, hub_id
+    lab = load_lab()
+    claim = lab["claims"].get(claim_id)
+    if not claim:
+        raise ValueError("Claim not found")
+    if lab["claim_tokens"].get(claim_id) != token:
+        raise ValueError("Invalid claim token")
+    if not claim.get("presence_verified"):
+        raise ValueError("Physical presence required before redeem")
+    site = lab["sites"].get(site_id)
+    if not site:
+        raise ValueError("Site not found")
+    org_type = actor.get("org_type", "partner")
+    org_id = actor.get("org_id", "")
+    if org_type == "partner":
+        if lab["support_grants"].get(site_id) != org_id:
+            raise ValueError("Forbidden: no support grant for site")
+    elif org_type == "customer":
+        if site.get("customer_org_id") != org_id:
+            raise ValueError("Forbidden")
+    elif org_type != "sfk":
+        raise ValueError("Forbidden")
+
+    claim["state"] = "redeemed"
+    claim["site_id"] = site_id
+    claim["actor_id"] = actor.get("user_id", "lab")
+    lab["claims"][claim_id] = claim
+    save_lab(lab)
+
+    st = load_hub()
+    hub_state = "claimed"
+    st["state"] = "claimed"
+    st["site_id"] = site_id
+    st["customer_org_id"] = site["customer_org_id"]
+    save_hub(st)
+    hub_id = st.get("hub_id")
+    return {
+        "hub_id": hub_id,
+        "serial": st.get("serial"),
+        "state": "claimed",
+        "site_id": site_id,
+        "customer_org_id": site["customer_org_id"],
+    }
+
+
 class H(BaseHTTPRequestHandler):
     def _j(self, status: int, body: dict) -> None:
-        data = json.dumps(body).encode()
+        data = json.dumps(body, default=str).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(data)
 
+    def _read_json(self) -> dict:
+        n = int(self.headers.get("Content-Length") or 0)
+        if n <= 0:
+            return {}
+        return json.loads(self.rfile.read(n).decode() or "{}")
+
+    def _file(self, name: str, ctype: str) -> None:
+        path = APP / name
+        if not path.exists():
+            self.send_error(404)
+            return
+        data = path.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_OPTIONS(self) -> None:  # noqa: N802
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "content-type")
+        self.end_headers()
+
     def do_GET(self) -> None:  # noqa: N802
-        if self.path.startswith("/health"):
+        path = urlparse(self.path).path
+        if path in ("/partner", "/partner/"):
+            return self._file("partner.html", "text/html; charset=utf-8")
+        if path in ("/home", "/home/"):
+            return self._file("home.html", "text/html; charset=utf-8")
+        if path.startswith("/health"):
             return self._j(
                 200,
                 {
                     "ok": True,
                     "ha_ok": ha_ok,
                     "hub_id": hub_id,
+                    "state": hub_state,
                     "mode": mode,
                     "has_token": bool(TOKEN),
                     "error": err,
                 },
             )
-        if self.path.startswith("/api/status"):
+        if path.startswith("/api/status"):
             return self._j(
                 200,
                 {
@@ -235,19 +442,121 @@ class H(BaseHTTPRequestHandler):
                     "presence_code": code,
                     "ha_ok": ha_ok,
                     "mode": mode,
+                    "state": hub_state,
                     "entities": entities(),
                     "error": err,
+                    "lab": {
+                        "bootstrapped": load_lab().get("bootstrapped", False),
+                        "site_id": load_lab().get("site_id"),
+                        "partner_org_id": load_lab().get("partner_org_id"),
+                    },
                 },
             )
-        html = (
-            UI.read_text(encoding="utf-8")
-            if UI.exists()
-            else "<h1>Arvio</h1><p>ui.html missing</p>"
-        )
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.end_headers()
-        self.wfile.write(html.encode())
+        if path == "/v1/hubs" or path.startswith("/v1/hubs/"):
+            parts = [p for p in path.split("/") if p]
+            if len(parts) == 2:
+                st = load_hub()
+                if not st.get("hub_id"):
+                    return self._j(404, {"error": "no hub"})
+                return self._j(
+                    200,
+                    {
+                        "hubs": [
+                            {
+                                "hub_id": st.get("hub_id"),
+                                "serial": st.get("serial"),
+                                "state": st.get("state"),
+                                "site_id": st.get("site_id"),
+                            }
+                        ]
+                    },
+                )
+            if len(parts) == 3:
+                hid = parts[2]
+                st = load_hub()
+                if st.get("hub_id") != hid:
+                    return self._j(404, {"error": "Hub not found"})
+                return self._j(
+                    200,
+                    {
+                        "hub_id": hid,
+                        "serial": st.get("serial"),
+                        "state": st.get("state"),
+                        "site_id": st.get("site_id"),
+                        "customer_org_id": st.get("customer_org_id"),
+                    },
+                )
+        if path == "/":
+            return self._file("ui.html", "text/html; charset=utf-8")
+        self._j(404, {"error": "not found"})
+
+    def do_POST(self) -> None:  # noqa: N802
+        path = urlparse(self.path).path
+        try:
+            if path == "/v1/lab/bootstrap":
+                return self._j(200, lab_bootstrap())
+
+            if path.startswith("/api/service/"):
+                # /api/service/{domain}/{service}
+                parts = path.strip("/").split("/")
+                if len(parts) != 4:
+                    raise ValueError("use /api/service/{domain}/{service}")
+                body = self._read_json()
+                eid = str(body.get("entity_id") or "")
+                if not eid:
+                    raise ValueError("entity_id required")
+                return self._j(200, call_service(parts[2], parts[3], eid))
+
+            parts = [p for p in path.split("/") if p]
+            # POST /v1/hubs/{id}/claims
+            if (
+                len(parts) == 4
+                and parts[0] == "v1"
+                and parts[1] == "hubs"
+                and parts[3] == "claims"
+            ):
+                return self._j(200, issue_claim(parts[2]))
+
+            # POST /v1/claims/{id}/presence
+            if (
+                len(parts) == 4
+                and parts[0] == "v1"
+                and parts[1] == "claims"
+                and parts[3] == "presence"
+            ):
+                body = self._read_json()
+                return self._j(
+                    200, confirm_presence(parts[2], str(body.get("code") or ""))
+                )
+
+            # POST /v1/claims/{id}/redeem
+            if (
+                len(parts) == 4
+                and parts[0] == "v1"
+                and parts[1] == "claims"
+                and parts[3] == "redeem"
+            ):
+                body = self._read_json()
+                actor = {
+                    "user_id": str(body.get("user_id") or "tech_lab"),
+                    "org_id": str(body.get("org_id") or ""),
+                    "org_type": str(body.get("org_type") or "partner"),
+                }
+                return self._j(
+                    200,
+                    redeem_claim(
+                        parts[2],
+                        str(body.get("token") or ""),
+                        str(body.get("site_id") or ""),
+                        actor,
+                    ),
+                )
+
+            self._j(404, {"error": "not found"})
+        except Exception as e:
+            msg = str(e)
+            status = 403 if msg.startswith("Forbidden") else 400
+            self._j(status, {"error": msg})
 
     def log_message(self, *_args) -> None:
         pass
@@ -262,12 +571,13 @@ def loop() -> None:
 
 
 if __name__ == "__main__":
+    TOKEN = read_token()
     opts()
     rotate()
     enroll()
     threading.Thread(target=loop, daemon=True).start()
     print(
-        f"arvio-agent :{PORT} mode={mode} cloud={CLOUD} token={'yes' if TOKEN else 'NO'}",
+        f"arvio-agent :{PORT} mode={mode} hub={hub_id} token={'yes' if TOKEN else 'NO'}",
         flush=True,
     )
     ThreadingHTTPServer(("0.0.0.0", PORT), H).serve_forever()

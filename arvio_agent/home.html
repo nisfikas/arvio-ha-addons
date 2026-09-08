@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="el">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Arvio Home</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Source+Sans+3:wght@400;600&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --ink: #171412;
+        --muted: #5a534b;
+        --bg: #e8e0d3;
+        --panel: #faf6ee;
+        --accent: #0f6a5a;
+        --off: #9a9186;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: "Source Sans 3", sans-serif;
+        color: var(--ink);
+        background:
+          radial-gradient(800px 380px at 0% 0%, #d7ebe4, transparent 55%),
+          var(--bg);
+        min-height: 100vh;
+      }
+      header {
+        padding: 1.75rem 1.4rem 0.75rem;
+        max-width: 40rem;
+        margin: 0 auto;
+      }
+      h1 {
+        font-family: Fraunces, serif;
+        font-size: clamp(2.1rem, 7vw, 2.8rem);
+        margin: 0;
+        letter-spacing: -0.03em;
+      }
+      .sub {
+        color: var(--muted);
+        margin: 0.3rem 0 0;
+      }
+      main {
+        max-width: 40rem;
+        margin: 0 auto;
+        padding: 0.5rem 1.4rem 3rem;
+      }
+      .grid {
+        display: grid;
+        gap: 0.65rem;
+      }
+      .card {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        background: var(--panel);
+        padding: 1rem 1.1rem;
+        border-left: 4px solid var(--accent);
+        animation: in 0.4s ease both;
+      }
+      .card:nth-child(2) {
+        animation-delay: 0.05s;
+      }
+      .card:nth-child(3) {
+        animation-delay: 0.1s;
+      }
+      @keyframes in {
+        from {
+          opacity: 0;
+          transform: translateY(6px);
+        }
+        to {
+          opacity: 1;
+          transform: none;
+        }
+      }
+      .name {
+        font-weight: 600;
+      }
+      .state {
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+      button.toggle {
+        border: 0;
+        background: var(--accent);
+        color: #f3faf7;
+        font: inherit;
+        font-weight: 600;
+        padding: 0.65rem 0.95rem;
+        cursor: pointer;
+        min-width: 5.5rem;
+      }
+      button.toggle.off {
+        background: var(--off);
+      }
+      .meta {
+        color: var(--muted);
+        margin: 0 0 1rem;
+        font-size: 0.95rem;
+      }
+      a {
+        color: var(--accent);
+      }
+      .empty {
+        padding: 1.2rem;
+        background: var(--panel);
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Arvio</h1>
+      <p class="sub">Home — τοπικός έλεγχος</p>
+    </header>
+    <main>
+      <p class="meta" id="meta">Φόρτωση…</p>
+      <div class="grid" id="grid"></div>
+      <p class="meta"><a href="/">Hub</a> · <a href="/partner">Partner</a></p>
+    </main>
+    <script>
+      async function refresh() {
+        const res = await fetch("/api/status");
+        const data = await res.json();
+        document.getElementById("meta").textContent = data.ha_ok
+          ? "Hub " + (data.hub_id || "—") + " · " + (data.state || "")
+          : "HA: " + (data.error || "offline");
+        const grid = document.getElementById("grid");
+        grid.innerHTML = "";
+        const list = (data.entities || []).filter((e) =>
+          ["light", "switch", "cover"].includes(e.domain)
+        );
+        if (!list.length) {
+          grid.innerHTML = '<div class="empty">Δεν βρέθηκαν συσκευές ελέγχου.</div>';
+          return;
+        }
+        for (const e of list) {
+          const card = document.createElement("div");
+          card.className = "card";
+          const on =
+            e.state === "on" || e.state === "open" || e.state === "opening";
+          let action = "";
+          if (e.domain === "light" || e.domain === "switch") {
+            action = on ? "turn_off" : "turn_on";
+          } else if (e.domain === "cover") {
+            action = on ? "close_cover" : "open_cover";
+          }
+          card.innerHTML =
+            '<div><div class="name"></div><div class="state"></div></div>' +
+            '<button type="button" class="toggle"></button>';
+          card.querySelector(".name").textContent = e.name;
+          card.querySelector(".state").textContent = e.state;
+          const btn = card.querySelector("button");
+          btn.textContent = on ? "Off" : "On";
+          btn.classList.toggle("off", !on);
+          btn.onclick = async () => {
+            btn.disabled = true;
+            try {
+              await fetch("/api/service/" + e.domain + "/" + action, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ entity_id: e.entity_id }),
+              });
+              setTimeout(refresh, 400);
+            } catch (err) {
+              btn.disabled = false;
+              alert(String(err));
+            }
+          };
+          grid.appendChild(card);
+        }
+      }
+      refresh();
+      setInterval(refresh, 5000);
+    </script>
+  </body>
+</html>
