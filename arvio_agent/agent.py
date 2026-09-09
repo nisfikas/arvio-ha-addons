@@ -20,10 +20,10 @@ STATE = DATA / "hub.json"
 LAB = DATA / "lab_store.json"
 APP = Path("/app")
 
-CLOUD = "embedded"
+CLOUD = "https://arvio-cloud.vercel.app"
 SERIAL = "rpi-lab-1"
 PORT = 8099
-RELAY_URL = ""
+RELAY_URL = "https://arvio-cloud.vercel.app"
 RELAY_TOKEN = "lab-relay-token"
 
 code = "000000"
@@ -72,6 +72,9 @@ def opts() -> None:
         if o.get("relay_token"):
             RELAY_TOKEN = str(o["relay_token"])
     mode = "embedded" if CLOUD in ("", "embedded", "local") else "remote"
+    # Zero-config remote: if cloud is public and relay_url empty, use same origin.
+    if mode == "remote" and not RELAY_URL:
+        RELAY_URL = CLOUD
 
 
 def save_hub(s: dict) -> None:

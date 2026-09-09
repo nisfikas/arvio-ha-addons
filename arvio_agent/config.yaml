@@ -1,7 +1,7 @@
 name: "Arvio Agent"
-version: "0.1.5"
+version: "0.1.6"
 slug: arvio_agent
-description: "Local Arvio gateway for Home Assistant OS (lab). Enrolls with Arvio cloud and serves a simple local UI."
+description: "Arvio hub agent — local UI, claim, outbound cloud enroll + remote relay."
 url: "https://github.com/nisfikas/arvio-ha-addons"
 arch:
   - aarch64
@@ -22,9 +22,10 @@ ports:
 ports_description:
   8099/tcp: "Arvio local UI and agent API"
 options:
-  cloud_url: "embedded"
-  serial: "rpi-lab-1"
-  relay_url: ""
+  # Until DNS for cloud.arvio.systems is live, hubs use the Vercel alias.
+  cloud_url: "https://arvio-cloud.vercel.app"
+  serial: ""
+  relay_url: "https://arvio-cloud.vercel.app"
   relay_token: "lab-relay-token"
 schema:
   cloud_url: str
