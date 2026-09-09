@@ -9,6 +9,7 @@ import random
 import secrets
 import threading
 import time
+import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -167,6 +168,51 @@ def enroll_embedded() -> None:
     hub_id = hid
     if err.startswith("enroll:") or err.startswith("heartbeat:"):
         err = ""
+
+
+def cloud_json(method: str, path: str, body: dict | None = None) -> dict:
+    """Proxy JSON request to Arvio cloud (remote mode)."""
+    data = None if body is None else json.dumps(body).encode()
+    req = urllib.request.Request(
+        f"{CLOUD}{path}",
+        data=data,
+        method=method,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            raw = r.read().decode()
+            out = json.loads(raw) if raw else {}
+            if isinstance(out, dict) and out.get("error"):
+                raise ValueError(str(out["error"]))
+            return out
+    except urllib.error.HTTPError as e:
+        try:
+            err_body = json.loads(e.read().decode())
+            msg = err_body.get("error") or str(e)
+        except Exception:
+            msg = str(e)
+        raise ValueError(msg) from e
+
+
+def cache_lab_boot(boot: dict) -> None:
+    lab = load_lab()
+    lab["bootstrapped"] = True
+    lab["partner_org_id"] = boot.get("partner_org_id")
+    lab["site_id"] = boot.get("site_id")
+    lab["customer_org_id"] = boot.get("customer_org_id")
+    save_lab(lab)
+
+
+def sync_hub_from_cloud(hub: dict) -> None:
+    global hub_state, hub_id
+    st = load_hub()
+    st["state"] = hub.get("state") or st.get("state")
+    st["site_id"] = hub.get("site_id")
+    st["customer_org_id"] = hub.get("customer_org_id")
+    save_hub(st)
+    hub_state = st.get("state") or hub_state
+    hub_id = st.get("hub_id") or hub_id
 
 
 def enroll_remote() -> None:
@@ -600,6 +646,10 @@ class H(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         try:
             if path == "/v1/lab/bootstrap":
+                if mode == "remote":
+                    boot = cloud_json("POST", "/v1/lab/bootstrap", {})
+                    cache_lab_boot(boot)
+                    return self._j(200, boot)
                 return self._j(200, lab_bootstrap())
 
             if path.startswith("/api/service/"):
@@ -645,6 +695,10 @@ class H(BaseHTTPRequestHandler):
                 and parts[1] == "hubs"
                 and parts[3] == "claims"
             ):
+                if mode == "remote":
+                    out = cloud_json("POST", f"/v1/hubs/{parts[2]}/claims", {})
+                    sync_hub_from_cloud({"state": "assigned"})
+                    return self._j(200, out)
                 return self._j(200, issue_claim(parts[2]))
 
             # POST /v1/claims/{id}/presence
@@ -655,6 +709,13 @@ class H(BaseHTTPRequestHandler):
                 and parts[3] == "presence"
             ):
                 body = self._read_json()
+                if mode == "remote":
+                    out = cloud_json(
+                        "POST",
+                        f"/v1/claims/{parts[2]}/presence",
+                        {"code": str(body.get("code") or "")},
+                    )
+                    return self._j(200, out)
                 return self._j(
                     200, confirm_presence(parts[2], str(body.get("code") or ""))
                 )
@@ -667,6 +728,19 @@ class H(BaseHTTPRequestHandler):
                 and parts[3] == "redeem"
             ):
                 body = self._read_json()
+                if mode == "remote":
+                    payload = {
+                        "token": str(body.get("token") or ""),
+                        "site_id": str(body.get("site_id") or ""),
+                        "user_id": str(body.get("user_id") or "tech_lab"),
+                        "org_id": str(body.get("org_id") or ""),
+                        "org_type": str(body.get("org_type") or "partner"),
+                    }
+                    hub = cloud_json(
+                        "POST", f"/v1/claims/{parts[2]}/redeem", payload
+                    )
+                    sync_hub_from_cloud(hub)
+                    return self._j(200, hub)
                 actor = {
                     "user_id": str(body.get("user_id") or "tech_lab"),
                     "org_id": str(body.get("org_id") or ""),
