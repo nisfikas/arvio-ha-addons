@@ -299,7 +299,14 @@ def call_service(domain: str, service: str, entity_id: str) -> dict:
     )
     if result is None:
         raise RuntimeError(err or "HA service failed")
-    return {"ok": True, "entity_id": entity_id, "service": f"{domain}.{service}"}
+    st = ha(f"/states/{entity_id}")
+    state = st.get("state") if isinstance(st, dict) else None
+    return {
+        "ok": True,
+        "entity_id": entity_id,
+        "service": f"{domain}.{service}",
+        "state": state,
+    }
 
 
 def execute_action(action: str, entity_id: str) -> dict:
@@ -330,6 +337,7 @@ def relay_http(method: str, path: str, body: dict | None = None, timeout: int = 
             "Authorization": f"Bearer {RELAY_TOKEN}",
             "Content-Type": "application/json",
             "X-Hub-Id": hub_id or "",
+            "Connection": "keep-alive",
         },
     )
     try:
@@ -346,21 +354,25 @@ def relay_http(method: str, path: str, body: dict | None = None, timeout: int = 
 
 def relay_loop() -> None:
     """Outbound long-poll — hub never opens inbound ports."""
+    registered = False
     while True:
         if not RELAY_URL or not hub_id:
             time.sleep(5)
             continue
         try:
-            relay_http(
-                "POST",
-                "/v1/hub/register",
-                {"hub_id": hub_id, "token": RELAY_TOKEN},
-                timeout=10,
-            )
+            # Register once; poll already authenticates + touches last_seen.
+            if not registered:
+                relay_http(
+                    "POST",
+                    "/v1/hub/register",
+                    {"hub_id": hub_id, "token": RELAY_TOKEN},
+                    timeout=10,
+                )
+                registered = True
             body = relay_http(
                 "GET",
-                f"/v1/hub/commands?hub_id={hub_id}&wait_ms=20000",
-                timeout=25,
+                f"/v1/hub/commands?hub_id={hub_id}&wait_ms=55000",
+                timeout=65,
             )
             cmd = body.get("command") if isinstance(body, dict) else None
             if not cmd:
@@ -394,7 +406,8 @@ def relay_loop() -> None:
                     timeout=10,
                 )
         except Exception:
-            time.sleep(3)
+            registered = False
+            time.sleep(1)
 
 
 def lab_bootstrap() -> dict:
