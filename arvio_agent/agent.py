@@ -304,6 +304,8 @@ def call_service(domain: str, service: str, entity_id: str) -> dict:
 
 def execute_action(action: str, entity_id: str) -> dict:
     """action like light.turn_on — remote/relay command path."""
+    if action == "arvio.list_entities":
+        return {"ok": True, "entities": entities()}
     if action in ("lock.unlock", "lock.open", "alarm.disarm", "door.open"):
         # Lab: still allow but mark; production TTL enforced at relay
         pass
@@ -367,11 +369,16 @@ def relay_loop() -> None:
             action = str(cmd.get("action") or "")
             entity_id = str(cmd.get("entity_id") or "")
             try:
-                execute_action(action, entity_id)
+                out = execute_action(action, entity_id)
                 relay_http(
                     "POST",
                     "/v1/hub/results",
-                    {"hub_id": hub_id, "command_id": cid, "ok": True},
+                    {
+                        "hub_id": hub_id,
+                        "command_id": cid,
+                        "ok": True,
+                        "data": out if isinstance(out, dict) else {"ok": True},
+                    },
                     timeout=10,
                 )
             except Exception as e:
