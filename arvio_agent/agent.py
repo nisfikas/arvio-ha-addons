@@ -23,6 +23,8 @@ APP = Path("/app")
 CLOUD = "embedded"
 SERIAL = "rpi-lab-1"
 PORT = 8099
+RELAY_URL = ""
+RELAY_TOKEN = "lab-relay-token"
 
 code = "000000"
 exp = 0.0
@@ -31,6 +33,8 @@ ha_ok = False
 err = ""
 mode = "embedded"
 hub_state = "prepared"
+relay_ok = False
+relay_err = ""
 
 TOKEN = ""
 
@@ -55,7 +59,7 @@ def read_token() -> str:
 
 
 def opts() -> None:
-    global CLOUD, SERIAL, mode
+    global CLOUD, SERIAL, mode, RELAY_URL, RELAY_TOKEN
     p = DATA / "options.json"
     if p.exists():
         o = json.loads(p.read_text())
@@ -63,6 +67,10 @@ def opts() -> None:
         CLOUD = raw
         if o.get("serial"):
             SERIAL = str(o["serial"])
+        if o.get("relay_url") is not None:
+            RELAY_URL = str(o.get("relay_url") or "").rstrip("/")
+        if o.get("relay_token"):
+            RELAY_TOKEN = str(o["relay_token"])
     mode = "embedded" if CLOUD in ("", "embedded", "local") else "remote"
 
 
@@ -245,6 +253,94 @@ def call_service(domain: str, service: str, entity_id: str) -> dict:
     return {"ok": True, "entity_id": entity_id, "service": f"{domain}.{service}"}
 
 
+def execute_action(action: str, entity_id: str) -> dict:
+    """action like light.turn_on — remote/relay command path."""
+    if action in ("lock.unlock", "lock.open", "alarm.disarm", "door.open"):
+        # Lab: still allow but mark; production TTL enforced at relay
+        pass
+    if "." not in action:
+        raise ValueError("action must be domain.service")
+    domain, service = action.split(".", 1)
+    if not entity_id:
+        raise ValueError("entity_id required")
+    return call_service(domain, service, entity_id)
+
+
+def relay_http(method: str, path: str, body: dict | None = None, timeout: int = 25):
+    global relay_ok, relay_err
+    if not RELAY_URL:
+        raise RuntimeError("relay_url not configured")
+    data = None if body is None else json.dumps(body).encode()
+    req = urllib.request.Request(
+        f"{RELAY_URL}{path}",
+        data=data,
+        method=method,
+        headers={
+            "Authorization": f"Bearer {RELAY_TOKEN}",
+            "Content-Type": "application/json",
+            "X-Hub-Id": hub_id or "",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            relay_ok = True
+            relay_err = ""
+            raw = r.read().decode()
+            return json.loads(raw) if raw else {}
+    except Exception as e:
+        relay_ok = False
+        relay_err = str(e)
+        raise
+
+
+def relay_loop() -> None:
+    """Outbound long-poll — hub never opens inbound ports."""
+    while True:
+        if not RELAY_URL or not hub_id:
+            time.sleep(5)
+            continue
+        try:
+            relay_http(
+                "POST",
+                "/v1/hub/register",
+                {"hub_id": hub_id, "token": RELAY_TOKEN},
+                timeout=10,
+            )
+            body = relay_http(
+                "GET",
+                f"/v1/hub/commands?hub_id={hub_id}&wait_ms=20000",
+                timeout=25,
+            )
+            cmd = body.get("command") if isinstance(body, dict) else None
+            if not cmd:
+                continue
+            cid = str(cmd.get("command_id") or "")
+            action = str(cmd.get("action") or "")
+            entity_id = str(cmd.get("entity_id") or "")
+            try:
+                execute_action(action, entity_id)
+                relay_http(
+                    "POST",
+                    "/v1/hub/results",
+                    {"hub_id": hub_id, "command_id": cid, "ok": True},
+                    timeout=10,
+                )
+            except Exception as e:
+                relay_http(
+                    "POST",
+                    "/v1/hub/results",
+                    {
+                        "hub_id": hub_id,
+                        "command_id": cid,
+                        "ok": False,
+                        "error": str(e),
+                    },
+                    timeout=10,
+                )
+        except Exception:
+            time.sleep(3)
+
+
 def lab_bootstrap() -> dict:
     lab = load_lab()
     if lab.get("bootstrapped"):
@@ -421,6 +517,8 @@ class H(BaseHTTPRequestHandler):
             return self._file("partner.html", "text/html; charset=utf-8")
         if path in ("/home", "/home/"):
             return self._file("home.html", "text/html; charset=utf-8")
+        if path in ("/remote", "/remote/"):
+            return self._file("remote.html", "text/html; charset=utf-8")
         if path.startswith("/health"):
             return self._j(
                 200,
@@ -430,6 +528,9 @@ class H(BaseHTTPRequestHandler):
                     "hub_id": hub_id,
                     "state": hub_state,
                     "mode": mode,
+                    "relay_url": RELAY_URL or None,
+                    "relay_ok": relay_ok,
+                    "relay_error": relay_err,
                     "has_token": bool(TOKEN),
                     "error": err,
                 },
@@ -443,6 +544,8 @@ class H(BaseHTTPRequestHandler):
                     "ha_ok": ha_ok,
                     "mode": mode,
                     "state": hub_state,
+                    "relay_url": RELAY_URL or None,
+                    "relay_ok": relay_ok,
                     "entities": entities(),
                     "error": err,
                     "lab": {
@@ -507,7 +610,31 @@ class H(BaseHTTPRequestHandler):
                     raise ValueError("entity_id required")
                 return self._j(200, call_service(parts[2], parts[3], eid))
 
+            # Local stand-in for relay client API (same shape) — lab /remote UI.
+            # Real CGNAT remote uses external @arvio/relay; hub only outbound-polls.
             parts = [p for p in path.split("/") if p]
+            if (
+                len(parts) == 4
+                and parts[0] == "v1"
+                and parts[1] == "hubs"
+                and parts[3] == "commands"
+            ):
+                body = self._read_json()
+                hid = parts[2]
+                if hid != hub_id:
+                    raise ValueError("Hub not found")
+                action = str(body.get("action") or "")
+                eid = str(body.get("entity_id") or "")
+                out = execute_action(action, eid)
+                return self._j(
+                    200,
+                    {
+                        "command_id": f"local_{secrets.token_hex(4)}",
+                        "ok": True,
+                        "via": "local-agent",
+                        **out,
+                    },
+                )
             # POST /v1/hubs/{id}/claims
             if (
                 len(parts) == 4
@@ -576,8 +703,9 @@ if __name__ == "__main__":
     rotate()
     enroll()
     threading.Thread(target=loop, daemon=True).start()
+    threading.Thread(target=relay_loop, daemon=True).start()
     print(
-        f"arvio-agent :{PORT} mode={mode} hub={hub_id} token={'yes' if TOKEN else 'NO'}",
+        f"arvio-agent :{PORT} mode={mode} hub={hub_id} relay={RELAY_URL or 'off'} token={'yes' if TOKEN else 'NO'}",
         flush=True,
     )
     ThreadingHTTPServer(("0.0.0.0", PORT), H).serve_forever()

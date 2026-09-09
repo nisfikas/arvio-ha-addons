@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="el">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Arvio Remote</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Source+Sans+3:wght@400;600&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --ink: #171412;
+        --muted: #5a534b;
+        --bg: #e4ddd0;
+        --panel: #faf6ee;
+        --accent: #0f6a5a;
+        --off: #9a9186;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: "Source Sans 3", sans-serif;
+        color: var(--ink);
+        background:
+          radial-gradient(700px 360px at 100% 0%, #cfe0db, transparent 50%),
+          var(--bg);
+        min-height: 100vh;
+      }
+      header,
+      main {
+        max-width: 40rem;
+        margin: 0 auto;
+        padding: 1.5rem 1.4rem;
+      }
+      h1 {
+        font-family: Fraunces, serif;
+        font-size: clamp(2rem, 6vw, 2.6rem);
+        margin: 0;
+      }
+      .sub {
+        color: var(--muted);
+      }
+      .note {
+        background: var(--panel);
+        border-left: 4px solid var(--accent);
+        padding: 0.85rem 1rem;
+        margin: 1rem 0 1.25rem;
+        color: var(--muted);
+        font-size: 0.95rem;
+      }
+      .grid {
+        display: grid;
+        gap: 0.65rem;
+      }
+      .card {
+        display: flex;
+        justify-content: space-between;
+        gap: 1rem;
+        align-items: center;
+        background: var(--panel);
+        padding: 1rem 1.1rem;
+        border-left: 4px solid var(--accent);
+      }
+      button {
+        border: 0;
+        background: var(--accent);
+        color: #f3faf7;
+        font: inherit;
+        font-weight: 600;
+        padding: 0.65rem 0.95rem;
+        cursor: pointer;
+        min-width: 5.5rem;
+      }
+      button.off {
+        background: var(--off);
+      }
+      a {
+        color: var(--accent);
+      }
+      .state {
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Arvio</h1>
+      <p class="sub">Remote — εντολές μέσω relay πρωτοκόλλου</p>
+      <p class="note" id="note">
+        Το hub δεν ανοίγει ports στο internet. Σε lab χωρίς public relay, οι εντολές
+        εκτελούνται τοπικά με το ίδιο API shape· για CGNAT βάλε <code>relay_url</code>
+        στο add-on προς το <code>@arvio/relay</code>.
+      </p>
+      <p class="sub" id="meta"></p>
+    </header>
+    <main>
+      <div class="grid" id="grid"></div>
+      <p class="sub"><a href="/">Hub</a> · <a href="/home">Home</a> · <a href="/partner">Partner</a></p>
+    </main>
+    <script>
+      let hubId = "";
+      async function refresh() {
+        const data = await (await fetch("/api/status")).json();
+        hubId = data.hub_id || "";
+        document.getElementById("meta").textContent =
+          "Hub " +
+          hubId +
+          " · " +
+          (data.state || "") +
+          (data.relay_url
+            ? " · relay " + (data.relay_ok ? "online" : "connecting…")
+            : " · relay off (local command path)");
+        const grid = document.getElementById("grid");
+        grid.innerHTML = "";
+        const list = (data.entities || []).filter((e) =>
+          ["light", "switch", "cover"].includes(e.domain)
+        );
+        for (const e of list) {
+          const on =
+            e.state === "on" || e.state === "open" || e.state === "opening";
+          let action = "";
+          if (e.domain === "light" || e.domain === "switch") {
+            action = on ? e.domain + ".turn_off" : e.domain + ".turn_on";
+          } else {
+            action = on ? "cover.close_cover" : "cover.open_cover";
+          }
+          const card = document.createElement("div");
+          card.className = "card";
+          card.innerHTML =
+            '<div><div class="name"></div><div class="state"></div></div><button type="button"></button>';
+          card.querySelector(".name").textContent = e.name;
+          card.querySelector(".state").textContent = e.state;
+          const btn = card.querySelector("button");
+          btn.textContent = on ? "Off" : "On";
+          btn.classList.toggle("off", !on);
+          btn.onclick = async () => {
+            btn.disabled = true;
+            try {
+              const res = await fetch("/v1/hubs/" + hubId + "/commands", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  action,
+                  entity_id: e.entity_id,
+                  actor_id: "remote_ui",
+                  site_id: (data.lab && data.lab.site_id) || "site_lab_home",
+                  ttl_ms: 60000,
+                }),
+              });
+              const body = await res.json();
+              if (!res.ok) throw new Error(body.error || res.statusText);
+              setTimeout(refresh, 400);
+            } catch (err) {
+              alert(String(err.message || err));
+              btn.disabled = false;
+            }
+          };
+          grid.appendChild(card);
+        }
+      }
+      refresh();
+      setInterval(refresh, 5000);
+    </script>
+  </body>
+</html>
