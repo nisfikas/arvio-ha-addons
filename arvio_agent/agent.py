@@ -20,10 +20,10 @@ STATE = DATA / "hub.json"
 LAB = DATA / "lab_store.json"
 APP = Path("/app")
 
-CLOUD = "https://arvio-cloud.vercel.app"
+CLOUD = "https://cloud.arvio.systems"
 SERIAL = "rpi-lab-1"
 PORT = 8099
-RELAY_URL = "https://arvio-cloud.vercel.app"
+RELAY_URL = "https://cloud.arvio.systems"
 RELAY_TOKEN = "lab-relay-token"
 
 code = "000000"

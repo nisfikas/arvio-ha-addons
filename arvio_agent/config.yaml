@@ -1,5 +1,5 @@
 name: "Arvio Agent"
-version: "0.1.6"
+version: "0.1.7"
 slug: arvio_agent
 description: "Arvio hub agent — local UI, claim, outbound cloud enroll + remote relay."
 url: "https://github.com/nisfikas/arvio-ha-addons"
@@ -22,10 +22,9 @@ ports:
 ports_description:
   8099/tcp: "Arvio local UI and agent API"
 options:
-  # Until DNS for cloud.arvio.systems is live, hubs use the Vercel alias.
-  cloud_url: "https://arvio-cloud.vercel.app"
+  cloud_url: "https://cloud.arvio.systems"
   serial: ""
-  relay_url: "https://arvio-cloud.vercel.app"
+  relay_url: "https://cloud.arvio.systems"
   relay_token: "lab-relay-token"
 schema:
   cloud_url: str
