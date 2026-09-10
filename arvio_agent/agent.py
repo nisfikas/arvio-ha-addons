@@ -24,7 +24,7 @@ APP = Path("/app")
 CLOUD = "https://cloud.arvio.systems"
 SERIAL = "rpi-lab-1"
 PORT = 8099
-RELAY_URL = "https://cloud.arvio.systems"
+RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = "lab-relay-token"
 
 code = "000000"
@@ -491,15 +491,113 @@ def relay_http(method: str, path: str, body: dict | None = None, timeout: int = 
         raise
 
 
+def _handle_relay_command(cmd: dict) -> None:
+    cid = str(cmd.get("command_id") or "")
+    action = str(cmd.get("action") or "")
+    entity_id = str(cmd.get("entity_id") or "")
+    payload = cmd.get("payload") if isinstance(cmd.get("payload"), dict) else {}
+    try:
+        out = execute_action(action, entity_id, payload)
+        relay_http(
+            "POST",
+            "/v1/hub/results",
+            {
+                "hub_id": hub_id,
+                "command_id": cid,
+                "ok": True,
+                "data": out if isinstance(out, dict) else {"ok": True},
+            },
+            timeout=10,
+        )
+    except Exception as e:
+        relay_http(
+            "POST",
+            "/v1/hub/results",
+            {
+                "hub_id": hub_id,
+                "command_id": cid,
+                "ok": False,
+                "error": str(e),
+            },
+            timeout=10,
+        )
+
+
+def _relay_ws_url() -> str:
+    base = (RELAY_URL or "").rstrip("/")
+    if base.startswith("https://"):
+        base = "wss://" + base[len("https://") :]
+    elif base.startswith("http://"):
+        base = "ws://" + base[len("http://") :]
+    return f"{base}/v1/hub/ws?hub_id={hub_id}"
+
+
+def relay_ws_session() -> None:
+    """Block on WebSocket until disconnect. Instant command path (ARV-031)."""
+    global relay_ok, relay_err
+    try:
+        import websocket  # type: ignore
+    except ImportError as e:
+        raise RuntimeError("websocket-client not installed") from e
+
+    done = threading.Event()
+
+    def on_message(_ws, message: str) -> None:
+        try:
+            msg = json.loads(message)
+        except Exception:
+            return
+        if not isinstance(msg, dict):
+            return
+        if msg.get("type") == "command" and isinstance(msg.get("command"), dict):
+            _handle_relay_command(msg["command"])
+        elif msg.get("type") == "hello":
+            relay_ok = True
+            relay_err = ""
+
+    def on_error(_ws, error) -> None:
+        global relay_ok, relay_err
+        relay_ok = False
+        relay_err = str(error)
+
+    def on_close(_ws, *_args) -> None:
+        done.set()
+
+    def on_open(ws) -> None:
+        global relay_ok, relay_err
+        relay_ok = True
+        relay_err = ""
+
+        def ping() -> None:
+            while not done.is_set():
+                try:
+                    ws.send(json.dumps({"type": "ping"}))
+                except Exception:
+                    break
+                done.wait(20)
+
+        threading.Thread(target=ping, daemon=True).start()
+
+    app = websocket.WebSocketApp(
+        _relay_ws_url(),
+        header=[f"Authorization: Bearer {RELAY_TOKEN}", f"X-Hub-Id: {hub_id}"],
+        on_open=on_open,
+        on_message=on_message,
+        on_error=on_error,
+        on_close=on_close,
+    )
+    app.run_forever(ping_interval=25, ping_timeout=10)
+    done.set()
+
+
 def relay_loop() -> None:
-    """Outbound long-poll — hub never opens inbound ports."""
+    """Prefer WebSocket; fall back to short long-poll between reconnects."""
     registered = False
     while True:
         if not RELAY_URL or not hub_id:
             time.sleep(5)
             continue
         try:
-            # Register once; poll already authenticates + touches last_seen.
             if not registered:
                 relay_http(
                     "POST",
@@ -508,43 +606,19 @@ def relay_loop() -> None:
                     timeout=10,
                 )
                 registered = True
+            try:
+                relay_ws_session()
+            except Exception as e:
+                relay_err = str(e)
+            # Brief long-poll fallback while WS is down.
             body = relay_http(
                 "GET",
-                f"/v1/hub/commands?hub_id={hub_id}&wait_ms=55000",
-                timeout=65,
+                f"/v1/hub/commands?hub_id={hub_id}&wait_ms=3000",
+                timeout=10,
             )
             cmd = body.get("command") if isinstance(body, dict) else None
-            if not cmd:
-                continue
-            cid = str(cmd.get("command_id") or "")
-            action = str(cmd.get("action") or "")
-            entity_id = str(cmd.get("entity_id") or "")
-            payload = cmd.get("payload") if isinstance(cmd.get("payload"), dict) else {}
-            try:
-                out = execute_action(action, entity_id, payload)
-                relay_http(
-                    "POST",
-                    "/v1/hub/results",
-                    {
-                        "hub_id": hub_id,
-                        "command_id": cid,
-                        "ok": True,
-                        "data": out if isinstance(out, dict) else {"ok": True},
-                    },
-                    timeout=10,
-                )
-            except Exception as e:
-                relay_http(
-                    "POST",
-                    "/v1/hub/results",
-                    {
-                        "hub_id": hub_id,
-                        "command_id": cid,
-                        "ok": False,
-                        "error": str(e),
-                    },
-                    timeout=10,
-                )
+            if cmd and isinstance(cmd, dict):
+                _handle_relay_command(cmd)
         except Exception:
             registered = False
             time.sleep(1)

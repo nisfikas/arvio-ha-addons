@@ -1,7 +1,8 @@
 ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.21
 FROM ${BUILD_FROM}
 
-RUN apk add --no-cache python3
+RUN apk add --no-cache python3 py3-pip \
+  && pip3 install --break-system-packages --no-cache-dir websocket-client==1.8.0
 
 WORKDIR /app
 COPY agent.py /app/agent.py
@@ -14,7 +15,7 @@ RUN chmod a+x /run.sh
 
 LABEL \
   io.hass.name="Arvio Agent" \
-  io.hass.version="0.1.13" \
+  io.hass.version="0.1.14" \
   io.hass.type="addon" \
   io.hass.arch="aarch64|amd64|armv7"
 
