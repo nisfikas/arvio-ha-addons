@@ -349,9 +349,51 @@ def call_service(domain: str, service: str, data: dict) -> dict:
     if result is None:
         raise RuntimeError(err or "HA service failed")
     entity_id = str(data.get("entity_id") or "")
-    st = ha(f"/states/{entity_id}") if entity_id else None
-    state = st.get("state") if isinstance(st, dict) else None
-    attrs = (st.get("attributes") if isinstance(st, dict) else None) or {}
+
+    expected = None
+    if service == "turn_on":
+        expected = "on"
+    elif service == "turn_off":
+        expected = "off"
+    elif service == "open_cover":
+        expected = "open"
+    elif service == "close_cover":
+        expected = "closed"
+
+    st = None
+    state = None
+    attrs: dict = {}
+    # Zigbee/Wi‑Fi devices often lag; don't report stale pre-command state.
+    deadline = time.time() + 1.4
+    while True:
+        st = ha(f"/states/{entity_id}") if entity_id else None
+        state = st.get("state") if isinstance(st, dict) else None
+        attrs = (st.get("attributes") if isinstance(st, dict) else None) or {}
+        if not isinstance(attrs, dict):
+            attrs = {}
+        if expected is None or state is None:
+            break
+        if domain == "climate" and expected == "on":
+            if state not in ("off", "unavailable", "unknown"):
+                break
+        elif domain == "climate" and expected == "off":
+            if state == "off":
+                break
+        elif state == expected:
+            break
+        if time.time() >= deadline:
+            # Fall back to intended state so clients don't revert optimistic UI.
+            if expected is not None and (
+                state in (None, "unavailable", "unknown")
+                or (expected == "on" and state == "off")
+                or (expected == "off" and state == "on")
+                or (expected == "open" and state == "closed")
+                or (expected == "closed" and state == "open")
+            ):
+                state = expected
+            break
+        time.sleep(0.15)
+
     return {
         "ok": True,
         "entity_id": entity_id,
