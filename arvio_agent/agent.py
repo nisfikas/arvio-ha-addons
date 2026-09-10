@@ -26,7 +26,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = "lab-relay-token"
-AGENT_VERSION = "0.1.16"
+AGENT_VERSION = "0.1.17"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -110,7 +110,7 @@ def sha(s: str) -> str:
     return hashlib.sha256(s.encode()).hexdigest()
 
 
-def ha(path: str, method: str = "GET", body: dict | None = None):
+def ha(path: str, method: str = "GET", body: dict | None = None, timeout: int = 10):
     global ha_ok, err, TOKEN
     if not TOKEN:
         TOKEN = read_token()
@@ -129,7 +129,7 @@ def ha(path: str, method: str = "GET", body: dict | None = None):
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=10) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             ha_ok = True
             raw = r.read().decode()
             if not err.startswith("enroll:") and not err.startswith("heartbeat:"):
@@ -139,6 +139,180 @@ def ha(path: str, method: str = "GET", body: dict | None = None):
         ha_ok = False
         err = str(e)
         return None
+
+
+def ha_or_raise(path: str, method: str = "GET", body: dict | None = None, timeout: int = 30):
+    """Like ha(), but raises with Core error body when available."""
+    global TOKEN, err
+    if not TOKEN:
+        TOKEN = read_token()
+    if not TOKEN:
+        raise RuntimeError("missing SUPERVISOR_TOKEN")
+    data = None if body is None else json.dumps(body).encode()
+    req = urllib.request.Request(
+        f"http://supervisor/core/api{path}",
+        data=data,
+        method=method,
+        headers={
+            "Authorization": f"Bearer {TOKEN}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read().decode()
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:
+            detail = e.read().decode()
+        except Exception:
+            detail = str(e)
+        err = detail or str(e)
+        raise RuntimeError(f"HA {method} {path}: {err}") from e
+    except Exception as e:
+        err = str(e)
+        raise RuntimeError(f"HA {method} {path}: {e}") from e
+
+
+ARVIO_SCENARIO_PREFIX = "arvio_"
+
+
+def _is_arvio_scenario_id(sid: str) -> bool:
+    return sid.startswith(ARVIO_SCENARIO_PREFIX) and len(sid) > len(
+        ARVIO_SCENARIO_PREFIX
+    )
+
+
+def list_scene_entities() -> list:
+    states = ha("/states")
+    if not isinstance(states, list):
+        return []
+    out = []
+    for e in states:
+        if not isinstance(e, dict):
+            continue
+        eid = str(e.get("entity_id") or "")
+        if not eid.startswith("scene."):
+            continue
+        attrs = e.get("attributes") if isinstance(e.get("attributes"), dict) else {}
+        out.append(
+            {
+                "entity_id": eid,
+                "name": str(attrs.get("friendly_name") or eid),
+                "state": str(e.get("state") or ""),
+            }
+        )
+    return out[:80]
+
+
+def list_scenarios() -> dict:
+    """List Arvio-managed HA automations + scene picker entities."""
+    states = ha("/states")
+    if not isinstance(states, list):
+        raise RuntimeError(err or "HA states failed")
+    scenarios = []
+    for e in states:
+        if not isinstance(e, dict):
+            continue
+        eid = str(e.get("entity_id") or "")
+        if not eid.startswith("automation."):
+            continue
+        attrs = e.get("attributes") if isinstance(e.get("attributes"), dict) else {}
+        sid = str(attrs.get("id") or "")
+        if not _is_arvio_scenario_id(sid):
+            continue
+        cfg = ha(f"/config/automation/config/{sid}", timeout=15)
+        enabled = str(e.get("state") or "") != "off"
+        item = {
+            "id": sid,
+            "entity_id": eid,
+            "alias": str(
+                (cfg.get("alias") if isinstance(cfg, dict) else None)
+                or attrs.get("friendly_name")
+                or sid
+            ),
+            "enabled": enabled,
+            "last_triggered": attrs.get("last_triggered"),
+            "config": cfg if isinstance(cfg, dict) else None,
+        }
+        scenarios.append(item)
+    return {
+        "ok": True,
+        "scenarios": scenarios,
+        "scenes": list_scene_entities(),
+    }
+
+
+def upsert_scenario(payload: dict) -> dict:
+    cfg = payload.get("config") if isinstance(payload.get("config"), dict) else payload
+    if not isinstance(cfg, dict):
+        raise ValueError("config required")
+    sid = str(cfg.get("id") or "").strip()
+    if not _is_arvio_scenario_id(sid):
+        raise ValueError("scenario id must start with arvio_")
+    body = dict(cfg)
+    body["id"] = sid
+    if "mode" not in body:
+        body["mode"] = "single"
+    ha_or_raise(
+        f"/config/automation/config/{sid}",
+        method="POST",
+        body=body,
+        timeout=45,
+    )
+    verify = ha(f"/config/automation/config/{sid}", timeout=15)
+    if not isinstance(verify, dict):
+        raise RuntimeError("upsert verify failed")
+    return {"ok": True, "id": sid, "config": verify}
+
+
+def delete_scenario(payload: dict, entity_id: str = "") -> dict:
+    sid = str(payload.get("id") or entity_id or "").strip()
+    if not _is_arvio_scenario_id(sid):
+        raise ValueError("scenario id must start with arvio_")
+    ha_or_raise(
+        f"/config/automation/config/{sid}",
+        method="DELETE",
+        timeout=45,
+    )
+    return {"ok": True, "id": sid, "deleted": True}
+
+
+def _resolve_automation_entity(sid: str, entity_id: str = "") -> str:
+    eid = str(entity_id or "").strip()
+    if eid.startswith("automation."):
+        return eid
+    states = ha("/states")
+    if isinstance(states, list):
+        for e in states:
+            if not isinstance(e, dict):
+                continue
+            attrs = e.get("attributes") if isinstance(e.get("attributes"), dict) else {}
+            if str(attrs.get("id") or "") == sid:
+                found = str(e.get("entity_id") or "")
+                if found.startswith("automation."):
+                    return found
+    raise ValueError("automation entity_id required")
+
+
+def set_scenario_enabled(payload: dict, entity_id: str = "") -> dict:
+    sid = str(payload.get("id") or "").strip()
+    eid = _resolve_automation_entity(sid, str(payload.get("entity_id") or entity_id or ""))
+    enabled = bool(payload.get("enabled", True))
+    service = "turn_on" if enabled else "turn_off"
+    out = call_service("automation", service, {"entity_id": eid})
+    out["id"] = sid
+    out["enabled"] = enabled
+    return out
+
+
+def trigger_scenario(payload: dict, entity_id: str = "") -> dict:
+    sid = str(payload.get("id") or "").strip()
+    eid = _resolve_automation_entity(sid, str(payload.get("entity_id") or entity_id or ""))
+    out = call_service("automation", "trigger", {"entity_id": eid})
+    out["id"] = sid
+    return out
 
 
 def supervisor(path: str, method: str = "GET", body: dict | None = None, timeout: int = 120):
@@ -664,6 +838,16 @@ def execute_action(
     payload = payload if isinstance(payload, dict) else {}
     if action == "arvio.list_entities":
         return {"ok": True, "entities": entities()}
+    if action == "arvio.list_scenarios":
+        return list_scenarios()
+    if action == "arvio.upsert_scenario":
+        return upsert_scenario(payload)
+    if action == "arvio.delete_scenario":
+        return delete_scenario(payload, entity_id)
+    if action == "arvio.set_scenario_enabled":
+        return set_scenario_enabled(payload, entity_id)
+    if action == "arvio.trigger_scenario":
+        return trigger_scenario(payload, entity_id)
     if action == "backup.create":
         name = str(payload.get("name") or "") or None
         out = create_full_backup(name)
