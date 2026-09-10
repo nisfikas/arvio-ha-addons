@@ -1,5 +1,5 @@
 name: "Arvio Agent"
-version: "0.1.15"
+version: "0.1.16"
 slug: arvio_agent
 description: "Arvio hub agent — local UI, claim, outbound cloud enroll + remote relay."
 url: "https://github.com/nisfikas/arvio-ha-addons"
@@ -22,6 +22,8 @@ ports:
   8099/tcp: 8099
 ports_description:
   8099/tcp: "Arvio local UI and agent API"
+map:
+  - share:rw
 options:
   cloud_url: "https://cloud.arvio.systems"
   serial: ""

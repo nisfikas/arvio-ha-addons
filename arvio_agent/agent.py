@@ -26,7 +26,9 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = "lab-relay-token"
-AGENT_VERSION = "0.1.15"
+AGENT_VERSION = "0.1.16"
+SHARE_DIR = Path("/share/arvio")
+UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
 code = "000000"
 exp = 0.0
@@ -228,6 +230,144 @@ def backup_telemetry() -> dict:
         "last_backup_at": newest,
         "agent_version": AGENT_VERSION,
     }
+
+
+def addon_self_info() -> dict:
+    resp = supervisor("/addons/self/info", "GET", timeout=20)
+    if not isinstance(resp, dict):
+        return {}
+    data = resp.get("data") if isinstance(resp.get("data"), dict) else resp
+    return data if isinstance(data, dict) else {}
+
+
+def find_agent_update_entity(slug: str) -> str | None:
+    """Locate Core update.* entity for this add-on (documented update.install path)."""
+    states = ha("/states")
+    if not isinstance(states, list):
+        return None
+    slug_l = (slug or "").lower()
+    for e in states:
+        if not isinstance(e, dict):
+            continue
+        eid = str(e.get("entity_id") or "")
+        if not eid.startswith("update."):
+            continue
+        attrs = e.get("attributes") or {}
+        if not isinstance(attrs, dict):
+            continue
+        title = str(attrs.get("title") or attrs.get("friendly_name") or "").lower()
+        # Hassio entities often embed slug in unique_id / entity_id.
+        blob = f"{eid} {title} {attrs.get('installed_version','')}".lower()
+        if "arvio" in title or "arvio_agent" in eid or (slug_l and slug_l in blob):
+            return eid
+    return None
+
+
+def write_updater_request(slug: str, target: str, channel: str) -> None:
+    """Handoff for companion arvio_updater (Supervisor forbids self-update)."""
+    try:
+        SHARE_DIR.mkdir(parents=True, exist_ok=True)
+        UPDATE_REQUEST.write_text(
+            json.dumps(
+                {
+                    "slug": slug,
+                    "target_version": target or None,
+                    "channel": channel or None,
+                    "requested_at": time.strftime(
+                        "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+                    ),
+                    "requested_by": "arvio_agent",
+                    "agent_version": AGENT_VERSION,
+                },
+                indent=2,
+            )
+        )
+    except OSError as e:
+        raise RuntimeError(f"cannot write update request: {e}") from e
+
+
+def apply_agent_update(payload: dict) -> dict:
+    """
+    Remote Agent OTA (ARV-060).
+    Documented paths:
+    - Core update.install (preferred; REQUEST_FROM is Core, not self)
+    - Companion handoff via /share/arvio/update_request.json
+    - Direct POST /store/addons/{slug}/update is forbidden for self (403)
+    """
+    target = str(payload.get("target_version") or payload.get("version") or "")
+    channel = str(payload.get("channel") or "")
+    do_backup = payload.get("backup", True) is not False
+
+    st = load_hub()
+    if target:
+        st["agent_target_version"] = target
+    if channel:
+        st["update_channel"] = channel
+    save_hub(st)
+
+    info = addon_self_info()
+    slug = str(info.get("slug") or "local_arvio_agent")
+    version = str(info.get("version") or AGENT_VERSION)
+    version_latest = str(info.get("version_latest") or "")
+    update_available = bool(info.get("update_available"))
+
+    # Refresh store so version_latest is current (repository installs).
+    supervisor("/store/reload", "POST", {}, timeout=60)
+
+    info2 = addon_self_info()
+    if info2:
+        info = info2
+        version = str(info.get("version") or version)
+        version_latest = str(info.get("version_latest") or version_latest)
+        update_available = bool(info.get("update_available"))
+        slug = str(info.get("slug") or slug)
+
+    write_updater_request(slug, target, channel)
+
+    result: dict = {
+        "ok": True,
+        "pinned": True,
+        "slug": slug,
+        "agent_version": AGENT_VERSION,
+        "installed_version": version,
+        "version_latest": version_latest or None,
+        "update_available": update_available,
+        "agent_target_version": st.get("agent_target_version"),
+        "update_channel": st.get("update_channel"),
+        "updater_request": str(UPDATE_REQUEST),
+    }
+
+    # Preferred: Core update.install → Supervisor (not self-call).
+    entity_id = find_agent_update_entity(slug)
+    if entity_id and (update_available or target):
+        body: dict = {"entity_id": entity_id, "backup": do_backup}
+        if target:
+            body["version"] = target
+        svc = ha("/services/update/install", method="POST", body=body)
+        result["core_update"] = {
+            "entity_id": entity_id,
+            "requested": True,
+            "response": svc is not None,
+        }
+        result["method"] = "core_update.install"
+        result["note"] = (
+            "update.install requested; add-on will restart if Supervisor applies it"
+        )
+        return result
+
+    # Always leave companion request; report status for local/lab installs.
+    result["method"] = "companion_handoff"
+    if not update_available and not version_latest:
+        result["note"] = (
+            "no store update available (local install?) — "
+            "arvio_updater will try /store/addons/{slug}/update; "
+            "lab local builds need rebuild/reinstall"
+        )
+    else:
+        result["note"] = (
+            "wrote /share/arvio/update_request.json for arvio_updater companion"
+        )
+    return result
 
 
 def rotate() -> None:
@@ -532,24 +672,7 @@ def execute_action(
         out.update({"backup_count": tel["backup_count"], "last_backup_at": tel["last_backup_at"]})
         return out
     if action == "agent.update":
-        # TODO confirm Supervisor store API for add-on upgrade without reinventing endpoints.
-        # For now record the desired pin locally and report it; installer rebuilds when ready.
-        target = str(payload.get("target_version") or payload.get("version") or "")
-        channel = str(payload.get("channel") or "")
-        st = load_hub()
-        if target:
-            st["agent_target_version"] = target
-        if channel:
-            st["update_channel"] = channel
-        save_hub(st)
-        return {
-            "ok": True,
-            "pinned": True,
-            "agent_version": AGENT_VERSION,
-            "agent_target_version": st.get("agent_target_version"),
-            "update_channel": st.get("update_channel"),
-            "note": "pin recorded; apply via Supervisor add-on update when confirmed",
-        }
+        return apply_agent_update(payload)
     if action in ("lock.unlock", "lock.open", "alarm.disarm", "door.open"):
         pass
     if "." not in action:

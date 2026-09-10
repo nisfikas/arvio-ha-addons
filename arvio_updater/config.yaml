@@ -1,0 +1,20 @@
+name: "Arvio Updater"
+version: "0.1.0"
+slug: arvio_updater
+description: "Companion that applies Arvio Agent store updates (Supervisor forbids self-update)."
+url: "https://github.com/nisfikas/arvio-ha-addons"
+arch:
+  - aarch64
+  - amd64
+  - armv7
+init: false
+startup: application
+boot: auto
+hassio_api: true
+hassio_role: manager
+host_network: false
+stage: experimental
+map:
+  - share:rw
+options: {}
+schema: {}
