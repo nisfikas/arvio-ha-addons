@@ -302,6 +302,11 @@ def entities() -> list:
             "position": domain == "cover"
             and attrs.get("current_position") is not None,
             "temperature": domain == "climate",
+            "preset": domain == "climate"
+            and bool(attrs.get("preset_modes")),
+            "swing": domain == "climate"
+            and bool(attrs.get("swing_modes")),
+            "fan": domain == "climate" and bool(attrs.get("fan_modes")),
         }
         item = {
             "entity_id": eid,
@@ -322,6 +327,10 @@ def entities() -> list:
             "hvac_modes": attrs.get("hvac_modes") or [],
             "fan_mode": attrs.get("fan_mode"),
             "fan_modes": attrs.get("fan_modes") or [],
+            "preset_mode": attrs.get("preset_mode"),
+            "preset_modes": attrs.get("preset_modes") or [],
+            "swing_mode": attrs.get("swing_mode"),
+            "swing_modes": attrs.get("swing_modes") or [],
             "min_temp": attrs.get("min_temp"),
             "max_temp": attrs.get("max_temp"),
             "current_position": attrs.get("current_position"),
@@ -352,6 +361,9 @@ def call_service(domain: str, service: str, data: dict) -> dict:
         "rgb_color": attrs.get("rgb_color") if isinstance(attrs, dict) else None,
         "temperature": attrs.get("temperature") if isinstance(attrs, dict) else None,
         "hvac_mode": attrs.get("hvac_mode") if isinstance(attrs, dict) else None,
+        "fan_mode": attrs.get("fan_mode") if isinstance(attrs, dict) else None,
+        "preset_mode": attrs.get("preset_mode") if isinstance(attrs, dict) else None,
+        "swing_mode": attrs.get("swing_mode") if isinstance(attrs, dict) else None,
         "current_position": attrs.get("current_position")
         if isinstance(attrs, dict)
         else None,
@@ -396,6 +408,12 @@ def execute_action(
     elif action == "climate.set_fan_mode":
         data["fan_mode"] = str(payload.get("fan_mode") or "")
         service = "set_fan_mode"
+    elif action == "climate.set_preset_mode":
+        data["preset_mode"] = str(payload.get("preset_mode") or "")
+        service = "set_preset_mode"
+    elif action == "climate.set_swing_mode":
+        data["swing_mode"] = str(payload.get("swing_mode") or "")
+        service = "set_swing_mode"
     elif action == "cover.set_cover_position":
         data["position"] = int(payload.get("position") or 0)
         service = "set_cover_position"
