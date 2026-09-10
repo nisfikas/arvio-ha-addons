@@ -277,51 +277,130 @@ def entities() -> list:
     out = []
     for e in st:
         eid = str(e.get("entity_id", ""))
-        if eid.startswith(("light.", "switch.", "cover.", "climate.")):
-            out.append(
-                {
-                    "entity_id": eid,
-                    "state": e.get("state"),
-                    "name": (e.get("attributes") or {}).get(
-                        "friendly_name", eid
-                    ),
-                    "domain": eid.split(".", 1)[0],
-                }
-            )
-    return out[:80]
+        if not eid.startswith(("light.", "switch.", "cover.", "climate.")):
+            continue
+        attrs = e.get("attributes") or {}
+        if not isinstance(attrs, dict):
+            attrs = {}
+        color_modes = attrs.get("supported_color_modes") or []
+        if not isinstance(color_modes, list):
+            color_modes = []
+        domain = eid.split(".", 1)[0]
+        caps = {
+            "brightness": domain == "light"
+            and (
+                "brightness" in color_modes
+                or attrs.get("brightness") is not None
+                or attrs.get("brightness_pct") is not None
+            ),
+            "color": domain == "light"
+            and any(m in color_modes for m in ("rgb", "rgbw", "rgbww", "hs", "xy")),
+            "color_temp": domain == "light"
+            and (
+                "color_temp" in color_modes or attrs.get("color_temp") is not None
+            ),
+            "position": domain == "cover"
+            and attrs.get("current_position") is not None,
+            "temperature": domain == "climate",
+        }
+        item = {
+            "entity_id": eid,
+            "state": e.get("state"),
+            "name": attrs.get("friendly_name", eid),
+            "domain": domain,
+            "capabilities": caps,
+            "brightness": attrs.get("brightness"),
+            "brightness_pct": attrs.get("brightness_pct"),
+            "rgb_color": attrs.get("rgb_color"),
+            "color_temp": attrs.get("color_temp"),
+            "supported_color_modes": color_modes,
+            "current_temperature": attrs.get("current_temperature"),
+            "temperature": attrs.get("temperature"),
+            "target_temp_high": attrs.get("target_temp_high"),
+            "target_temp_low": attrs.get("target_temp_low"),
+            "hvac_mode": attrs.get("hvac_mode") or e.get("state"),
+            "hvac_modes": attrs.get("hvac_modes") or [],
+            "fan_mode": attrs.get("fan_mode"),
+            "fan_modes": attrs.get("fan_modes") or [],
+            "min_temp": attrs.get("min_temp"),
+            "max_temp": attrs.get("max_temp"),
+            "current_position": attrs.get("current_position"),
+            "unit_of_measurement": attrs.get("unit_of_measurement"),
+        }
+        out.append(item)
+    return out[:120]
 
 
-def call_service(domain: str, service: str, entity_id: str) -> dict:
+def call_service(domain: str, service: str, data: dict) -> dict:
     result = ha(
         f"/services/{domain}/{service}",
         method="POST",
-        body={"entity_id": entity_id},
+        body=data,
     )
     if result is None:
         raise RuntimeError(err or "HA service failed")
-    st = ha(f"/states/{entity_id}")
+    entity_id = str(data.get("entity_id") or "")
+    st = ha(f"/states/{entity_id}") if entity_id else None
     state = st.get("state") if isinstance(st, dict) else None
+    attrs = (st.get("attributes") if isinstance(st, dict) else None) or {}
     return {
         "ok": True,
         "entity_id": entity_id,
         "service": f"{domain}.{service}",
         "state": state,
+        "brightness": attrs.get("brightness") if isinstance(attrs, dict) else None,
+        "rgb_color": attrs.get("rgb_color") if isinstance(attrs, dict) else None,
+        "temperature": attrs.get("temperature") if isinstance(attrs, dict) else None,
+        "hvac_mode": attrs.get("hvac_mode") if isinstance(attrs, dict) else None,
+        "current_position": attrs.get("current_position")
+        if isinstance(attrs, dict)
+        else None,
     }
 
 
-def execute_action(action: str, entity_id: str) -> dict:
+def execute_action(
+    action: str, entity_id: str, payload: dict | None = None
+) -> dict:
     """action like light.turn_on — remote/relay command path."""
+    payload = payload if isinstance(payload, dict) else {}
     if action == "arvio.list_entities":
         return {"ok": True, "entities": entities()}
     if action in ("lock.unlock", "lock.open", "alarm.disarm", "door.open"):
-        # Lab: still allow but mark; production TTL enforced at relay
         pass
     if "." not in action:
         raise ValueError("action must be domain.service")
     domain, service = action.split(".", 1)
-    if not entity_id:
+    if not entity_id and action != "arvio.list_entities":
         raise ValueError("entity_id required")
-    return call_service(domain, service, entity_id)
+
+    data: dict = {"entity_id": entity_id}
+    if action == "light.turn_on":
+        if payload.get("brightness") is not None:
+            data["brightness"] = int(payload["brightness"])
+        if payload.get("brightness_pct") is not None:
+            data["brightness_pct"] = int(payload["brightness_pct"])
+        if payload.get("rgb_color") is not None:
+            data["rgb_color"] = payload["rgb_color"]
+        if payload.get("color_temp") is not None:
+            data["color_temp"] = int(payload["color_temp"])
+        if payload.get("hs_color") is not None:
+            data["hs_color"] = payload["hs_color"]
+    elif action == "climate.set_temperature":
+        if payload.get("temperature") is not None:
+            data["temperature"] = float(payload["temperature"])
+        if payload.get("hvac_mode") is not None:
+            data["hvac_mode"] = str(payload["hvac_mode"])
+    elif action == "climate.set_hvac_mode":
+        data["hvac_mode"] = str(payload.get("hvac_mode") or service)
+        service = "set_hvac_mode"
+    elif action == "climate.set_fan_mode":
+        data["fan_mode"] = str(payload.get("fan_mode") or "")
+        service = "set_fan_mode"
+    elif action == "cover.set_cover_position":
+        data["position"] = int(payload.get("position") or 0)
+        service = "set_cover_position"
+
+    return call_service(domain, service, data)
 
 
 def relay_http(method: str, path: str, body: dict | None = None, timeout: int = 25):
@@ -380,8 +459,9 @@ def relay_loop() -> None:
             cid = str(cmd.get("command_id") or "")
             action = str(cmd.get("action") or "")
             entity_id = str(cmd.get("entity_id") or "")
+            payload = cmd.get("payload") if isinstance(cmd.get("payload"), dict) else {}
             try:
-                out = execute_action(action, entity_id)
+                out = execute_action(action, entity_id, payload)
                 relay_http(
                     "POST",
                     "/v1/hub/results",
