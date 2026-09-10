@@ -1,5 +1,5 @@
 name: "Arvio Agent"
-version: "0.1.18"
+version: "0.1.19"
 slug: arvio_agent
 description: "Arvio hub agent — local UI, claim, outbound cloud enroll + remote relay."
 url: "https://github.com/nisfikas/arvio-ha-addons"

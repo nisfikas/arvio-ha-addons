@@ -26,7 +26,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = "lab-relay-token"
-AGENT_VERSION = "0.1.18"
+AGENT_VERSION = "0.1.19"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -300,6 +300,83 @@ def ha_ws_command(msg_type: str, extra: dict | None = None, timeout: float = 20.
             ws.close()
         except Exception:
             pass
+
+
+def zha_is_available() -> bool:
+    """True when a non-disabled ZHA config entry exists (documented Core API)."""
+    entries = ha("/config/config_entries/entry")
+    if isinstance(entries, list):
+        for e in entries:
+            if not isinstance(e, dict):
+                continue
+            if e.get("domain") != "zha":
+                continue
+            if e.get("disabled_by"):
+                continue
+            return True
+    # Fallback: any device with zha identifier (hub may have joined devices).
+    try:
+        result = ha_ws_command("config/device_registry/list")
+        devices = result if isinstance(result, list) else []
+        for d in devices:
+            if not isinstance(d, dict):
+                continue
+            for ident in d.get("identifiers") or []:
+                if isinstance(ident, (list, tuple)) and ident and str(ident[0]) == "zha":
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def pairing_status() -> dict:
+    """Installer pairing readiness — Zigbee/ZHA MVP."""
+    ents = entities()
+    try:
+        devs = list_devices().get("devices") or []
+    except Exception:
+        devs = []
+    zha = zha_is_available()
+    return {
+        "ok": True,
+        "zha_available": zha,
+        "radio": "zigbee" if zha else None,
+        "device_count": len(devs) if isinstance(devs, list) else 0,
+        "entity_count": len(ents) if isinstance(ents, list) else 0,
+        "agent_version": AGENT_VERSION,
+    }
+
+
+def zigbee_permit(payload: dict | None = None) -> dict:
+    """Open ZHA network via documented action zha.permit (HA Core)."""
+    payload = payload if isinstance(payload, dict) else {}
+    if not zha_is_available():
+        return {
+            "ok": False,
+            "error": "ZHA not configured — χρειάζεται Zigbee stick (π.χ. ZBT-2) και integration ZHA",
+            "zha_available": False,
+        }
+    duration = payload.get("duration")
+    try:
+        duration_i = int(duration) if duration is not None else 120
+    except (TypeError, ValueError):
+        duration_i = 120
+    duration_i = max(0, min(254, duration_i))
+    body: dict = {"duration": duration_i}
+    # Optional documented fields (install code / QR) — pass through when present.
+    for key in ("ieee", "source_ieee", "install_code", "qr_code"):
+        if payload.get(key):
+            body[key] = str(payload[key])
+    result = ha("/services/zha/permit", method="POST", body=body)
+    if result is None:
+        raise RuntimeError(err or "zha.permit failed")
+    return {
+        "ok": True,
+        "zha_available": True,
+        "duration": duration_i,
+        "opened_at": time.time(),
+        "service": "zha.permit",
+    }
 
 
 def list_devices() -> dict:
@@ -1035,6 +1112,10 @@ def execute_action(
         return list_blueprints()
     if action == "arvio.node_red_status":
         return node_red_status()
+    if action == "arvio.pairing_status":
+        return pairing_status()
+    if action == "arvio.zigbee_permit":
+        return zigbee_permit(payload)
     if action == "arvio.upsert_scenario":
         return upsert_scenario(payload)
     if action == "arvio.delete_scenario":
