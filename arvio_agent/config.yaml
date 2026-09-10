@@ -1,5 +1,5 @@
 name: "Arvio Agent"
-version: "0.1.14"
+version: "0.1.15"
 slug: arvio_agent
 description: "Arvio hub agent — local UI, claim, outbound cloud enroll + remote relay."
 url: "https://github.com/nisfikas/arvio-ha-addons"
@@ -12,7 +12,8 @@ startup: application
 boot: auto
 homeassistant_api: true
 hassio_api: true
-hassio_role: default
+# manager: Supervisor /backups for ARV-060 (default may be insufficient)
+hassio_role: manager
 host_network: false
 stage: experimental
 webui: "http://[HOST]:[PORT:8099]/"

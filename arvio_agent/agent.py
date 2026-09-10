@@ -26,6 +26,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = "lab-relay-token"
+AGENT_VERSION = "0.1.15"
 
 code = "000000"
 exp = 0.0
@@ -136,6 +137,97 @@ def ha(path: str, method: str = "GET", body: dict | None = None):
         ha_ok = False
         err = str(e)
         return None
+
+
+def supervisor(path: str, method: str = "GET", body: dict | None = None, timeout: int = 120):
+    """Home Assistant Supervisor API (not Core). Documented /backups endpoints."""
+    global TOKEN, err
+    if not TOKEN:
+        TOKEN = read_token()
+    if not TOKEN:
+        err = "missing SUPERVISOR_TOKEN"
+        return None
+    data = None if body is None else json.dumps(body).encode()
+    req = urllib.request.Request(
+        f"http://supervisor{path}",
+        data=data,
+        method=method,
+        headers={
+            "Authorization": f"Bearer {TOKEN}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read().decode()
+            return json.loads(raw) if raw else {}
+    except Exception as e:
+        err = f"supervisor:{e}"
+        return None
+
+
+def list_local_backups() -> list:
+    resp = supervisor("/backups", "GET", timeout=30)
+    if not isinstance(resp, dict):
+        return []
+    data = resp.get("data") if isinstance(resp.get("data"), dict) else resp
+    backups = data.get("backups") if isinstance(data, dict) else None
+    if not isinstance(backups, list):
+        return []
+    out = []
+    for b in backups:
+        if not isinstance(b, dict):
+            continue
+        out.append(
+            {
+                "slug": str(b.get("slug") or ""),
+                "name": str(b.get("name") or b.get("slug") or ""),
+                "date": str(b.get("date") or ""),
+                "size_bytes": b.get("size_bytes"),
+                "protected": bool(b.get("protected")),
+            }
+        )
+    return [b for b in out if b["slug"]]
+
+
+def create_full_backup(name: str | None = None) -> dict:
+    stamp = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime())
+    body = {
+        "name": name or f"Arvio {stamp}",
+        "compressed": True,
+        "background": True,
+    }
+    resp = supervisor("/backups/new/full", "POST", body, timeout=30)
+    if not isinstance(resp, dict):
+        raise RuntimeError(err or "backup create failed")
+    data = resp.get("data") if isinstance(resp.get("data"), dict) else resp
+    if not isinstance(data, dict):
+        raise RuntimeError("backup create: unexpected response")
+    if resp.get("result") == "error":
+        raise RuntimeError(str(data.get("message") or "backup create error"))
+    return {
+        "ok": True,
+        "slug": data.get("slug"),
+        "job_id": data.get("job_id"),
+        "name": body["name"],
+    }
+
+
+def backup_telemetry() -> dict:
+    backups = list_local_backups()
+    newest = None
+    for b in backups:
+        d = b.get("date") or ""
+        if not d:
+            continue
+        if newest is None or d > newest:
+            newest = d
+    return {
+        "backups": backups,
+        "backup_count": len(backups),
+        "last_backup_at": newest,
+        "agent_version": AGENT_VERSION,
+    }
 
 
 def rotate() -> None:
@@ -250,13 +342,26 @@ def enroll_remote() -> None:
                 "%Y-%m-%dT%H:%M:%SZ", time.gmtime(exp)
             ),
         }
+        payload.update(backup_telemetry())
+        # Accept target pin from cloud response for agent.update follow-up.
         req = urllib.request.Request(
             f"{CLOUD}/v1/hubs/{hub_id}/heartbeat",
             data=json.dumps(payload).encode(),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        urllib.request.urlopen(req, timeout=8).read()
+        with urllib.request.urlopen(req, timeout=12) as r:
+            raw = r.read().decode()
+            try:
+                hb = json.loads(raw) if raw else {}
+            except json.JSONDecodeError:
+                hb = {}
+            st = load_hub()
+            if hb.get("agent_target_version"):
+                st["agent_target_version"] = hb.get("agent_target_version")
+            if hb.get("update_channel"):
+                st["update_channel"] = hb.get("update_channel")
+            save_hub(st)
         if err.startswith("enroll:") or err.startswith("heartbeat:"):
             err = ""
     except Exception as e:
@@ -419,6 +524,32 @@ def execute_action(
     payload = payload if isinstance(payload, dict) else {}
     if action == "arvio.list_entities":
         return {"ok": True, "entities": entities()}
+    if action == "backup.create":
+        name = str(payload.get("name") or "") or None
+        out = create_full_backup(name)
+        # Refresh list after kickoff (job may still be running).
+        tel = backup_telemetry()
+        out.update({"backup_count": tel["backup_count"], "last_backup_at": tel["last_backup_at"]})
+        return out
+    if action == "agent.update":
+        # TODO confirm Supervisor store API for add-on upgrade without reinventing endpoints.
+        # For now record the desired pin locally and report it; installer rebuilds when ready.
+        target = str(payload.get("target_version") or payload.get("version") or "")
+        channel = str(payload.get("channel") or "")
+        st = load_hub()
+        if target:
+            st["agent_target_version"] = target
+        if channel:
+            st["update_channel"] = channel
+        save_hub(st)
+        return {
+            "ok": True,
+            "pinned": True,
+            "agent_version": AGENT_VERSION,
+            "agent_target_version": st.get("agent_target_version"),
+            "update_channel": st.get("update_channel"),
+            "note": "pin recorded; apply via Supervisor add-on update when confirmed",
+        }
     if action in ("lock.unlock", "lock.open", "alarm.disarm", "door.open"):
         pass
     if "." not in action:
@@ -811,6 +942,7 @@ class H(BaseHTTPRequestHandler):
                     "hub_id": hub_id,
                     "state": hub_state,
                     "mode": mode,
+                    "agent_version": AGENT_VERSION,
                     "relay_url": RELAY_URL or None,
                     "relay_ok": relay_ok,
                     "relay_error": relay_err,
