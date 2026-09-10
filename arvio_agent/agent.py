@@ -26,7 +26,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = "lab-relay-token"
-AGENT_VERSION = "0.1.17"
+AGENT_VERSION = "0.1.18"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -237,10 +237,190 @@ def list_scenarios() -> dict:
             "config": cfg if isinstance(cfg, dict) else None,
         }
         scenarios.append(item)
+    extras: dict = {}
+    try:
+        extras["devices"] = list_devices().get("devices") or []
+    except Exception as e:
+        extras["devices"] = []
+        extras["devices_error"] = str(e)
+    try:
+        extras["blueprints"] = list_blueprints().get("blueprints") or []
+    except Exception as e:
+        extras["blueprints"] = []
+        extras["blueprints_error"] = str(e)
+    try:
+        extras["node_red"] = node_red_status()
+    except Exception as e:
+        extras["node_red"] = {"ok": False, "installed": False, "error": str(e)}
     return {
         "ok": True,
         "scenarios": scenarios,
         "scenes": list_scene_entities(),
+        **extras,
+    }
+
+
+def ha_ws_command(msg_type: str, extra: dict | None = None, timeout: float = 20.0):
+    """Call a Home Assistant websocket command (blueprints / device registry)."""
+    try:
+        import websocket  # type: ignore
+    except ImportError as e:
+        raise RuntimeError("websocket-client not installed") from e
+    if not TOKEN:
+        raise RuntimeError("missing SUPERVISOR_TOKEN")
+    url = "ws://supervisor/core/websocket"
+    ws = websocket.create_connection(url, timeout=timeout)
+    try:
+        hello = json.loads(ws.recv())
+        if hello.get("type") != "auth_required":
+            raise RuntimeError(f"unexpected HA ws hello: {hello}")
+        ws.send(json.dumps({"type": "auth", "access_token": TOKEN}))
+        auth = json.loads(ws.recv())
+        if auth.get("type") != "auth_ok":
+            raise RuntimeError(f"HA ws auth failed: {auth}")
+        payload = {"id": 1, "type": msg_type}
+        if extra:
+            payload.update(extra)
+        ws.send(json.dumps(payload))
+        while True:
+            raw = ws.recv()
+            data = json.loads(raw)
+            if data.get("id") != 1:
+                continue
+            if data.get("type") == "result":
+                if not data.get("success"):
+                    err_obj = data.get("error") or {}
+                    raise RuntimeError(
+                        str(err_obj.get("message") or err_obj or "ws command failed")
+                    )
+                return data.get("result")
+            raise RuntimeError(f"unexpected HA ws response: {data}")
+    finally:
+        try:
+            ws.close()
+        except Exception:
+            pass
+
+
+def list_devices() -> dict:
+    """Device registry entries useful for device / Zigbee button triggers."""
+    result = ha_ws_command("config/device_registry/list")
+    devices = result if isinstance(result, list) else []
+    out = []
+    for d in devices:
+        if not isinstance(d, dict):
+            continue
+        identifiers = d.get("identifiers") or []
+        # Prefer Zigbee / MQTT remotes & buttons.
+        manufacturers = str(d.get("manufacturer") or "").lower()
+        model = str(d.get("model") or "").lower()
+        name = str(d.get("name_by_user") or d.get("name") or "")
+        entry = {
+            "device_id": str(d.get("id") or ""),
+            "name": name,
+            "manufacturer": d.get("manufacturer"),
+            "model": d.get("model"),
+            "area_id": d.get("area_id"),
+            "identifiers": identifiers,
+            "via_device_id": d.get("via_device_id"),
+        }
+        # Heuristic: mark likely buttons/remotes for Partner picker.
+        blob = f"{name} {manufacturers} {model}".lower()
+        entry["likely_button"] = any(
+            k in blob
+            for k in (
+                "button",
+                "remote",
+                "switch",
+                "dimmer",
+                "cube",
+                "aqara",
+                "ikea",
+                "tradfri",
+                "hue",
+            )
+        )
+        domains = set()
+        for ident in identifiers:
+            if isinstance(ident, (list, tuple)) and ident:
+                domains.add(str(ident[0]))
+        entry["integration_hints"] = sorted(domains)
+        if entry["device_id"]:
+            out.append(entry)
+    out.sort(key=lambda x: (not x.get("likely_button"), str(x.get("name") or "")))
+    return {"ok": True, "devices": out[:200]}
+
+
+def list_blueprints() -> dict:
+    """List automation blueprints via HA websocket."""
+    result = ha_ws_command("blueprint/list", {"domain": "automation"})
+    blueprints = []
+    if isinstance(result, dict):
+        for path, meta in result.items():
+            item = {"path": str(path)}
+            if isinstance(meta, dict):
+                md = meta.get("metadata") if isinstance(meta.get("metadata"), dict) else meta
+                if isinstance(md, dict):
+                    item["name"] = str(md.get("name") or path)
+                    item["description"] = str(md.get("description") or "")
+                    item["input"] = md.get("input") if isinstance(md.get("input"), dict) else {}
+                else:
+                    item["name"] = str(path)
+            else:
+                item["name"] = str(path)
+            blueprints.append(item)
+    elif isinstance(result, list):
+        for b in result:
+            if isinstance(b, dict):
+                blueprints.append(b)
+    return {"ok": True, "blueprints": blueprints}
+
+
+def node_red_status() -> dict:
+    """Detect Node-RED Supervisor add-on (not a Node-RED clone)."""
+    resp = supervisor("/addons", "GET", timeout=30)
+    addons = []
+    if isinstance(resp, dict):
+        data = resp.get("data") if isinstance(resp.get("data"), dict) else resp
+        raw = data.get("addons") if isinstance(data, dict) else None
+        if isinstance(raw, list):
+            addons = raw
+    match = None
+    for a in addons:
+        if not isinstance(a, dict):
+            continue
+        slug = str(a.get("slug") or "").lower()
+        name = str(a.get("name") or "").lower()
+        if "node-red" in slug or "nodered" in slug.replace("_", "") or "node-red" in name:
+            match = a
+            break
+    if not match:
+        return {
+            "ok": True,
+            "installed": False,
+            "running": False,
+            "slug": None,
+            "ingress_url": None,
+            "note": "Install Node-RED from Supervisor add-on store for advanced flows",
+        }
+    slug = str(match.get("slug") or "")
+    state = str(match.get("state") or "")
+    ingress = bool(match.get("ingress"))
+    # Ingress path is typically /api/hassio_ingress/<token> — Partner cannot open
+    # Supervisor UI remotely; return slug for installer guidance.
+    return {
+        "ok": True,
+        "installed": True,
+        "running": state == "started",
+        "slug": slug,
+        "name": match.get("name"),
+        "version": match.get("version"),
+        "ingress": ingress,
+        "ingress_url": None,
+        "note": (
+            "Node-RED is on this hub — open it from HA Supervisor → Node-RED. "
+            "Arvio scenarios stay as native HA automations."
+        ),
     }
 
 
@@ -696,7 +876,16 @@ def entities() -> list:
     out = []
     for e in st:
         eid = str(e.get("entity_id", ""))
-        if not eid.startswith(("light.", "switch.", "cover.", "climate.")):
+        if not eid.startswith(
+            (
+                "light.",
+                "switch.",
+                "cover.",
+                "climate.",
+                "lock.",
+                "alarm_control_panel.",
+            )
+        ):
             continue
         attrs = e.get("attributes") or {}
         if not isinstance(attrs, dict):
@@ -840,6 +1029,12 @@ def execute_action(
         return {"ok": True, "entities": entities()}
     if action == "arvio.list_scenarios":
         return list_scenarios()
+    if action == "arvio.list_devices":
+        return list_devices()
+    if action == "arvio.list_blueprints":
+        return list_blueprints()
+    if action == "arvio.node_red_status":
+        return node_red_status()
     if action == "arvio.upsert_scenario":
         return upsert_scenario(payload)
     if action == "arvio.delete_scenario":
