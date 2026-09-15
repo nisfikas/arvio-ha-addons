@@ -36,7 +36,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = "lab-relay-token"
-AGENT_VERSION = "0.1.21"
+AGENT_VERSION = "0.1.22"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -731,7 +731,7 @@ def upsert_scenario(payload: dict) -> dict:
 
 
 def delete_scenario(payload: dict, entity_id: str = "") -> dict:
-    sid = str(payload.get("id") or entity_id or "").strip()
+    sid = str(payload.get("id") or payload.get("scenario_id") or entity_id or "").strip()
     if not _is_arvio_scenario_id(sid):
         raise ValueError("scenario id must start with arvio_")
     ha_or_raise(
@@ -773,7 +773,7 @@ def _resolve_automation_entity(sid: str, entity_id: str = "") -> str:
 
 
 def set_scenario_enabled(payload: dict, entity_id: str = "") -> dict:
-    sid = str(payload.get("id") or "").strip()
+    sid = str(payload.get("id") or payload.get("scenario_id") or "").strip()
     eid = _resolve_automation_entity(sid, str(payload.get("entity_id") or entity_id or ""))
     enabled = bool(payload.get("enabled", True))
     service = "turn_on" if enabled else "turn_off"
@@ -784,7 +784,7 @@ def set_scenario_enabled(payload: dict, entity_id: str = "") -> dict:
 
 
 def trigger_scenario(payload: dict, entity_id: str = "") -> dict:
-    sid = str(payload.get("id") or "").strip()
+    sid = str(payload.get("id") or payload.get("scenario_id") or "").strip()
     eid = _resolve_automation_entity(sid, str(payload.get("entity_id") or entity_id or ""))
     out = call_service("automation", "trigger", {"entity_id": eid})
     out["id"] = sid
@@ -818,6 +818,19 @@ def supervisor(path: str, method: str = "GET", body: dict | None = None, timeout
         return None
 
 
+def _backup_size_bytes(b: dict):
+    """Supervisor reports `size` (MiB float) or `size_bytes`."""
+    raw = b.get("size_bytes")
+    if isinstance(raw, (int, float)) and raw >= 0:
+        return int(raw)
+    size = b.get("size")
+    if not isinstance(size, (int, float)) or size < 0:
+        return None
+    if size < 1_000_000:
+        return int(size * 1024 * 1024)
+    return int(size)
+
+
 def list_local_backups() -> list:
     resp = supervisor("/backups", "GET", timeout=30)
     if not isinstance(resp, dict):
@@ -835,7 +848,7 @@ def list_local_backups() -> list:
                 "slug": str(b.get("slug") or ""),
                 "name": str(b.get("name") or b.get("slug") or ""),
                 "date": str(b.get("date") or ""),
-                "size_bytes": b.get("size_bytes"),
+                "size_bytes": _backup_size_bytes(b),
                 "protected": bool(b.get("protected")),
             }
         )
@@ -1127,6 +1140,7 @@ def enroll_remote() -> None:
         return
     try:
         payload = {
+            "enroll_public_key": pk,
             "presence_code_hash": sha(code),
             "presence_expires_at": time.strftime(
                 "%Y-%m-%dT%H:%M:%SZ", time.gmtime(exp)
@@ -1688,6 +1702,8 @@ def execute_action(
         return media_browse(payload, entity_id)
     if action == "arvio.media_search":
         return media_search(payload, entity_id)
+    if action == "arvio.todo":
+        return todo_action(payload, entity_id)
     if action == "backup.create":
         name = str(payload.get("name") or "") or None
         out = create_full_backup(name)
@@ -1964,6 +1980,10 @@ MUSIC_ASSISTANT_ACTIONS = frozenset(
     {"music_assistant.play_media", "music_assistant.transfer_queue", "music_assistant.get_queue"}
 )
 MEDIA_AGENT_ACTIONS = frozenset({"arvio.media_art", "arvio.media_browse", "arvio.media_search"})
+# The shopping list is a read-and-write of the household's own words. It is deliberately NOT
+# part of MEDIA_ACTIONS: that set is what the unauthenticated LAN path (:8099) forwards, and
+# the list must not be readable or writable by anything on the network (audit 2026-09-10 #2).
+TODO_AGENT_ACTIONS = frozenset({"arvio.todo"})
 # Music is not dangerous: every media action is allowed on the relay AND the LAN path (§15.5).
 MEDIA_ACTIONS = MEDIA_PLAYER_ACTIONS | MUSIC_ASSISTANT_ACTIONS | MEDIA_AGENT_ACTIONS
 # The LAN path forwards only these payload keys, and only for MEDIA_ACTIONS
@@ -2049,6 +2069,7 @@ AGENT_SERVICE_ALLOWLIST = frozenset(
         "agent.update",
     }
     | MEDIA_ACTIONS
+    | TODO_AGENT_ACTIONS
 )
 
 # Mirrors HOME_DANGEROUS_ACTIONS / HOME_SECURITY_ACTIONS in home-model.ts.
@@ -2759,26 +2780,28 @@ def entity_model_from_state(
 
 def parse_show_in_home(description) -> bool:
     """Partner marks a scenario for the Home app in the automation description:
-    {"arvio": {"show_in_home": true}} (whole description or embedded object). Default false."""
-    if not isinstance(description, str) or "{" not in description:
+    {"arvio": {"show_in_home": true}} (whole description or embedded object).
+    Legacy Partner description without JSON still shows in Home."""
+    if not isinstance(description, str):
         return False
-    start, end = description.find("{"), description.rfind("}")
-    candidates = [description.strip()]
-    if 0 <= start < end:
-        candidates.append(description[start : end + 1])
-    for text in candidates:
-        try:
-            obj = json.loads(text)
-        except ValueError:
-            continue
-        if not isinstance(obj, dict):
-            continue
-        arv = obj.get("arvio")
-        if isinstance(arv, dict):
-            return bool(arv.get("show_in_home"))
-        if "show_in_home" in obj:
-            return bool(obj.get("show_in_home"))
-    return False
+    if "{" in description:
+        start, end = description.find("{"), description.rfind("}")
+        candidates = [description.strip()]
+        if 0 <= start < end:
+            candidates.append(description[start : end + 1])
+        for text in candidates:
+            try:
+                obj = json.loads(text)
+            except ValueError:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            arv = obj.get("arvio")
+            if isinstance(arv, dict) and "show_in_home" in arv:
+                return bool(arv.get("show_in_home"))
+            if "show_in_home" in obj:
+                return bool(obj.get("show_in_home"))
+    return description.startswith("Managed by Arvio Partner")
 
 
 def scenario_show_in_home(cfg: dict | None) -> bool:
@@ -3567,6 +3590,94 @@ def media_search(payload: dict, entity_id: str = "") -> dict:
         return {**base, "source": "music_assistant", "items": ma_search_items(response)}
     return {**base, "source": None, "items": [], "reason": "search_unavailable"}
 
+
+
+
+# ---------------------------------------------------------------------------
+# Λίστα για ψώνια — HA `todo` (documented services only)
+#
+# The items of a to-do list are NOT state attributes: `TodoListEntity.state` is the COUNT of
+# incomplete items and nothing else, so `/api/states/todo.x` can never show the list. The two
+# websocket commands the HA frontend uses (`todo/item/list`, `todo/item/subscribe`) are absent
+# from the documented websocket API, so Arvio does not use them — `todo.get_items` is a
+# documented service with a documented `return_response` envelope and it answers the same
+# question. The count still arrives free on the state stream, which is the doorbell: every add,
+# tick and removal moves it, so the tile needs no call at all and only opening the sheet talks
+# to the house.
+# ---------------------------------------------------------------------------
+
+TODO_OPS = ("list", "add", "tick")
+TODO_ITEM_MAX = 255
+TODO_MAX_ITEMS = 200
+
+
+def todo_items_from_response(response, entity_id: str, cap: int = TODO_MAX_ITEMS) -> list:
+    """`todo.get_items` response → items. Pure.
+
+    The envelope is keyed by entity_id even for a single entity (`helpers/service.py` returns
+    `{entity.entity_id: result}` on the single-entity fast path), so it is unwrapped one level.
+    Every value in an item is a string: `_api_items_factory` drops `None` fields and `str()`s
+    the rest, so nothing here may assume a type.
+    """
+    response = response if isinstance(response, dict) else {}
+    holder = response.get(entity_id)
+    if not isinstance(holder, dict):
+        # One entity was asked for, so a differently-keyed envelope still has exactly one value.
+        values = [v for v in response.values() if isinstance(v, dict) and "items" in v]
+        holder = values[0] if len(values) == 1 else {}
+    out: list = []
+    for it in holder.get("items") or []:
+        if not isinstance(it, dict):
+            continue
+        summary = str(it.get("summary") or "").strip()
+        if not summary:
+            continue
+        out.append(
+            {
+                "uid": str(it["uid"]) if it.get("uid") else None,
+                "summary": summary,
+                "status": str(it.get("status") or "needs_action"),
+            }
+        )
+        if len(out) >= cap:
+            break
+    return out
+
+
+def todo_action(payload: dict, entity_id: str = "") -> dict:
+    """arvio.todo {entity_id, op: list|add|tick, item?} → {ok, entity_id, items}.
+
+    `add` and `tick` return nothing of their own (both are `SupportsResponse.NONE`, so asking
+    them for a response is a 400 through either transport), so the write is made with the plain
+    call and the fresh list is read back with `todo.get_items` afterwards. Every op answers with
+    the list as it now stands, which is what the sheet renders — one round trip, never two.
+
+    `item` on `update_item` matches a uid OR the summary text (`_find_by_uid_or_summary`), so the
+    uid is sent when the sheet has one and the text is the fallback.
+    """
+    payload = payload if isinstance(payload, dict) else {}
+    eid = str(payload.get("entity_id") or entity_id or "")
+    if not eid.startswith("todo."):
+        raise ValueError("todo entity_id required")
+    op = str(payload.get("op") or "list")
+    if op not in TODO_OPS:
+        raise ValueError(f"unknown todo op: {op}")
+
+    if op in ("add", "tick"):
+        item = str(payload.get("item") or "").strip()
+        if not item:
+            raise ValueError("item required")
+        if len(item) > TODO_ITEM_MAX:
+            raise ValueError("item too long")
+        if op == "add":
+            ha_call_service("todo", "add_item", {"entity_id": eid, "item": item})
+        else:
+            ha_call_service("todo", "update_item", {"entity_id": eid, "item": item, "status": "completed"})
+
+    # `status` is deliberately explicit: services.yaml shows a `needs_action` default but the
+    # voluptuous schema has none, so omitting it returns completed items too.
+    _, response = ha_call_service_response("todo", "get_items", {"entity_id": eid, "status": ["needs_action"]})
+    return {"ok": True, "entity_id": eid, "items": todo_items_from_response(response, eid)}
 
 def media_position_only_change(old_state, new_state) -> bool:
     """True when a media_player state_changed differs only in playback position
