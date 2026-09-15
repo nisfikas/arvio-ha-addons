@@ -137,6 +137,15 @@ class TodoGates(unittest.TestCase):
         # MEDIA_ACTIONS is exactly the set the LAN path forwards; the list must not join it.
         self.assertNotIn("arvio.todo", agent.MEDIA_ACTIONS)
 
+    def test_a_todo_list_is_in_the_model(self):
+        from helpers import build, st
+
+        m = build(states=[st("todo.shopping_list", "3", friendly_name="Ψώνια")])
+        by_id = {e["entity_id"]: e for e in m["entities"]}
+        self.assertIn("todo.shopping_list", by_id)
+        self.assertEqual(by_id["todo.shopping_list"]["state"], "3")
+        self.assertEqual(by_id["todo.shopping_list"]["domain"], "todo")
+
 
 if __name__ == "__main__":
     unittest.main()

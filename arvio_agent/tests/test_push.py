@@ -358,6 +358,25 @@ class CloudHeartbeatTest(unittest.TestCase):
             agent.hub_id, agent.hub_state, agent.err = saved[0], saved[1], saved[2]
             agent.save_hub(saved[3])
 
+    def test_apply_heartbeat_reply_stores_relay_token(self):
+        saved = (agent.RELAY_TOKEN, agent.load_hub())
+        try:
+            agent.RELAY_TOKEN = "old-fleet"
+            agent.save_hub({"hub_id": "hub_tok"})
+            changed = agent.apply_heartbeat_reply(
+                {"relay_token": "per-hub-secret", "update_channel": "lab", "agent_target_version": "0.1.23"}
+            )
+            self.assertTrue(changed)
+            self.assertEqual(agent.RELAY_TOKEN, "per-hub-secret")
+            st = agent.load_hub()
+            self.assertEqual(st["relay_token"], "per-hub-secret")
+            self.assertEqual(st["update_channel"], "lab")
+            self.assertEqual(st["agent_target_version"], "0.1.23")
+            self.assertFalse(agent.apply_heartbeat_reply({"relay_token": "per-hub-secret"}))
+        finally:
+            agent.RELAY_TOKEN = saved[0]
+            agent.save_hub(saved[1])
+
 
 if __name__ == "__main__":
     unittest.main()

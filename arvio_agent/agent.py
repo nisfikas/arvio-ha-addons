@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import html as html_lib
 import io
 import json
 import os
@@ -35,8 +36,8 @@ CLOUD = "https://cloud.arvio.systems"
 SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
-RELAY_TOKEN = "lab-relay-token"
-AGENT_VERSION = "0.1.22"
+RELAY_TOKEN = ""
+AGENT_VERSION = "0.1.23"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -85,6 +86,11 @@ def opts() -> None:
             RELAY_URL = str(o.get("relay_url") or "").rstrip("/")
         if o.get("relay_token"):
             RELAY_TOKEN = str(o["relay_token"])
+    # A token the cloud minted (heartbeat) outranks the add-on option, so a
+    # per-hub secret sticks across restarts without rewriting options.json.
+    st = load_hub()
+    if st.get("relay_token"):
+        RELAY_TOKEN = str(st["relay_token"])
     mode = "embedded" if CLOUD in ("", "embedded", "local") else "remote"
     # Zero-config remote: if cloud is public and relay_url empty, use same origin.
     if mode == "remote" and not RELAY_URL:
@@ -1110,6 +1116,42 @@ def sync_hub_from_cloud(hub: dict) -> None:
     hub_id = st.get("hub_id") or hub_id
 
 
+def apply_heartbeat_reply(hb: dict) -> bool:
+    """Persist extras the cloud may send on heartbeat. True if the relay token changed.
+
+    A new per-hub token means the open WS was authenticated with the old one —
+    the caller should close it so `relay_loop` reconnects.
+    """
+    global RELAY_TOKEN
+    if not isinstance(hb, dict):
+        return False
+    st = load_hub()
+    token_changed = False
+    if hb.get("agent_target_version"):
+        st["agent_target_version"] = hb.get("agent_target_version")
+    if hb.get("update_channel"):
+        st["update_channel"] = hb.get("update_channel")
+    token = hb.get("relay_token")
+    if isinstance(token, str) and token and token != RELAY_TOKEN:
+        RELAY_TOKEN = token
+        st["relay_token"] = token
+        token_changed = True
+    save_hub(st)
+    return token_changed
+
+
+def close_relay_ws() -> None:
+    """Drop the current relay socket so the loop reconnects with the new token."""
+    with RELAY_WS_LOCK:
+        ws = RELAY_WS
+    if ws is None:
+        return
+    try:
+        ws.close()
+    except Exception:
+        pass
+
+
 def enroll_remote() -> None:
     global hub_id, err, hub_state
     st = load_hub()
@@ -1163,12 +1205,8 @@ def enroll_remote() -> None:
                 hb = json.loads(raw) if raw else {}
             except json.JSONDecodeError:
                 hb = {}
-            st = load_hub()
-            if hb.get("agent_target_version"):
-                st["agent_target_version"] = hb.get("agent_target_version")
-            if hb.get("update_channel"):
-                st["update_channel"] = hb.get("update_channel")
-            save_hub(st)
+            if apply_heartbeat_reply(hb):
+                close_relay_ws()
         if err.startswith("enroll:") or err.startswith("heartbeat:"):
             err = ""
     except Exception as e:
@@ -1914,6 +1952,7 @@ HOME_ENTITY_DOMAINS = (
     "sensor",
     "binary_sensor",
     "media_player",
+    "todo",
 )
 HOME_SENSOR_DEVICE_CLASSES = ("temperature", "humidity")
 # §15.2: media_player device_class speaker | tv | receiver | null (HA knows no other today).
@@ -2878,6 +2917,66 @@ def clamp_paging(offset, limit) -> tuple[int, int]:
     return off, lim
 
 
+WEATHER_FORECAST_MAX = 5
+
+
+def weather_block(states: list, forecasts_response=None) -> dict | None:
+    """Site-level weather (HANDOFF §4). Never an entity. None when HA has no `weather.*`.
+
+    Current temperature/humidity/condition come from the entity state. The daily
+    forecast is `weather.get_forecasts` (plural — the singular service is undeclared
+    and throws). Missing forecasts → `forecast: []`, never a leftover from last time.
+    """
+    states = states if isinstance(states, list) else []
+    picked = None
+    for st in states:
+        if not isinstance(st, dict):
+            continue
+        eid = str(st.get("entity_id") or "")
+        if not eid.startswith("weather."):
+            continue
+        if st.get("state") in ("unavailable", "unknown"):
+            if picked is None:
+                picked = st
+            continue
+        picked = st
+        break
+    if picked is None:
+        return None
+    eid = str(picked.get("entity_id"))
+    attrs = picked.get("attributes") if isinstance(picked.get("attributes"), dict) else {}
+    forecast: list = []
+    holder = None
+    if isinstance(forecasts_response, dict):
+        holder = forecasts_response.get(eid)
+        if not isinstance(holder, dict):
+            values = [v for v in forecasts_response.values() if isinstance(v, dict) and "forecast" in v]
+            holder = values[0] if len(values) == 1 else {}
+        rows = holder.get("forecast") if isinstance(holder, dict) else None
+        if isinstance(rows, list):
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                forecast.append(
+                    {
+                        "datetime": str(row["datetime"]) if row.get("datetime") else None,
+                        "condition": str(row["condition"]) if row.get("condition") else None,
+                        "temperature": _num(row.get("temperature")),
+                        "templow": _num(row.get("templow")),
+                        "precipitation": _num(row.get("precipitation")),
+                    }
+                )
+                if len(forecast) >= WEATHER_FORECAST_MAX:
+                    break
+    return {
+        "entity_id": eid,
+        "condition": str(picked.get("state") or "") or None,
+        "temperature": _num(attrs.get("temperature")),
+        "humidity": _num(attrs.get("humidity")),
+        "forecast": forecast,
+    }
+
+
 def build_hub_model(
     states: list,
     floors_raw,
@@ -2892,6 +2991,7 @@ def build_hub_model(
     offset=0,
     limit=MODEL_LIMIT_DEFAULT,
     ma_config_entry_id=None,
+    weather=None,
 ) -> dict:
     """HubModelPayload (home-model.ts) from raw HA data. Pure.
 
@@ -2933,6 +3033,7 @@ def build_hub_model(
         "ha_version": str(ha_version) if ha_version else None,
         "timezone": str(timezone_name) if timezone_name else None,
         "sun": sun,
+        "weather": weather if weather is not None else weather_block(states, None),
         "floors": floors,
         "areas": sorted(areas.values(), key=lambda a: a["name"]),
         "devices": sorted(devices.values(), key=lambda d: d["device_id"]),
@@ -3302,6 +3403,20 @@ def fetch_hub_model(payload: dict | None = None) -> dict:
         raise RuntimeError("HA registries unavailable")
     raw = snap.raw
     automations = fetch_arvio_automation_configs(states)
+    forecasts = None
+    weather_id = next(
+        (str(st.get("entity_id")) for st in states if isinstance(st, dict) and str(st.get("entity_id") or "").startswith("weather.")),
+        None,
+    )
+    if weather_id:
+        try:
+            _ctx, forecasts = ha_call_service_response(
+                "weather",
+                "get_forecasts",
+                {"entity_id": weather_id, "type": "daily"},
+            )
+        except Exception:
+            forecasts = None
     return build_hub_model(
         states,
         raw.get("floors"),
@@ -3315,6 +3430,7 @@ def fetch_hub_model(payload: dict | None = None) -> dict:
         offset=payload.get("offset"),
         limit=payload.get("limit"),
         ma_config_entry_id=music_assistant_entry_id(),
+        weather=weather_block(states, forecasts),
     )
 
 
@@ -4261,9 +4377,8 @@ class H(BaseHTTPRequestHandler):
 
     Same-origin only: no CORS grants, so a page on another origin cannot drive the hub
     through the browser. The served ui/home/remote/partner pages fetch relative paths.
-    Commands go through the LAN allowlist (LAN_ALLOWED_ACTIONS). The presence-code /
-    claim endpoints keep their current shape here — tracked separately as
-    «LAN hardening: HA ingress».
+    Commands go through the LAN allowlist (LAN_ALLOWED_ACTIONS). Claim / presence /
+    redeem proxies answer 403; the Partner talks to the cloud with a session.
     """
 
     def _j(self, status: int, body: dict) -> None:
@@ -4287,6 +4402,21 @@ class H(BaseHTTPRequestHandler):
         data = path.read_bytes()
         self.send_response(200)
         self.send_header("Content-Type", ctype)
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _ui(self) -> None:
+        """Hub home page: presence code is painted into the HTML, never returned as JSON."""
+        path = APP / "ui.html"
+        if not path.exists():
+            self.send_error(404)
+            return
+        html = path.read_text(encoding="utf-8")
+        html = html.replace('id="code">------', f'id="code">{html_lib.escape(code)}', 1)
+        data = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
 
@@ -4329,7 +4459,6 @@ class H(BaseHTTPRequestHandler):
                 200,
                 {
                     "hub_id": hub_id,
-                    "presence_code": code,
                     "ha_ok": ha_ok,
                     "mode": mode,
                     "state": hub_state,
@@ -4379,7 +4508,7 @@ class H(BaseHTTPRequestHandler):
                     },
                 )
         if path == "/":
-            return self._file("ui.html", "text/html; charset=utf-8")
+            return self._ui()
         self._j(404, {"error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802
@@ -4446,73 +4575,21 @@ class H(BaseHTTPRequestHandler):
                         raise ValueError(f"Forbidden: {msg}")
                     raise ValueError(msg)
                 return self._j(200, {"via": "local-agent", **ack})
-            # POST /v1/hubs/{id}/claims
+            # POST /v1/hubs/{id}/claims — LAN no longer proxies claim/presence/redeem
+            # (audit C2). Partner talks to the cloud with a session.
             if (
                 len(parts) == 4
                 and parts[0] == "v1"
                 and parts[1] == "hubs"
                 and parts[3] == "claims"
-            ):
-                if mode == "remote":
-                    out = cloud_json("POST", f"/v1/hubs/{parts[2]}/claims", {})
-                    sync_hub_from_cloud({"state": "assigned"})
-                    return self._j(200, out)
-                return self._j(200, issue_claim(parts[2]))
-
-            # POST /v1/claims/{id}/presence
-            if (
+            ) or (
                 len(parts) == 4
                 and parts[0] == "v1"
                 and parts[1] == "claims"
-                and parts[3] == "presence"
+                and parts[3] in ("presence", "redeem")
             ):
-                body = self._read_json()
-                if mode == "remote":
-                    out = cloud_json(
-                        "POST",
-                        f"/v1/claims/{parts[2]}/presence",
-                        {"code": str(body.get("code") or "")},
-                    )
-                    return self._j(200, out)
-                return self._j(
-                    200, confirm_presence(parts[2], str(body.get("code") or ""))
-                )
-
-            # POST /v1/claims/{id}/redeem
-            if (
-                len(parts) == 4
-                and parts[0] == "v1"
-                and parts[1] == "claims"
-                and parts[3] == "redeem"
-            ):
-                body = self._read_json()
-                if mode == "remote":
-                    payload = {
-                        "token": str(body.get("token") or ""),
-                        "site_id": str(body.get("site_id") or ""),
-                        "user_id": str(body.get("user_id") or "tech_lab"),
-                        "org_id": str(body.get("org_id") or ""),
-                        "org_type": str(body.get("org_type") or "partner"),
-                    }
-                    hub = cloud_json(
-                        "POST", f"/v1/claims/{parts[2]}/redeem", payload
-                    )
-                    sync_hub_from_cloud(hub)
-                    return self._j(200, hub)
-                actor = {
-                    "user_id": str(body.get("user_id") or "tech_lab"),
-                    "org_id": str(body.get("org_id") or ""),
-                    "org_type": str(body.get("org_type") or "partner"),
-                }
-                return self._j(
-                    200,
-                    redeem_claim(
-                        parts[2],
-                        str(body.get("token") or ""),
-                        str(body.get("site_id") or ""),
-                        actor,
-                    ),
-                )
+                self._read_json()
+                return self._j(403, {"error": "lan_forbidden", "error_code": "lan_forbidden"})
 
             self._j(404, {"error": "not found"})
         except Exception as e:

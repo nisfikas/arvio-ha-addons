@@ -12,6 +12,7 @@ from helpers import (
     agent,
     build,
     display_to_list,
+    st,
 )
 
 
@@ -256,6 +257,42 @@ class RegistryFingerprintTest(unittest.TestCase):
             self.assertTrue(agent.refresh_registry_cache("area_registry_updated", force_bump=True))
             pushed.assert_called_once_with(7)
         self.assertEqual(agent.get_snapshot_version(), 7)
+
+
+class WeatherBlockTest(unittest.TestCase):
+    def test_no_weather_entity_is_none(self):
+        m = build()
+        self.assertIsNone(m["weather"])
+        self.assertNotIn("weather.home", by_id(m))
+
+    def test_forecasts_plural_envelope(self):
+        states = STATES + [
+            st("weather.home", "sunny", temperature=22.5, humidity=48),
+        ]
+        forecasts = {
+            "weather.home": {
+                "forecast": [
+                    {"datetime": "2026-09-16T00:00:00+00:00", "condition": "sunny", "temperature": 28, "templow": 18, "precipitation": 0},
+                    {"datetime": "2026-09-17T00:00:00+00:00", "condition": "rainy", "temperature": 21, "templow": 14},
+                ]
+            }
+        }
+        w = agent.weather_block(states, forecasts)
+        self.assertEqual(w["entity_id"], "weather.home")
+        self.assertEqual(w["condition"], "sunny")
+        self.assertEqual(w["temperature"], 22.5)
+        self.assertEqual(w["humidity"], 48)
+        self.assertEqual(len(w["forecast"]), 2)
+        self.assertEqual(w["forecast"][0]["templow"], 18)
+        m = build(states=states, weather=w)
+        self.assertEqual(m["weather"]["entity_id"], "weather.home")
+        self.assertNotIn("weather.home", by_id(m))
+
+    def test_missing_forecasts_are_empty_not_stale(self):
+        states = STATES + [st("weather.home", "cloudy", temperature=19)]
+        w = agent.weather_block(states, None)
+        self.assertEqual(w["forecast"], [])
+        self.assertEqual(w["temperature"], 19)
 
 
 class VersionHelpersTest(unittest.TestCase):

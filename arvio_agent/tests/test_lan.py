@@ -135,9 +135,35 @@ class LanPathTest(unittest.TestCase):
         agent.save_hub({"hub_id": "hub_lan", "snapshot_version": 7})
         with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/health", timeout=5) as r:
             body = json.loads(r.read().decode())
-        self.assertEqual(body["agent_version"], "0.1.22")
+        self.assertEqual(body["agent_version"], "0.1.23")
         self.assertIn("ma_available", body)
         self.assertEqual(body["snapshot_version"], 7)
+
+    def test_status_omits_presence_code(self):
+        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/api/status", timeout=5) as r:
+            body = json.loads(r.read().decode())
+        self.assertNotIn("presence_code", body)
+        self.assertIn("hub_id", body)
+
+    def test_claim_proxies_are_forbidden(self):
+        for path in (
+            "/v1/hubs/hub_lan/claims",
+            "/v1/claims/claim_x/presence",
+            "/v1/claims/claim_x/redeem",
+        ):
+            status, _headers, raw = self.request("POST", path, {"code": "123456", "token": "t", "site_id": "s"})
+            self.assertEqual(status, 403, path)
+            body = json.loads(raw.decode())
+            self.assertEqual(body.get("error_code") or body.get("error"), "lan_forbidden")
+
+    def test_ui_paints_presence_code(self):
+        agent.code = "405421"
+        with mock.patch.object(agent, "APP", __import__("pathlib").Path(__file__).resolve().parents[1]):
+            status, _headers, raw = self.request("GET", "/")
+        self.assertEqual(status, 200)
+        html = raw.decode()
+        self.assertIn(">405421<", html)
+        self.assertNotIn("presence_code", html)
 
 
 if __name__ == "__main__":

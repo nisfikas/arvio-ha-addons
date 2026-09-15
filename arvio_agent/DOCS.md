@@ -75,6 +75,7 @@ Firewall: επίτρεψε θύρα **8787/tcp**.
 | `snapshot_version` | μονότονος μετρητής στο `/data/hub.json`· ανεβαίνει σε **κάθε** registry event του HA (§5.5) και όταν αλλάξει το fingerprint των registries σε ανάγνωση |
 | `ha_version`, `timezone` | `GET /api/config` (`version`, `time_zone`) |
 | `sun` | `sun.sun` attributes `next_rising` / `next_setting` |
+| `weather` | `weather.*` state (current) + documented `weather.get_forecasts` (`type: daily`). **Not** an entity. `null` when HA has no weather entity (often `met` without a home location). |
 
 Οι κλήσεις `config/*_registry/list*` είναι εσωτερικές του HA frontend αλλά σταθερές (σημειωμένες `# TODO confirm` στον κώδικα).
 
