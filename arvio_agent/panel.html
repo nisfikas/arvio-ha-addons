@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="el">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#050505" />
+    <title>Arvio</title>
+    <style>
+      :root {
+        --ink: #f2f2f2;
+        --muted: #868686;
+        --bg: #050505;
+        --tile: #121212;
+        --line: #f2f2f214;
+        --on: #f6e2c0;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); }
+      body {
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        overflow: hidden;
+      }
+      #gate, #board { position: absolute; inset: 0; }
+      #gate {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 1rem;
+        padding: 1.5rem;
+        text-align: center;
+      }
+      #gate.hidden, #board.hidden { display: none; }
+      h1 { margin: 0; font-size: 1.4rem; font-weight: 600; letter-spacing: -0.03em; }
+      p { margin: 0; color: var(--muted); }
+      input {
+        width: 12rem;
+        font: inherit;
+        font-size: 1.6rem;
+        letter-spacing: 0.4em;
+        text-align: center;
+        padding: 0.7rem;
+        border: 1px solid var(--line);
+        background: var(--tile);
+        color: var(--ink);
+      }
+      button {
+        font: inherit;
+        color: inherit;
+        background: var(--tile);
+        border: 1px solid var(--line);
+        min-height: 3.5rem;
+        padding: 0 1.2rem;
+        cursor: pointer;
+      }
+      button:disabled { opacity: 0.4; }
+      .err { color: #e55551; min-height: 1.2em; }
+      .pages {
+        display: flex;
+        height: 100%;
+        overflow-x: auto;
+        scroll-snap-type: x mandatory;
+        scrollbar-width: none;
+      }
+      .pages::-webkit-scrollbar { display: none; }
+      .page {
+        flex: 0 0 100%;
+        scroll-snap-align: start;
+        display: grid;
+        gap: 12px;
+        padding: 16px;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        align-content: start;
+      }
+      html[data-orientation="landscape"] .page { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .tile {
+        min-height: 5.5rem;
+        padding: 0.85rem 0.9rem;
+        background: var(--tile);
+        border: 1px solid var(--line);
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        text-align: left;
+      }
+      .tile.wide { grid-column: 1 / -1; }
+      .tile.on { color: var(--on); }
+      .kind { font-size: 0.62rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+      .name { font-size: 1.05rem; }
+      .state { font-size: 0.85rem; color: var(--muted); }
+    </style>
+  </head>
+  <body>
+    <section id="gate">
+      <h1>Arvio</h1>
+      <p>Κωδικός 6 ψηφίων από τον Partner</p>
+      <input id="code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" />
+      <button type="button" id="pair">Σύνδεση</button>
+      <p class="err" id="gate-err"></p>
+    </section>
+    <main id="board" class="hidden">
+      <div class="pages" id="pages"></div>
+    </main>
+    <script>
+      const KEY = "arvio.panel.screen_id";
+      const gate = document.getElementById("gate");
+      const board = document.getElementById("board");
+      const pagesEl = document.getElementById("pages");
+      const gateErr = document.getElementById("gate-err");
+      let hubId = null;
+      let snap = { screens: [], entities: [], areas: [], weather: null };
+      let screen = null;
+      let pageIx = 0;
+
+      function byId(id) {
+        return snap.entities.find((e) => e.entity_id === id) || null;
+      }
+      function areaName(id) {
+        const a = snap.areas.find((x) => x.area_id === id);
+        return a ? a.name : id;
+      }
+      function lightsIn(areaId) {
+        return snap.entities.filter((e) => e.domain === "light" && (!areaId || e.area_id === areaId));
+      }
+      function tileLabel(t) {
+        if (t.kind === "room") return areaName(t.ref);
+        if (t.kind === "entity" || t.kind === "scene") {
+          const e = byId(t.ref);
+          return e ? e.name : t.ref;
+        }
+        if (t.kind === "allOff") return "Σβήσε όλα";
+        if (t.kind === "security") return "Ασφάλεια";
+        if (t.kind === "clock") return clockText();
+        if (t.kind === "weather") {
+          const w = snap.weather;
+          if (!w) return "Καιρός";
+          const u = w.unit === "°F" || w.unit === "F" ? "°F" : "°";
+          return w.temperature != null ? w.temperature + u : "Καιρός";
+        }
+        return t.kind;
+      }
+      function clockText() {
+        const d = new Date();
+        return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+      }
+      function tileState(t) {
+        if (t.kind === "entity") {
+          const e = byId(t.ref);
+          return e ? e.state : "";
+        }
+        if (t.kind === "room") {
+          const on = lightsIn(t.ref).filter((e) => e.state === "on").length;
+          return on ? on + " αναμμένα" : "σβηστά";
+        }
+        return "";
+      }
+      function tileOn(t) {
+        if (t.kind === "entity") {
+          const e = byId(t.ref);
+          return e && (e.state === "on" || e.state === "open" || e.state === "playing");
+        }
+        if (t.kind === "room") return lightsIn(t.ref).some((e) => e.state === "on");
+        return false;
+      }
+
+      async function cmd(action, entityId, payload) {
+        if (!hubId) return;
+        const body = { action, entity_id: entityId || "" };
+        if (payload) body.payload = payload;
+        await fetch("/v1/hubs/" + encodeURIComponent(hubId) + "/commands", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      }
+      async function tap(t) {
+        if (t.kind === "entity" && t.ref) {
+          const e = byId(t.ref) || { entity_id: t.ref, domain: t.ref.split(".")[0], state: "off" };
+          if (e.domain === "light" || e.domain === "switch") {
+            await cmd(e.state === "on" ? e.domain + ".turn_off" : e.domain + ".turn_on", e.entity_id);
+          } else if (e.domain === "cover") {
+            await cmd(e.state === "open" || e.state === "opening" ? "cover.close_cover" : "cover.open_cover", e.entity_id);
+          } else if (e.domain === "climate") {
+            await cmd(e.state === "off" ? "climate.turn_on" : "climate.turn_off", e.entity_id);
+          } else if (e.domain === "media_player") {
+            await cmd(e.state === "playing" ? "media_player.media_pause" : "media_player.media_play", e.entity_id);
+          }
+        } else if (t.kind === "room") {
+          const lights = lightsIn(t.ref);
+          const anyOn = lights.some((e) => e.state === "on");
+          for (const e of lights) await cmd(anyOn ? "light.turn_off" : "light.turn_on", e.entity_id);
+        } else if (t.kind === "allOff") {
+          const lights = lightsIn(t.ref);
+          for (const e of lights) await cmd("light.turn_off", e.entity_id);
+        } else if (t.kind === "scene" && t.ref) {
+          if (t.ref.startsWith("scene.")) await cmd("scene.turn_on", t.ref);
+          else if (t.ref.startsWith("script.arvio_")) await cmd("script.turn_on", t.ref);
+          else if (t.ref.startsWith("scenario:")) {
+            await cmd("arvio.trigger_scenario", "", { scenario_id: t.ref.slice("scenario:".length) });
+          }
+        }
+        await load(false);
+      }
+
+      function render() {
+        if (!screen) return;
+        document.documentElement.dataset.orientation = screen.orientation || "square";
+        pagesEl.innerHTML = "";
+        for (const page of screen.pages || []) {
+          const el = document.createElement("section");
+          el.className = "page";
+          for (const t of page.tiles || []) {
+            const b = document.createElement("button");
+            b.type = "button";
+            b.className = "tile" + (t.span === 2 ? " wide" : "") + (tileOn(t) ? " on" : "");
+            b.innerHTML =
+              '<span class="kind">' +
+              t.kind +
+              '</span><span class="name">' +
+              tileLabel(t) +
+              '</span><span class="state">' +
+              tileState(t) +
+              "</span>";
+            b.addEventListener("click", () => tap(t));
+            el.appendChild(b);
+          }
+          pagesEl.appendChild(el);
+        }
+        const kids = pagesEl.children;
+        if (kids[pageIx]) kids[pageIx].scrollIntoView({ inline: "start", block: "nearest" });
+      }
+
+      async function load(keepPage) {
+        const r = await fetch("/api/screens");
+        snap = await r.json();
+        hubId = snap.hub_id || hubId;
+        const sid = localStorage.getItem(KEY);
+        screen = (snap.screens || []).find((s) => s.screen_id === sid) || null;
+        if (!screen) {
+          localStorage.removeItem(KEY);
+          gate.classList.remove("hidden");
+          board.classList.add("hidden");
+          return;
+        }
+        if (!keepPage) pageIx = 0;
+        gate.classList.add("hidden");
+        board.classList.remove("hidden");
+        render();
+      }
+
+      async function pair() {
+        gateErr.textContent = "";
+        const code = document.getElementById("code").value.replace(/\D/g, "");
+        if (code.length !== 6) {
+          gateErr.textContent = "Έξι ψηφία.";
+          return;
+        }
+        const r = await fetch("/api/screens/pair", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code }),
+        });
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok || !body.screen_id) {
+          gateErr.textContent = "Λάθος ή ληγμένος κωδικός.";
+          return;
+        }
+        localStorage.setItem(KEY, body.screen_id);
+        await load(false);
+      }
+
+      document.getElementById("pair").addEventListener("click", pair);
+      document.getElementById("code").addEventListener("keydown", (e) => {
+        if (e.key === "Enter") pair();
+      });
+      pagesEl.addEventListener("scroll", () => {
+        const w = pagesEl.clientWidth || 1;
+        pageIx = Math.round(pagesEl.scrollLeft / w);
+      });
+
+      (async () => {
+        try {
+          const h = await fetch("/health").then((r) => r.json());
+          hubId = h.hub_id;
+        } catch (e) {}
+        if (localStorage.getItem(KEY)) await load(true);
+        setInterval(() => {
+          if (screen) load(true).catch(() => {});
+        }, 4000);
+      })();
+    </script>
+  </body>
+</html>

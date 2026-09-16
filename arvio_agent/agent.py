@@ -9,6 +9,7 @@ import io
 import json
 import os
 import random
+import re
 import secrets
 import threading
 import time
@@ -19,7 +20,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import MappingProxyType
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 # ARVIO_DATA_DIR lets the unit tests (and lab runs outside the add-on) use a
 # scratch directory instead of the Supervisor-mounted /data.
@@ -30,6 +31,7 @@ except OSError:
     pass
 STATE = DATA / "hub.json"
 LAB = DATA / "lab_store.json"
+SCREENS = DATA / "screens.json"
 APP = Path("/app")
 
 CLOUD = "https://cloud.arvio.systems"
@@ -37,7 +39,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.23"
+AGENT_VERSION = "0.1.24"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -124,6 +126,244 @@ def save_lab(s: dict) -> None:
 
 def sha(s: str) -> str:
     return hashlib.sha256(s.encode()).hexdigest()
+
+
+SCREEN_TILE_KINDS = frozenset(
+    {"room", "entity", "scene", "allOff", "security", "clock", "weather"}
+)
+SCREEN_SECURITY_DOMAINS = frozenset({"lock", "alarm_control_panel"})
+SCREEN_ORIENTATIONS = frozenset({"landscape", "portrait", "square"})
+
+
+def hash_screen_pairing(code: str, site_id: str, screen_id: str) -> str:
+    return hashlib.sha256(
+        f"arvio.screen.pair|{site_id}|{screen_id}|{code}".encode("utf-8")
+    ).hexdigest()
+
+
+def load_screens() -> dict:
+    try:
+        raw = json.loads(SCREENS.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"screens": {}}
+    screens = raw.get("screens") if isinstance(raw, dict) else None
+    if isinstance(screens, list):
+        screens = {
+            str(s["screen_id"]): s
+            for s in screens
+            if isinstance(s, dict) and s.get("screen_id")
+        }
+    if not isinstance(screens, dict):
+        screens = {}
+    return {"screens": screens}
+
+
+def save_screens(doc: dict) -> None:
+    payload = {"screens": doc.get("screens") if isinstance(doc, dict) else {}}
+    tmp = SCREENS.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(SCREENS)
+
+
+def public_screen(row: dict) -> dict:
+    return {
+        "screen_id": row.get("screen_id"),
+        "site_id": row.get("site_id"),
+        "hub_id": row.get("hub_id"),
+        "name": row.get("name"),
+        "hardware": row.get("hardware"),
+        "orientation": row.get("orientation"),
+        "pages": row.get("pages") or [],
+        "rights": "member",
+        "last_seen_at": row.get("last_seen_at"),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+def _parse_screen_pages(raw) -> list:
+    if not isinstance(raw, list) or not raw or len(raw) > 12:
+        raise ValueError("invalid_pages")
+    pages = []
+    for page in raw:
+        if not isinstance(page, dict):
+            raise ValueError("invalid_page")
+        pid = str(page.get("id") or "")
+        tiles_in = page.get("tiles")
+        if not isinstance(tiles_in, list) or len(tiles_in) > 24:
+            raise ValueError("invalid_page_tiles")
+        tiles = []
+        for t in tiles_in:
+            if not isinstance(t, dict):
+                raise ValueError("invalid_tile")
+            kind = str(t.get("kind") or "")
+            if kind not in SCREEN_TILE_KINDS:
+                raise ValueError("invalid_tile_kind")
+            span = t.get("span")
+            tile: dict = {"kind": kind}
+            if span == 2:
+                tile["span"] = 2
+            ref = t.get("ref")
+            if kind in ("clock", "weather", "security") and ref:
+                raise ValueError("invalid_tile_ref")
+            if kind in ("room", "entity", "scene"):
+                if not isinstance(ref, str) or not ref:
+                    raise ValueError("invalid_tile_ref")
+                tile["ref"] = ref
+            if kind == "entity" and isinstance(ref, str) and ref.split(".", 1)[0] in SCREEN_SECURITY_DOMAINS:
+                raise ValueError("tile_security_forbidden")
+            if kind == "allOff" and isinstance(ref, str) and ref:
+                tile["ref"] = ref
+            tiles.append(tile)
+        pages.append({"id": pid, "tiles": tiles})
+    return pages
+
+
+def put_wall_screen(payload: dict | None, entity_id: str = "") -> dict:
+    payload = payload if isinstance(payload, dict) else {}
+    screen_id = str(payload.get("screen_id") or entity_id or "").strip()
+    if not screen_id or len(screen_id) > 40:
+        raise ValueError("invalid_screen")
+    name = str(payload.get("name") or "").strip()
+    if not name or len(name) > 40:
+        raise ValueError("invalid_name")
+    hardware = str(payload.get("hardware") or "generic_square").strip()
+    if not hardware or len(hardware) > 40 or re.search(r"[\x00-\x1f]", hardware):
+        raise ValueError("invalid_hardware")
+    orientation = str(payload.get("orientation") or "square")
+    if orientation not in SCREEN_ORIENTATIONS:
+        raise ValueError("invalid_orientation")
+    pages = _parse_screen_pages(payload.get("pages"))
+    doc = load_screens()
+    prev = doc["screens"].get(screen_id) if isinstance(doc["screens"].get(screen_id), dict) else {}
+    row = {
+        "screen_id": screen_id,
+        "site_id": str(payload.get("site_id") or prev.get("site_id") or ""),
+        "hub_id": str(payload.get("hub_id") or hub_id or ""),
+        "name": name,
+        "hardware": hardware,
+        "orientation": orientation,
+        "pages": pages,
+        "rights": "member",
+        "pairing_code_hash": str(payload.get("pairing_code_hash") or prev.get("pairing_code_hash") or ""),
+        "pairing_expires_at": payload.get("pairing_expires_at") or prev.get("pairing_expires_at"),
+        "pairing_used_at": payload.get("pairing_used_at") if "pairing_used_at" in payload else prev.get("pairing_used_at"),
+        "last_seen_at": prev.get("last_seen_at"),
+        "updated_at": str(payload.get("updated_at") or now_iso()),
+    }
+    doc["screens"][screen_id] = row
+    save_screens(doc)
+    return {"ok": True, "screen_id": screen_id, "screen": public_screen(row)}
+
+
+def delete_wall_screen(payload: dict | None, entity_id: str = "") -> dict:
+    payload = payload if isinstance(payload, dict) else {}
+    screen_id = str(payload.get("screen_id") or entity_id or "").strip()
+    if not screen_id:
+        raise ValueError("invalid_screen")
+    doc = load_screens()
+    doc["screens"].pop(screen_id, None)
+    save_screens(doc)
+    return {"ok": True, "screen_id": screen_id}
+
+
+def list_wall_screens() -> dict:
+    doc = load_screens()
+    screens = [public_screen(r) for r in doc["screens"].values() if isinstance(r, dict)]
+    return {"ok": True, "screens": screens}
+
+
+def pair_wall_screen(code: str) -> dict:
+    code = str(code or "").strip()
+    if not re.fullmatch(r"\d{6}", code):
+        raise ValueError("invalid_code")
+    doc = load_screens()
+    now = time.time()
+    for row in doc["screens"].values():
+        if not isinstance(row, dict):
+            continue
+        if row.get("pairing_used_at"):
+            continue
+        exp = parse_iso_ts(row.get("pairing_expires_at"))
+        if exp is not None and now > exp:
+            continue
+        site_id = str(row.get("site_id") or "")
+        screen_id = str(row.get("screen_id") or "")
+        expected = str(row.get("pairing_code_hash") or "")
+        if expected and hash_screen_pairing(code, site_id, screen_id) == expected:
+            row["pairing_used_at"] = now_iso()
+            row["last_seen_at"] = now_iso()
+            save_screens(doc)
+            return {"ok": True, "screen_id": screen_id, "screen": public_screen(row)}
+    raise ValueError("pairing_mismatch")
+
+
+def touch_screen_seen(screen_id: str) -> None:
+    doc = load_screens()
+    row = doc["screens"].get(screen_id)
+    if not isinstance(row, dict):
+        return
+    row["last_seen_at"] = now_iso()
+    save_screens(doc)
+
+
+def panel_snapshot(screen_id: str | None = None) -> dict:
+    if screen_id:
+        touch_screen_seen(screen_id)
+    listed = list_wall_screens()
+    entities_out = []
+    areas_out = []
+    weather = None
+    try:
+        snap = registries_for_commands()
+        entity_regs = snap.get("entity_regs") or {}
+        devices = snap.get("devices") or {}
+        areas = snap.get("areas") or {}
+        areas_out = [
+            {"area_id": a.get("area_id"), "name": a.get("name")}
+            for a in areas.values()
+            if isinstance(a, dict) and a.get("area_id")
+        ]
+        for e in entities():
+            eid = str(e.get("entity_id") or "")
+            if not eid:
+                continue
+            domain = str(e.get("domain") or eid.split(".", 1)[0])
+            if domain in SCREEN_SECURITY_DOMAINS:
+                continue
+            entities_out.append(
+                {
+                    "entity_id": eid,
+                    "state": e.get("state"),
+                    "name": e.get("name"),
+                    "domain": domain,
+                    "area_id": effective_area_id(entity_regs.get(eid), devices),
+                }
+            )
+        states = ha("/states")
+        if isinstance(states, list):
+            for st in states:
+                if not isinstance(st, dict):
+                    continue
+                eid = str(st.get("entity_id") or "")
+                if eid.startswith("weather."):
+                    attrs = st.get("attributes") if isinstance(st.get("attributes"), dict) else {}
+                    weather = {
+                        "entity_id": eid,
+                        "state": st.get("state"),
+                        "temperature": attrs.get("temperature"),
+                        "unit": attrs.get("temperature_unit") or attrs.get("unit_of_measurement"),
+                    }
+                    break
+    except Exception:
+        pass
+    return {
+        "ok": True,
+        "hub_id": hub_id,
+        "screens": listed.get("screens") or [],
+        "entities": entities_out,
+        "areas": areas_out,
+        "weather": weather,
+    }
 
 
 def ha(path: str, method: str = "GET", body: dict | None = None, timeout: int = 10):
@@ -1742,6 +1982,12 @@ def execute_action(
         return media_search(payload, entity_id)
     if action == "arvio.todo":
         return todo_action(payload, entity_id)
+    if action == "arvio.list_screens":
+        return list_wall_screens()
+    if action == "arvio.put_screen":
+        return put_wall_screen(payload, entity_id)
+    if action == "arvio.delete_screen":
+        return delete_wall_screen(payload, entity_id)
     if action == "backup.create":
         name = str(payload.get("name") or "") or None
         out = create_full_backup(name)
@@ -2051,6 +2297,7 @@ LAN_MEDIA_PAYLOAD_KEYS = frozenset(
         "client_command_id",
     }
 )
+LAN_SCENARIO_PAYLOAD_KEYS = frozenset({"id", "scenario_id"})
 MEDIA_ART_MAX_PX = 256
 MEDIA_ART_JPEG_QUALITY = 80
 MEDIA_ART_WIRE_MAX_BYTES = 40 * 1024  # hard cap for data_base64's decoded bytes
@@ -2104,6 +2351,9 @@ AGENT_SERVICE_ALLOWLIST = frozenset(
         "arvio.delete_scenario",
         "arvio.set_scenario_enabled",
         "arvio.trigger_scenario",
+        "arvio.list_screens",
+        "arvio.put_screen",
+        "arvio.delete_screen",
         "backup.create",
         "agent.update",
     }
@@ -2163,6 +2413,8 @@ LAN_ALLOWED_ACTIONS = frozenset(
         # read-only
         "arvio.list_entities",
         "arvio.pairing_status",
+        "arvio.list_screens",
+        "arvio.trigger_scenario",
     }
     # §15.5: transport/volume/grouping is not dangerous. Library, playlists and
     # album art (arvio.media_*) stay cloud-only: they are personal data and the
@@ -4376,7 +4628,7 @@ class H(BaseHTTPRequestHandler):
     """Unauthenticated LAN HTTP on :8099.
 
     Same-origin only: no CORS grants, so a page on another origin cannot drive the hub
-    through the browser. The served ui/home/remote/partner pages fetch relative paths.
+    through the browser. The served ui/home/remote/partner/panel pages fetch relative paths.
     Commands go through the LAN allowlist (LAN_ALLOWED_ACTIONS). Claim / presence /
     redeem proxies answer 403; the Partner talks to the cloud with a session.
     """
@@ -4434,6 +4686,12 @@ class H(BaseHTTPRequestHandler):
             return self._file("home.html", "text/html; charset=utf-8")
         if path in ("/remote", "/remote/"):
             return self._file("remote.html", "text/html; charset=utf-8")
+        if path in ("/panel", "/panel/"):
+            return self._file("panel.html", "text/html; charset=utf-8")
+        if path == "/api/screens":
+            qs = parse_qs(urlparse(self.path).query)
+            sid = (qs.get("screen_id") or [None])[0]
+            return self._j(200, panel_snapshot(sid))
         if path.startswith("/health"):
             return self._j(
                 200,
@@ -4521,6 +4779,11 @@ class H(BaseHTTPRequestHandler):
                     return self._j(200, boot)
                 return self._j(200, lab_bootstrap())
 
+            if path == "/api/screens/pair":
+                body = self._read_json()
+                out = pair_wall_screen(str(body.get("code") or ""))
+                return self._j(200, out)
+
             if path.startswith("/api/service/"):
                 # /api/service/{domain}/{service}
                 parts = path.strip("/").split("/")
@@ -4567,6 +4830,11 @@ class H(BaseHTTPRequestHandler):
                         if key in body and key not in lan_payload:
                             lan_payload[key] = body[key]
                     cmd["payload"] = lan_payload
+                elif action == "arvio.trigger_scenario":
+                    raw_payload = body.get("payload") if isinstance(body.get("payload"), dict) else {}
+                    cmd["payload"] = {
+                        k: v for k, v in raw_payload.items() if k in LAN_SCENARIO_PAYLOAD_KEYS
+                    }
                 ack = handle_command(cmd, via="lan")
                 if not ack.get("ok"):
                     msg = str(ack.get("error") or "command failed")

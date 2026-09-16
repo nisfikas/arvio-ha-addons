@@ -15,12 +15,13 @@ COPY ui.html /app/ui.html
 COPY partner.html /app/partner.html
 COPY home.html /app/home.html
 COPY remote.html /app/remote.html
+COPY panel.html /app/panel.html
 COPY run.sh /run.sh
 RUN chmod a+x /run.sh
 
 LABEL \
   io.hass.name="Arvio Agent" \
-  io.hass.version="0.1.23" \
+  io.hass.version="0.1.24" \
   io.hass.type="addon" \
   io.hass.arch="aarch64|amd64|armv7"
 
