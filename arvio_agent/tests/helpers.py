@@ -57,6 +57,7 @@ ENTITY_REGISTRY_DISPLAY = {
         {"ei": "media_player.saloni", "pl": "music_assistant", "ai": "saloni"},
         {"ei": "media_player.kouzina", "pl": "cast", "ai": "kouzina"},
         {"ei": "media_player.projector", "pl": "cast", "ai": "saloni"},
+        {"ei": "camera.front", "pl": "onvif", "ai": "saloni"},
     ],
 }
 
@@ -132,6 +133,8 @@ STATES = [
        supported_features=CAST_SPEAKER_FEATURES),
     # device_class outside speaker|tv|receiver|null → not exposed (§15.2)
     st("media_player.projector", "on", friendly_name="Projector", device_class="projector"),
+    st("camera.front", "idle", friendly_name="Είσοδος",
+       supported_features=2, entity_picture="/api/camera_proxy/camera.front?token=SECRET"),
     st("sun.sun", "above_horizon", next_rising="2026-09-11T04:05:00+00:00", next_setting="2026-09-10T16:30:00+00:00"),
     st("automation.fevgo", "on", friendly_name="Φεύγω", id="arvio_fevgo"),
     st("automation.nyxta", "off", friendly_name="Νύχτα", id="arvio_nyxta"),

@@ -40,7 +40,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.26"
+AGENT_VERSION = "0.1.27"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -2067,6 +2067,12 @@ def execute_action(
         return media_browse(payload, entity_id)
     if action == "arvio.media_search":
         return media_search(payload, entity_id)
+    if action == "arvio.camera_setup":
+        return camera_setup(payload)
+    if action == "arvio.camera_snapshot":
+        return camera_snapshot(payload, entity_id)
+    if action == "arvio.camera_stream":
+        return camera_stream(payload, entity_id)
     if action == "arvio.todo":
         return todo_action(payload, entity_id)
     if action == "arvio.list_screens":
@@ -2286,6 +2292,7 @@ HOME_ENTITY_DOMAINS = (
     "binary_sensor",
     "media_player",
     "todo",
+    "camera",
 )
 HOME_SENSOR_DEVICE_CLASSES = ("temperature", "humidity")
 # §15.2: media_player device_class speaker | tv | receiver | null (HA knows no other today).
@@ -2323,6 +2330,16 @@ MEDIA_FEATURE = {
     "MEDIA_ENQUEUE": 2097152,
     "SEARCH_MEDIA": 4194304,
 }
+# CameraEntityFeature (HA core camera/__init__.py).
+CAMERA_FEATURE = {"ON_OFF": 1, "STREAM": 2}
+CAMERA_HANDLERS = frozenset({"onvif", "generic"})
+CAMERA_ENTITY_RE = re.compile(r"^camera\.[a-z0-9_]+$")
+CAMERA_SNAPSHOT_WIDTH_MIN = 96
+CAMERA_SNAPSHOT_WIDTH_MAX = 1280
+CAMERA_SNAPSHOT_FETCH_MAX = 5 * 1024 * 1024
+CAMERA_FLOW_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+CAMERA_FLOW_STEPS = frozenset({"user", "device", "configure", "auth"})
+CAMERA_USER_INPUT_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 MEDIA_ENQUEUE_MODES = frozenset({"add", "next", "play", "replace"})  # media_player.play_media
 MA_ENQUEUE_MODES = frozenset({"play", "replace", "next", "replace_next", "add"})  # music_assistant.play_media
 MEDIA_REPEAT_MODES = frozenset({"off", "all", "one"})
@@ -2356,6 +2373,9 @@ MEDIA_AGENT_ACTIONS = frozenset({"arvio.media_art", "arvio.media_browse", "arvio
 # part of MEDIA_ACTIONS: that set is what the unauthenticated LAN path (:8099) forwards, and
 # the list must not be readable or writable by anything on the network (audit 2026-09-10 #2).
 TODO_AGENT_ACTIONS = frozenset({"arvio.todo"})
+CAMERA_AGENT_ACTIONS = frozenset(
+    {"arvio.camera_setup", "arvio.camera_snapshot", "arvio.camera_stream"}
+)
 # Music is not dangerous: every media action is allowed on the relay AND the LAN path (§15.5).
 MEDIA_ACTIONS = MEDIA_PLAYER_ACTIONS | MUSIC_ASSISTANT_ACTIONS | MEDIA_AGENT_ACTIONS
 # The LAN path forwards only these payload keys, and only for MEDIA_ACTIONS
@@ -2448,6 +2468,7 @@ AGENT_SERVICE_ALLOWLIST = frozenset(
     }
     | MEDIA_ACTIONS
     | TODO_AGENT_ACTIONS
+    | CAMERA_AGENT_ACTIONS
 )
 
 # Mirrors HOME_DANGEROUS_ACTIONS / HOME_SECURITY_ACTIONS in home-model.ts.
@@ -2965,6 +2986,9 @@ def entity_capabilities(domain: str, attrs: dict) -> dict:
             "repeat": bool(sf & MEDIA_FEATURE["REPEAT_SET"]),
             "power": bool(sf & (MEDIA_FEATURE["TURN_ON"] | MEDIA_FEATURE["TURN_OFF"])),
         }
+    if domain == "camera":
+        sf = _int_or_none(attrs.get("supported_features")) or 0
+        return {"stream": bool(sf & CAMERA_FEATURE["STREAM"]), "power": bool(sf & CAMERA_FEATURE["ON_OFF"])}
     return {
         "brightness": domain == "light"
         and (
@@ -3093,6 +3117,10 @@ def typed_attrs(
         out["supported_features"] = _int_or_none(attrs.get("supported_features"))
         out["platform"] = str(platform) if platform else None
         out["art_hash"] = media_art_hash(attrs.get("media_content_id"), attrs.get("entity_picture"))
+    elif domain == "camera":
+        # Never emit entity_picture — HA puts an access token in the query string.
+        out["platform"] = str(platform) if platform else None
+        out["supported_features"] = _int_or_none(attrs.get("supported_features"))
     return out
 
 
@@ -3928,6 +3956,205 @@ def media_art(payload: dict, entity_id: str = "") -> dict:
     return out
 
 
+def parse_camera_entity_id(payload: dict | None, entity_id: str = "") -> str:
+    payload = payload if isinstance(payload, dict) else {}
+    eid = str(payload.get("entity_id") or entity_id or "")
+    if not CAMERA_ENTITY_RE.fullmatch(eid):
+        raise ValueError("camera entity_id required")
+    return eid
+
+
+def camera_safe_ha_path(raw: str) -> str | None:
+    """Same allowlist as packages/domain cameraSafeHaPath — HLS + camera_proxy only."""
+    if not isinstance(raw, str) or len(raw) > 2048:
+        return None
+    if not raw.startswith("/") or ".." in raw or "\\" in raw or "://" in raw:
+        return None
+    path, _, query = raw.partition("?")
+    q = f"?{query}" if query else ""
+    if path.startswith("/api/hls/") and len(path) > len("/api/hls/"):
+        rest = path[len("/api/hls/") :]
+        if not re.fullmatch(r"[A-Za-z0-9/_.=+\-]+", rest):
+            return None
+        if q and not re.fullmatch(r"\?[A-Za-z0-9._=&%+\-]*", q):
+            return None
+        return path + q
+    m = re.fullmatch(r"/api/camera_proxy/(camera\.[a-z0-9_]+)", path)
+    if not m:
+        return None
+    if q and not re.fullmatch(r"\?[A-Za-z0-9._=&%+\-]*", q):
+        return None
+    return path + q
+
+
+def clamp_camera_width(raw) -> int:
+    try:
+        w = int(raw)
+    except (TypeError, ValueError):
+        w = 480
+    return max(CAMERA_SNAPSHOT_WIDTH_MIN, min(CAMERA_SNAPSHOT_WIDTH_MAX, w))
+
+
+def fetch_camera_proxy(entity_id: str, width: int, timeout: int = 20) -> tuple[bytes, str | None]:
+    """GET documented Core `/api/camera_proxy/{entity}` via Supervisor."""
+    global TOKEN
+    if not TOKEN:
+        TOKEN = read_token()
+    if not TOKEN:
+        raise RuntimeError("missing SUPERVISOR_TOKEN")
+    path = f"/camera_proxy/{entity_id}?width={width}"
+    req = urllib.request.Request(
+        f"http://supervisor/core/api{path}",
+        headers={"Authorization": f"Bearer {TOKEN}"},
+        method="GET",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        raw = r.read(CAMERA_SNAPSHOT_FETCH_MAX + 1)
+        ctype = r.headers.get("Content-Type")
+    if len(raw) > CAMERA_SNAPSHOT_FETCH_MAX:
+        raise RuntimeError("too_large")
+    mime = str(ctype).split(";", 1)[0].strip().lower() if ctype else None
+    return raw, mime
+
+
+def camera_snapshot(payload: dict | None = None, entity_id: str = "") -> dict:
+    """arvio.camera_snapshot — JPEG still. Never returns HA entity_picture tokens."""
+    eid = parse_camera_entity_id(payload, entity_id)
+    payload = payload if isinstance(payload, dict) else {}
+    width = clamp_camera_width(payload.get("width"))
+    raw, mime = fetch_camera_proxy(eid, width)
+    out, out_mime, reason = resize_art(raw, max_px=720, wire_max=180_000, no_pillow_max=180_000)
+    if out is None:
+        # Keep a small original if Pillow refuses, still cap the wire.
+        if reason == "too_large" or len(raw) > MEDIA_ART_WIRE_MAX_BYTES:
+            return {
+                "ok": False,
+                "entity_id": eid,
+                "mime": None,
+                "data_base64": None,
+                "reason": reason or "too_large",
+            }
+        out, out_mime = raw, mime or "image/jpeg"
+    return {
+        "ok": True,
+        "entity_id": eid,
+        "mime": out_mime or mime or "image/jpeg",
+        "data_base64": base64.b64encode(out).decode("ascii"),
+        "reason": None,
+        "width": width,
+    }
+
+
+def sanitize_camera_user_input(raw) -> dict:
+    """Primitive fields only — camera passwords never persist in the agent."""
+    if not isinstance(raw, dict):
+        raise ValueError("user_input required")
+    if len(raw) > 24:
+        raise ValueError("user_input too large")
+    out: dict = {}
+    for key, value in raw.items():
+        k = str(key)
+        if not CAMERA_USER_INPUT_KEY_RE.fullmatch(k):
+            continue
+        if value is None or isinstance(value, bool):
+            out[k] = value
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            out[k] = value
+        elif isinstance(value, str) and len(value) <= 2048:
+            out[k] = value
+    return out
+
+
+def _camera_flow_view(raw) -> dict:
+    if not isinstance(raw, dict):
+        return {"ok": False, "phase": "error", "error": "bad_flow"}
+    kind = raw.get("type")
+    if kind == "create_entry":
+        return {"ok": True, "phase": "created", "title": raw.get("title")}
+    if kind == "abort":
+        return {"ok": False, "phase": "abort", "reason": str(raw.get("reason") or "aborted")}
+    if kind == "form":
+        step = str(raw.get("step_id") or "")
+        if step not in CAMERA_FLOW_STEPS:
+            return {
+                "ok": False,
+                "phase": "unsupported",
+                "step_id": step or None,
+                "error": "unsupported_step",
+            }
+        return {
+            "ok": True,
+            "phase": "form",
+            "flow_id": raw.get("flow_id"),
+            "handler": raw.get("handler"),
+            "step_id": step,
+            "errors": raw.get("errors") if isinstance(raw.get("errors"), dict) else {},
+            "description_placeholders": raw.get("description_placeholders")
+            if isinstance(raw.get("description_placeholders"), dict)
+            else {},
+            "data_schema": raw.get("data_schema"),
+        }
+    return {
+        "ok": False,
+        "phase": "unsupported",
+        "step_id": raw.get("step_id"),
+        "error": "unsupported_step",
+    }
+
+
+def camera_setup(payload: dict | None = None) -> dict:
+    """Drive HA config flow for onvif | generic only. Documented REST /config/config_entries/flow."""
+    payload = payload if isinstance(payload, dict) else {}
+    handler = str(payload.get("handler") or "onvif")
+    if handler not in CAMERA_HANDLERS:
+        raise ValueError("handler must be onvif or generic")
+    if payload.get("abort"):
+        flow_id = str(payload.get("flow_id") or "")
+        if not CAMERA_FLOW_ID_RE.fullmatch(flow_id):
+            raise ValueError("flow_id required to abort")
+        ha_or_raise(f"/config/config_entries/flow/{flow_id}", "DELETE")
+        return {"ok": True, "phase": "abort", "reason": "user"}
+    flow_id = str(payload.get("flow_id") or "")
+    user_input = payload.get("user_input")
+    if not flow_id:
+        raw = ha_or_raise("/config/config_entries/flow", "POST", {"handler": handler})
+        if isinstance(user_input, dict):
+            fid = str((raw or {}).get("flow_id") or "")
+            if CAMERA_FLOW_ID_RE.fullmatch(fid):
+                raw = ha_or_raise(
+                    f"/config/config_entries/flow/{fid}",
+                    "POST",
+                    sanitize_camera_user_input(user_input),
+                )
+        return _camera_flow_view(raw)
+    if not CAMERA_FLOW_ID_RE.fullmatch(flow_id):
+        raise ValueError("invalid flow_id")
+    if not isinstance(user_input, dict):
+        raise ValueError("user_input required")
+    raw = ha_or_raise(
+        f"/config/config_entries/flow/{flow_id}",
+        "POST",
+        sanitize_camera_user_input(user_input),
+    )
+    return _camera_flow_view(raw)
+
+
+def camera_stream(payload: dict | None = None, entity_id: str = "") -> dict:
+    """arvio.camera_stream → HA websocket camera/stream format=hls. Returns Core-relative playlist path."""
+    eid = parse_camera_entity_id(payload, entity_id)
+    result = ha_ws_command("camera/stream", {"entity_id": eid, "format": "hls"}, timeout=25.0)
+    url = str(result.get("url") or "") if isinstance(result, dict) else ""
+    path = None
+    if url.startswith("/"):
+        path = camera_safe_ha_path(url)
+    elif url.startswith("http://") or url.startswith("https://"):
+        parsed = urlparse(url)
+        path = camera_safe_ha_path(parsed.path + (("?" + parsed.query) if parsed.query else ""))
+    if not path:
+        return {"ok": False, "entity_id": eid, "playlist_path": None, "error": "no_hls"}
+    return {"ok": True, "entity_id": eid, "playlist_path": path}
+
+
 def browse_item(node: dict) -> dict:
     """BrowseMedia.as_dict() child → app item. Thumbnails: the URL only when a phone can load it
     directly (absolute https); always a hash so the app can key its own cache. Pure."""
@@ -4540,6 +4767,43 @@ def _rewrite_ha_set_cookie(value: str) -> str:
     return "; ".join(parts)
 
 
+def camera_http_via_supervisor(method: str, cam_path: str) -> tuple[int, dict[str, str], list[str], bytes]:
+    """GET/HEAD camera_proxy + HLS through Supervisor with the add-on token — never HA UI cookies."""
+    global TOKEN
+    method_u = str(method or "GET").upper()
+    if method_u not in ("GET", "HEAD"):
+        return 405, {"content-type": "text/plain; charset=utf-8"}, [], b"method"
+    if not camera_safe_ha_path(cam_path):
+        return 400, {"content-type": "text/plain; charset=utf-8"}, [], b"bad path"
+    if not TOKEN:
+        TOKEN = read_token()
+    if not TOKEN:
+        return 502, {"content-type": "text/plain; charset=utf-8"}, [], b"missing token"
+    req = urllib.request.Request(
+        "http://supervisor/core" + cam_path,
+        headers={"Authorization": f"Bearer {TOKEN}"},
+        method=method_u,
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            raw = b"" if method_u == "HEAD" else r.read(HA_UI_MAX_BYTES + 1)
+            ctype = r.headers.get("Content-Type") or "application/octet-stream"
+            status = int(r.status)
+    except urllib.error.HTTPError as e:
+        detail = b""
+        try:
+            detail = e.read(500)
+        except Exception:
+            detail = str(e).encode("utf-8")[:200]
+        return int(e.code or 502), {"content-type": "text/plain; charset=utf-8"}, [], detail or b"ha error"
+    except Exception as e:
+        return 502, {"content-type": "text/plain; charset=utf-8"}, [], str(e).encode("utf-8")[:500]
+    if len(raw) > HA_UI_MAX_BYTES:
+        return 502, {"content-type": "text/plain; charset=utf-8"}, [], b"too large"
+    headers = {"content-type": str(ctype).split(";", 1)[0].strip() or "application/octet-stream"}
+    return status, headers, [], raw
+
+
 def ha_ui_http_via_core(
     method: str,
     path: str,
@@ -4555,6 +4819,9 @@ def ha_ui_http_via_core(
     if method_u not in HA_UI_METHODS:
         return 405, {"content-type": "text/plain; charset=utf-8"}, [], b"method"
     q = ha_ui_safe_query(query)
+    cam = camera_safe_ha_path(safe + (f"?{q}" if q else ""))
+    if cam:
+        return camera_http_via_supervisor(method_u, cam)
     parsed = urlparse(HA_CORE_BASE)
     host = parsed.hostname or "homeassistant"
     port = parsed.port or 8123
