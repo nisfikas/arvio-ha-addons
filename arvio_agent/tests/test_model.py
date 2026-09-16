@@ -284,6 +284,7 @@ class WeatherBlockTest(unittest.TestCase):
         self.assertEqual(w["humidity"], 48)
         self.assertEqual(len(w["forecast"]), 2)
         self.assertEqual(w["forecast"][0]["templow"], 18)
+        self.assertEqual(w["hourly"], [])
         m = build(states=states, weather=w)
         self.assertEqual(m["weather"]["entity_id"], "weather.home")
         self.assertNotIn("weather.home", by_id(m))
@@ -292,7 +293,23 @@ class WeatherBlockTest(unittest.TestCase):
         states = STATES + [st("weather.home", "cloudy", temperature=19)]
         w = agent.weather_block(states, None)
         self.assertEqual(w["forecast"], [])
+        self.assertEqual(w["hourly"], [])
         self.assertEqual(w["temperature"], 19)
+
+    def test_hourly_forecasts_are_capped_at_24(self):
+        states = STATES + [st("weather.home", "sunny", temperature=22)]
+        hourly = {
+            "weather.home": {
+                "forecast": [
+                    {"datetime": f"2026-09-16T{h:02d}:00:00+00:00", "condition": "sunny", "temperature": 20}
+                    for h in range(30)
+                ]
+            }
+        }
+        w = agent.weather_block(states, None, hourly)
+        self.assertEqual(w["forecast"], [])
+        self.assertEqual(len(w["hourly"]), 24)
+        self.assertEqual(w["hourly"][0]["datetime"], "2026-09-16T00:00:00+00:00")
 
 
 class VersionHelpersTest(unittest.TestCase):

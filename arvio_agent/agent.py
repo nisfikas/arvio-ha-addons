@@ -39,7 +39,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.24"
+AGENT_VERSION = "0.1.25"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -3169,15 +3169,45 @@ def clamp_paging(offset, limit) -> tuple[int, int]:
     return off, lim
 
 
-WEATHER_FORECAST_MAX = 5
+WEATHER_DAILY_MAX = 7
+WEATHER_HOURLY_MAX = 24
 
 
-def weather_block(states: list, forecasts_response=None) -> dict | None:
+def _forecast_rows(forecasts_response, eid: str, limit: int) -> list:
+    """`weather.get_forecasts` envelope → rows. Missing / junk → []."""
+    forecast: list = []
+    if not isinstance(forecasts_response, dict):
+        return forecast
+    holder = forecasts_response.get(eid)
+    if not isinstance(holder, dict):
+        values = [v for v in forecasts_response.values() if isinstance(v, dict) and "forecast" in v]
+        holder = values[0] if len(values) == 1 else {}
+    rows = holder.get("forecast") if isinstance(holder, dict) else None
+    if not isinstance(rows, list):
+        return forecast
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        forecast.append(
+            {
+                "datetime": str(row["datetime"]) if row.get("datetime") else None,
+                "condition": str(row["condition"]) if row.get("condition") else None,
+                "temperature": _num(row.get("temperature")),
+                "templow": _num(row.get("templow")),
+                "precipitation": _num(row.get("precipitation")),
+            }
+        )
+        if len(forecast) >= limit:
+            break
+    return forecast
+
+
+def weather_block(states: list, forecasts_response=None, hourly_response=None) -> dict | None:
     """Site-level weather (HANDOFF §4). Never an entity. None when HA has no `weather.*`.
 
-    Current temperature/humidity/condition come from the entity state. The daily
-    forecast is `weather.get_forecasts` (plural — the singular service is undeclared
-    and throws). Missing forecasts → `forecast: []`, never a leftover from last time.
+    Current temperature/humidity/condition come from the entity state. Forecasts are
+    `weather.get_forecasts` (plural — the singular service is undeclared and throws)
+    with `type` daily then hourly. Missing → empty lists, never a leftover from last time.
     """
     states = states if isinstance(states, list) else []
     picked = None
@@ -3197,35 +3227,13 @@ def weather_block(states: list, forecasts_response=None) -> dict | None:
         return None
     eid = str(picked.get("entity_id"))
     attrs = picked.get("attributes") if isinstance(picked.get("attributes"), dict) else {}
-    forecast: list = []
-    holder = None
-    if isinstance(forecasts_response, dict):
-        holder = forecasts_response.get(eid)
-        if not isinstance(holder, dict):
-            values = [v for v in forecasts_response.values() if isinstance(v, dict) and "forecast" in v]
-            holder = values[0] if len(values) == 1 else {}
-        rows = holder.get("forecast") if isinstance(holder, dict) else None
-        if isinstance(rows, list):
-            for row in rows:
-                if not isinstance(row, dict):
-                    continue
-                forecast.append(
-                    {
-                        "datetime": str(row["datetime"]) if row.get("datetime") else None,
-                        "condition": str(row["condition"]) if row.get("condition") else None,
-                        "temperature": _num(row.get("temperature")),
-                        "templow": _num(row.get("templow")),
-                        "precipitation": _num(row.get("precipitation")),
-                    }
-                )
-                if len(forecast) >= WEATHER_FORECAST_MAX:
-                    break
     return {
         "entity_id": eid,
         "condition": str(picked.get("state") or "") or None,
         "temperature": _num(attrs.get("temperature")),
         "humidity": _num(attrs.get("humidity")),
-        "forecast": forecast,
+        "forecast": _forecast_rows(forecasts_response, eid, WEATHER_DAILY_MAX),
+        "hourly": _forecast_rows(hourly_response, eid, WEATHER_HOURLY_MAX),
     }
 
 
@@ -3655,20 +3663,29 @@ def fetch_hub_model(payload: dict | None = None) -> dict:
         raise RuntimeError("HA registries unavailable")
     raw = snap.raw
     automations = fetch_arvio_automation_configs(states)
-    forecasts = None
+    daily = None
+    hourly = None
     weather_id = next(
         (str(st.get("entity_id")) for st in states if isinstance(st, dict) and str(st.get("entity_id") or "").startswith("weather.")),
         None,
     )
     if weather_id:
         try:
-            _ctx, forecasts = ha_call_service_response(
+            _ctx, daily = ha_call_service_response(
                 "weather",
                 "get_forecasts",
                 {"entity_id": weather_id, "type": "daily"},
             )
         except Exception:
-            forecasts = None
+            daily = None
+        try:
+            _ctx, hourly = ha_call_service_response(
+                "weather",
+                "get_forecasts",
+                {"entity_id": weather_id, "type": "hourly"},
+            )
+        except Exception:
+            hourly = None
     return build_hub_model(
         states,
         raw.get("floors"),
@@ -3682,7 +3699,7 @@ def fetch_hub_model(payload: dict | None = None) -> dict:
         offset=payload.get("offset"),
         limit=payload.get("limit"),
         ma_config_entry_id=music_assistant_entry_id(),
-        weather=weather_block(states, forecasts),
+        weather=weather_block(states, daily, hourly),
     )
 
 
