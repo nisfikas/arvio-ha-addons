@@ -128,11 +128,11 @@ class FakePillow:
 
 class VersionPinTest(unittest.TestCase):
     def test_three_places_agree(self):
-        self.assertEqual(agent.AGENT_VERSION, "0.1.27")
+        self.assertEqual(agent.AGENT_VERSION, "0.1.28")
         cfg = (ROOT / "config.yaml").read_text(encoding="utf-8")
-        self.assertIn('\nversion: "0.1.27"\n', cfg)
+        self.assertIn('\nversion: "0.1.28"\n', cfg)
         docker = (ROOT / "Dockerfile").read_text(encoding="utf-8")
-        self.assertIn('io.hass.version="0.1.27"', docker)
+        self.assertIn('io.hass.version="0.1.28"', docker)
         self.assertIn("COPY panel.html", docker)
         self.assertRegex(docker, r"pillow", "Pillow must be installed for the art resize path")
         self.assertIn("0.1.21", (ROOT / "DOCS.md").read_text(encoding="utf-8"))

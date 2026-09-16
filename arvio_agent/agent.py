@@ -40,7 +40,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.27"
+AGENT_VERSION = "0.1.28"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -4694,7 +4694,6 @@ HA_UI_BLOCKED_PREFIXES = (
     "/v1/",
     "/health",
     "/supervisor",
-    "/api/hassio",
     "/root",
     "/data",
 )
@@ -4709,7 +4708,6 @@ HA_UI_HOP = frozenset(
         "transfer-encoding",
         "upgrade",
         "host",
-        "authorization",
         "content-length",
     }
 )

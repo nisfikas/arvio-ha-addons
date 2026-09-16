@@ -59,7 +59,12 @@ class HaUiPathTest(unittest.TestCase):
         self.assertEqual(agent.ha_ui_safe_path("/lovelace"), "/lovelace")
         self.assertEqual(agent.ha_ui_safe_path("/api/websocket"), "/api/websocket")
         self.assertIsNone(agent.ha_ui_safe_path("/supervisor/info"))
-        self.assertIsNone(agent.ha_ui_safe_path("/api/hassio/app"))
+        self.assertEqual(agent.ha_ui_safe_path("/api/hassio/addons"), "/api/hassio/addons")
+        self.assertEqual(
+            agent.ha_ui_safe_path("/api/hassio_ingress/slug/"),
+            "/api/hassio_ingress/slug/",
+        )
+        self.assertNotIn("authorization", agent.HA_UI_HOP)
         self.assertIsNone(agent.ha_ui_safe_path("/v1/hub/ws"))
         self.assertIsNone(agent.ha_ui_safe_path("/static/../data"))
         self.assertIsNone(agent.ha_ui_safe_path("http://evil"))
