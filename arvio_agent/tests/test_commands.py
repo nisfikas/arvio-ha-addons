@@ -148,7 +148,7 @@ class SafetyTest(unittest.TestCase):
             self.assertEqual(cm.exception.code, "lan_forbidden", action)
         for action in ("arvio.model", "arvio.batch", "backup.create", "agent.update", "lock.lock",
                        "light.toggle", "arvio.zigbee_permit", "arvio.upsert_scenario",
-                       "arvio.put_screen", "arvio.delete_screen"):
+                       "arvio.put_screen", "arvio.delete_screen", "arvio.device_update", "arvio.device_remove"):
             self.assertNotIn(action, agent.LAN_ALLOWED_ACTIONS)
         # unknown actions stay "action_not_allowed" (never reach the LAN check)
         with self.assertRaises(agent.CommandRejected) as cm:

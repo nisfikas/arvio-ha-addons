@@ -17,6 +17,7 @@ import urllib.error
 import urllib.request
 from collections import OrderedDict
 from datetime import datetime, timezone
+from http.client import HTTPConnection, HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import MappingProxyType
@@ -39,7 +40,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.25"
+AGENT_VERSION = "0.1.26"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -880,6 +881,89 @@ def list_devices() -> dict:
     return {"ok": True, "devices": out[:200]}
 
 
+DEVICE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{8,64}$")
+ENTITY_ID_RE = re.compile(r"^[a-z][a-z0-9_]*\.[a-z0-9_]+$")
+AREA_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+DEVICE_NAME_MAX = 128
+
+
+def parse_device_registry_ids(payload: dict | None, entity_id: str = "") -> tuple[str | None, str | None]:
+    """Pure: (device_id, entity_id) from a Partner write payload."""
+    payload = payload if isinstance(payload, dict) else {}
+    did = str(payload.get("device_id") or "").strip()
+    eid = str(payload.get("entity_id") or entity_id or "").strip()
+    if did and not DEVICE_ID_RE.fullmatch(did):
+        raise ValueError("invalid device_id")
+    if eid and not ENTITY_ID_RE.fullmatch(eid):
+        raise ValueError("invalid entity_id")
+    return (did or None, eid or None)
+
+
+def parse_device_update_extra(payload: dict | None) -> dict:
+    """Pure: WS extra fields for name_by_user / area_id. Raises ValueError."""
+    payload = payload if isinstance(payload, dict) else {}
+    has_name = "name" in payload
+    has_area = "area_id" in payload
+    if not has_name and not has_area:
+        raise ValueError("name or area_id required")
+    extra: dict = {}
+    if has_name:
+        name = payload.get("name")
+        if name is None:
+            extra["name_by_user"] = None
+        else:
+            n = str(name).strip()
+            if not n or len(n) > DEVICE_NAME_MAX:
+                raise ValueError("invalid name")
+            extra["name_by_user"] = n
+    if has_area:
+        area = payload.get("area_id")
+        if area in (None, ""):
+            extra["area_id"] = None
+        else:
+            a = str(area).strip()
+            if not AREA_ID_RE.fullmatch(a):
+                raise ValueError("invalid area_id")
+            extra["area_id"] = a
+    return extra
+
+
+def device_update(payload: dict | None = None, entity_id: str = "") -> dict:
+    """Rename / assign area via documented device or entity registry WS."""
+    payload = payload if isinstance(payload, dict) else {}
+    extra = parse_device_update_extra(payload)
+    did, eid = parse_device_registry_ids(payload, entity_id)
+    if did:
+        ha_ws_command("config/device_registry/update", {"device_id": did, **extra})
+        schedule_registry_refresh("device_update", delay=0.4)
+        return {"ok": True, "device_id": did, **extra}
+    if eid:
+        body: dict = {"entity_id": eid}
+        if "name_by_user" in extra:
+            body["name"] = extra["name_by_user"]
+        if "area_id" in extra:
+            body["area_id"] = extra["area_id"]
+        ha_ws_command("config/entity_registry/update", body)
+        schedule_registry_refresh("entity_update", delay=0.4)
+        return {"ok": True, "entity_id": eid, **extra}
+    raise ValueError("device_id or entity_id required")
+
+
+def device_remove(payload: dict | None = None, entity_id: str = "") -> dict:
+    """Remove a device (2026.8+ registry) or a lone entity. Documented WS only."""
+    payload = payload if isinstance(payload, dict) else {}
+    did, eid = parse_device_registry_ids(payload, entity_id)
+    if did:
+        ha_ws_command("config/device_registry/remove", {"device_id": did})
+        schedule_registry_refresh("device_remove", delay=0.4)
+        return {"ok": True, "device_id": did, "via": "device_registry"}
+    if eid:
+        ha_ws_command("config/entity_registry/remove", {"entity_id": eid})
+        schedule_registry_refresh("entity_remove", delay=0.4)
+        return {"ok": True, "entity_id": eid, "via": "entity_registry"}
+    raise ValueError("device_id or entity_id required")
+
+
 def list_blueprints() -> dict:
     """List automation blueprints via HA websocket."""
     result = ha_ws_command("blueprint/list", {"domain": "automation"})
@@ -930,13 +1014,13 @@ def node_red_status() -> dict:
             "running": False,
             "slug": None,
             "ingress_url": None,
-            "note": "Install Node-RED from Supervisor add-on store for advanced flows",
+            "note": "Δεν είναι εγκατεστημένο. Το ρυθμίζει μόνο SFK από το Console.",
         }
     slug = str(match.get("slug") or "")
     state = str(match.get("state") or "")
     ingress = bool(match.get("ingress"))
-    # Ingress path is typically /api/hassio_ingress/<token> — Partner cannot open
-    # Supervisor UI remotely; return slug for installer guidance.
+    # Ingress path is typically /api/hassio_ingress/<token> — Partner never opens
+    # Supervisor; SFK uses Console HA UI (ADR 008).
     return {
         "ok": True,
         "installed": True,
@@ -947,8 +1031,7 @@ def node_red_status() -> dict:
         "ingress": ingress,
         "ingress_url": None,
         "note": (
-            "Node-RED is on this hub — open it from HA Supervisor → Node-RED. "
-            "Arvio scenarios stay as native HA automations."
+            "Εγκατεστημένο στο hub. Τα σενάρια Arvio μένουν native automations."
         ),
     }
 
@@ -1966,6 +2049,10 @@ def execute_action(
         return pairing_status()
     if action == "arvio.zigbee_permit":
         return zigbee_permit(payload)
+    if action == "arvio.device_update":
+        return device_update(payload, entity_id)
+    if action == "arvio.device_remove":
+        return device_remove(payload, entity_id)
     if action == "arvio.upsert_scenario":
         return upsert_scenario(payload)
     if action == "arvio.delete_scenario":
@@ -2347,6 +2434,8 @@ AGENT_SERVICE_ALLOWLIST = frozenset(
         "arvio.node_red_status",
         "arvio.pairing_status",
         "arvio.zigbee_permit",
+        "arvio.device_update",
+        "arvio.device_remove",
         "arvio.upsert_scenario",
         "arvio.delete_scenario",
         "arvio.set_scenario_enabled",
@@ -4368,6 +4457,283 @@ def _handle_relay_command(cmd: dict) -> None:
         print(f"relay result post failed for {cid}: {e}", flush=True)
 
 
+# --- SFK Console remote HA UI (ADR 008): proxy Core frontend over the hub WS ----
+
+HA_CORE_BASE = os.environ.get("ARVIO_HA_CORE_URL") or "http://homeassistant:8123"
+HA_UI_MAX_BYTES = 8 * 1024 * 1024
+HA_UI_CHUNK = 24 * 1024
+HA_UI_METHODS = frozenset({"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"})
+HA_UI_BLOCKED_PREFIXES = (
+    "/v1/",
+    "/health",
+    "/supervisor",
+    "/api/hassio",
+    "/root",
+    "/data",
+)
+HA_UI_HOP = frozenset(
+    {
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+        "host",
+        "authorization",
+        "content-length",
+    }
+)
+HA_UI_WS: dict[str, object] = {}
+HA_UI_WS_LOCK = threading.Lock()
+
+
+def ha_ui_safe_path(raw: str) -> str | None:
+    """Only relative Core frontend paths. No supervisor, no traversal."""
+    if not isinstance(raw, str) or not raw.startswith("/") or len(raw) > 2048:
+        return None
+    if "://" in raw or "\\" in raw or ".." in raw or "\x00" in raw:
+        return None
+    path = raw.split("?", 1)[0]
+    if not path.startswith("/"):
+        return None
+    lowered = path.lower()
+    for prefix in HA_UI_BLOCKED_PREFIXES:
+        if lowered == prefix.rstrip("/") or lowered.startswith(prefix):
+            return None
+    return path
+
+
+def ha_ui_safe_query(raw: str) -> str:
+    if not raw:
+        return ""
+    q = raw[1:] if raw.startswith("?") else raw
+    if len(q) > 2048:
+        return ""
+    if not re.fullmatch(r"[A-Za-z0-9._~=&%+\-]*", q):
+        return ""
+    return q
+
+
+def _rewrite_ha_location(value: str) -> str:
+    bases = (HA_CORE_BASE.rstrip("/"), "http://homeassistant:8123", "http://homeassistant")
+    for base in bases:
+        if value.startswith(base):
+            rest = value[len(base) :]
+            return rest if rest.startswith("/") else f"/{rest}"
+    return value
+
+
+def _rewrite_ha_set_cookie(value: str) -> str:
+    parts = []
+    for piece in value.split(";"):
+        item = piece.strip()
+        if not item:
+            continue
+        key = item.split("=", 1)[0].strip().lower()
+        if key in ("domain", "samesite"):
+            continue
+        parts.append(item)
+    parts.append("SameSite=Lax")
+    return "; ".join(parts)
+
+
+def ha_ui_http_via_core(
+    method: str,
+    path: str,
+    query: str,
+    headers: dict,
+    body: bytes,
+) -> tuple[int, dict[str, str], list[str], bytes]:
+    """HTTP to documented Core hostname. Pure enough to mock HTTPConnection in tests."""
+    safe = ha_ui_safe_path(path)
+    if not safe:
+        return 400, {"content-type": "text/plain; charset=utf-8"}, [], b"bad path"
+    method_u = str(method or "GET").upper()
+    if method_u not in HA_UI_METHODS:
+        return 405, {"content-type": "text/plain; charset=utf-8"}, [], b"method"
+    q = ha_ui_safe_query(query)
+    parsed = urlparse(HA_CORE_BASE)
+    host = parsed.hostname or "homeassistant"
+    port = parsed.port or 8123
+    hdrs: dict[str, str] = {}
+    for k, v in (headers or {}).items():
+        lk = str(k).lower()
+        if lk in HA_UI_HOP:
+            continue
+        hdrs[str(k)] = str(v)
+    hdrs["Host"] = f"{host}:{port}" if port not in (80, 443) else host
+    target = safe + (f"?{q}" if q else "")
+    conn = HTTPConnection(host, port, timeout=25)
+    try:
+        conn.request(method_u, target, body=body or None, headers=hdrs)
+        resp = conn.getresponse()
+        raw = resp.read(HA_UI_MAX_BYTES + 1)
+        if len(raw) > HA_UI_MAX_BYTES:
+            return 502, {"content-type": "text/plain; charset=utf-8"}, [], b"too large"
+        out_headers: dict[str, str] = {}
+        set_cookies: list[str] = []
+        for k, v in resp.getheaders():
+            lk = k.lower()
+            if lk == "set-cookie":
+                set_cookies.append(_rewrite_ha_set_cookie(v))
+                continue
+            if lk in HA_UI_HOP or lk in ("content-security-policy", "x-frame-options"):
+                continue
+            if lk == "location":
+                v = _rewrite_ha_location(v)
+            out_headers[k] = v
+        return int(resp.status), out_headers, set_cookies, raw
+    except (OSError, HTTPException, TimeoutError) as e:
+        return 502, {"content-type": "text/plain; charset=utf-8"}, [], str(e).encode("utf-8")[:500]
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _relay_ha_ui_http_res(req_id: str, status: int, headers: dict, set_cookie: list[str], body: bytes) -> None:
+    if not body:
+        relay_send(
+            {
+                "type": "ha_ui_http_res",
+                "id": req_id,
+                "status": status,
+                "headers": headers,
+                "set_cookie": set_cookie,
+                "last": True,
+            }
+        )
+        return
+    offset = 0
+    first = True
+    while offset < len(body):
+        piece = body[offset : offset + HA_UI_CHUNK]
+        offset += HA_UI_CHUNK
+        last = offset >= len(body)
+        msg = {
+            "type": "ha_ui_http_res",
+            "id": req_id,
+            "body_b64": base64.b64encode(piece).decode("ascii"),
+            "last": last,
+        }
+        if first:
+            msg["status"] = status
+            msg["headers"] = headers
+            msg["set_cookie"] = set_cookie
+            first = False
+        relay_send(msg)
+
+
+def _ha_ui_ws_open(req_id: str, path: str) -> None:
+    safe = ha_ui_safe_path(path.split("?", 1)[0] if isinstance(path, str) else "")
+    if safe != "/api/websocket":
+        relay_send({"type": "ha_ui_ws_close", "id": req_id, "code": 1008, "reason": "path"})
+        return
+    query = ha_ui_safe_query(path.split("?", 1)[1] if isinstance(path, str) and "?" in path else "")
+    parsed = urlparse(HA_CORE_BASE)
+    host = parsed.hostname or "homeassistant"
+    port = parsed.port or 8123
+    ws_url = f"ws://{host}:{port}/api/websocket" + (f"?{query}" if query else "")
+    try:
+        import websocket  # type: ignore
+    except ImportError:
+        relay_send({"type": "ha_ui_ws_close", "id": req_id, "code": 1011, "reason": "no websocket"})
+        return
+
+    def on_open(_ws) -> None:
+        relay_send({"type": "ha_ui_ws_opened", "id": req_id})
+
+    def on_message(_ws, message) -> None:
+        if isinstance(message, bytes):
+            relay_send(
+                {
+                    "type": "ha_ui_ws_frame",
+                    "id": req_id,
+                    "bin": True,
+                    "data_b64": base64.b64encode(message).decode("ascii"),
+                }
+            )
+        else:
+            relay_send({"type": "ha_ui_ws_frame", "id": req_id, "data": str(message)})
+
+    def on_close(_ws, *args) -> None:
+        with HA_UI_WS_LOCK:
+            HA_UI_WS.pop(req_id, None)
+        code = args[0] if args else 1000
+        relay_send({"type": "ha_ui_ws_close", "id": req_id, "code": code})
+
+    def on_error(_ws, error) -> None:
+        relay_send({"type": "ha_ui_ws_close", "id": req_id, "code": 1011, "reason": str(error)[:80]})
+
+    app = websocket.WebSocketApp(
+        ws_url, on_open=on_open, on_message=on_message, on_close=on_close, on_error=on_error
+    )
+    with HA_UI_WS_LOCK:
+        HA_UI_WS[req_id] = app
+    app.run_forever(ping_interval=20, ping_timeout=10)
+
+
+def _ha_ui_ws_frame(req_id: str, msg: dict) -> None:
+    with HA_UI_WS_LOCK:
+        app = HA_UI_WS.get(req_id)
+    if app is None:
+        return
+    try:
+        if msg.get("bin") and msg.get("data_b64"):
+            app.send(base64.b64decode(str(msg["data_b64"])), opcode=2)
+        else:
+            app.send(str(msg.get("data") or ""))
+    except Exception:
+        pass
+
+
+def _ha_ui_ws_close(req_id: str) -> None:
+    with HA_UI_WS_LOCK:
+        app = HA_UI_WS.pop(req_id, None)
+    if app is None:
+        return
+    try:
+        app.close()
+    except Exception:
+        pass
+
+
+def _handle_ha_ui_msg(msg: dict) -> None:
+    kind = str(msg.get("type") or "")
+    req_id = str(msg.get("id") or "")
+    if not req_id:
+        return
+    try:
+        if kind == "ha_ui_http":
+            body = b""
+            if msg.get("body_b64"):
+                body = base64.b64decode(str(msg["body_b64"]))
+            headers = msg.get("headers") if isinstance(msg.get("headers"), dict) else {}
+            status, hdrs, cookies, raw = ha_ui_http_via_core(
+                str(msg.get("method") or "GET"),
+                str(msg.get("path") or "/"),
+                str(msg.get("query") or ""),
+                {str(k): str(v) for k, v in headers.items()},
+                body,
+            )
+            _relay_ha_ui_http_res(req_id, status, hdrs, cookies, raw)
+        elif kind == "ha_ui_ws_open":
+            _ha_ui_ws_open(req_id, str(msg.get("path") or "/api/websocket"))
+        elif kind == "ha_ui_ws_frame":
+            _ha_ui_ws_frame(req_id, msg)
+        elif kind == "ha_ui_ws_close":
+            _ha_ui_ws_close(req_id)
+    except Exception as e:
+        if kind == "ha_ui_http":
+            relay_send({"type": "ha_ui_http_res", "id": req_id, "error": str(e)[:200], "last": True})
+        else:
+            relay_send({"type": "ha_ui_ws_close", "id": req_id, "code": 1011, "reason": str(e)[:80]})
+
+
 def _relay_ws_url() -> str:
     base = (RELAY_URL or "").rstrip("/")
     if base.startswith("https://"):
@@ -4395,6 +4761,8 @@ def handle_relay_message(message: str) -> None:
         threading.Thread(
             target=_handle_relay_command, args=(msg["command"],), daemon=True
         ).start()
+    elif str(msg.get("type") or "").startswith("ha_ui_"):
+        threading.Thread(target=_handle_ha_ui_msg, args=(msg,), daemon=True).start()
     elif msg.get("type") == "hello":
         relay_ok = True
         relay_err = ""
