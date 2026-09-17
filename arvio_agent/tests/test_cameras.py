@@ -1,4 +1,4 @@
-"""Cameras — model, snapshot, ONVIF/generic config flow, HLS path. Agent 0.1.28."""
+"""Cameras — model, snapshot, ONVIF/generic config flow, HLS path. Agent 0.1.30."""
 import base64
 import unittest
 from unittest import mock

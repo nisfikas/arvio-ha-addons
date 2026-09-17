@@ -215,3 +215,20 @@ HA WS `media_player/browse_media` (τεκμηριωμένο, στο **query chan
 ### 6.8 Σενάρια (διόρθωση ελέγχου)
 
 `arvio.trigger_scenario` και `arvio.set_scenario_enabled` απαιτούν `id` `arvio_*` (όπως το `delete_scenario`). Όταν δίνεται ρητό `entity_id` automation, επαληθεύεται μέσω `GET /states/{entity_id}` ότι `attributes.id == id`· αλλιώς `invalid_command` («automation entity_id does not belong to scenario»). Χωρίς `entity_id` η αντιστοίχιση γίνεται όπως πριν από το `/states`.
+
+## 7. Home Assistant Container (NAS)
+
+Δεν είναι εμπορικό hub (ADR 001 = HAOS). Για το σπίτι με HA στο Docker: **sidecar** δίπλα στο Core, χωρίς Supervisor.
+
+1. Στο HA: το προφίλ σου (κάτω αριστερά) → **Long-lived access tokens** → δημιούργησε, αντέγραψε μία φορά.
+2. Στο Mac, από το repo:
+
+```bash
+docker build -f addons/arvio_agent/Dockerfile.standalone -t arvio-agent:0.1.31 addons/arvio_agent
+```
+
+3. Στο NAS, νέο stack / compose από `addons/arvio_agent/compose.nas.example.yml`. Βάλε το token και το `ARVIO_HA_URL` (π.χ. `http://192.168.68.77:8123` ή `http://homeassistant:8123` αν είναι στο ίδιο δίκτυο). **Serial** μοναδικό: `nas-home-1` (όχι `rpi-lab-1`).
+4. Αν το HA τρέχει `network_mode: host`, βάλε host και στο agent και `ARVIO_HA_URL=http://127.0.0.1:8123`.
+5. Άνοιξε `http://<NAS>:8099` · enroll στο cloud · το σπίτι φαίνεται δεύτερο hub στο Console / Partner / Home.
+
+Δουλεύει: φώτα, κλίμα, ρολά, HACS συσκευές που είναι entities, remote HA από Console, κάμερες μέσω Core API. Δεν δουλεύει: add-on OTA, Supervisor backups, ενημερώσεις HAOS — το Core στο NAS ενημερώνεται όπως πριν (image pull).

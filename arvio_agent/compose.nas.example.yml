@@ -1,0 +1,26 @@
+# Sidecar δίπλα στο Home Assistant Container στο UGOS (NAS).
+# Ανέβασε ΟΛΟ τον φάκελο addons/arvio_agent στο NAS και άνοιξε Compose από εκεί.
+# Δεν χρειάζεται Docker στο Mac.
+
+services:
+  arvio-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.standalone
+    image: arvio-agent:0.1.31
+    container_name: arvio-agent
+    restart: unless-stopped
+    environment:
+      ARVIO_HA_URL: http://192.168.68.77:8123
+      ARVIO_HA_TOKEN: REPLACE_WITH_LONG_LIVED_TOKEN
+      ARVIO_CLOUD_URL: https://cloud.arvio.systems
+      ARVIO_SERIAL: nas-home-1
+      ARVIO_RELAY_URL: https://relay.arvio.systems
+      ARVIO_DATA_DIR: /data
+    ports:
+      - "8099:8099"
+    volumes:
+      - arvio-agent-data:/data
+
+volumes:
+  arvio-agent-data:

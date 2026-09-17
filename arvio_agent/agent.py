@@ -40,7 +40,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.28"
+AGENT_VERSION = "0.1.31"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -58,7 +58,7 @@ TOKEN = ""
 
 
 def read_token() -> str:
-    for key in ("SUPERVISOR_TOKEN", "HASSIO_TOKEN"):
+    for key in ("SUPERVISOR_TOKEN", "HASSIO_TOKEN", "ARVIO_HA_TOKEN", "HA_TOKEN"):
         val = (os.environ.get(key) or "").strip()
         if val:
             return val
@@ -76,6 +76,58 @@ def read_token() -> str:
     return ""
 
 
+def core_origin() -> str:
+    """Direct Core origin for HA Container / NAS sidecar. Empty = HAOS Supervisor."""
+    return (os.environ.get("ARVIO_HA_URL") or "").strip().rstrip("/")
+
+
+def uses_supervisor() -> bool:
+    return not core_origin()
+
+
+def core_api(path: str) -> str:
+    """`path` like `/states` or `/camera_proxy/camera.x`."""
+    origin = core_origin()
+    if origin:
+        return f"{origin}/api{path}"
+    return f"http://supervisor/core/api{path}"
+
+
+def core_ws() -> str:
+    origin = core_origin()
+    if not origin:
+        return "ws://supervisor/core/websocket"
+    if origin.startswith("https://"):
+        return "wss://" + origin[len("https://") :] + "/api/websocket"
+    if origin.startswith("http://"):
+        return "ws://" + origin[len("http://") :] + "/api/websocket"
+    return origin + "/api/websocket"
+
+
+def core_resource(path: str) -> str:
+    """`path` starts with `/api/…` (camera_proxy, media_player_proxy, HLS)."""
+    origin = core_origin()
+    if origin:
+        return origin + path
+    return "http://supervisor/core" + path
+
+
+def ha_ui_origin() -> str:
+    return (
+        (
+            os.environ.get("ARVIO_HA_CORE_URL")
+            or os.environ.get("ARVIO_HA_URL")
+            or "http://homeassistant:8123"
+        )
+        .strip()
+        .rstrip("/")
+    )
+
+
+def token_missing() -> str:
+    return "missing HA token" if core_origin() else "missing SUPERVISOR_TOKEN"
+
+
 def opts() -> None:
     global CLOUD, SERIAL, mode, RELAY_URL, RELAY_TOKEN
     p = DATA / "options.json"
@@ -89,6 +141,18 @@ def opts() -> None:
             RELAY_URL = str(o.get("relay_url") or "").rstrip("/")
         if o.get("relay_token"):
             RELAY_TOKEN = str(o["relay_token"])
+    env_cloud = (os.environ.get("ARVIO_CLOUD_URL") or "").strip().rstrip("/")
+    if env_cloud:
+        CLOUD = env_cloud
+    env_serial = (os.environ.get("ARVIO_SERIAL") or "").strip()
+    if env_serial:
+        SERIAL = env_serial
+    env_relay = os.environ.get("ARVIO_RELAY_URL")
+    if env_relay is not None and env_relay.strip():
+        RELAY_URL = env_relay.strip().rstrip("/")
+    env_rt = (os.environ.get("ARVIO_RELAY_TOKEN") or "").strip()
+    if env_rt:
+        RELAY_TOKEN = env_rt
     # A token the cloud minted (heartbeat) outranks the add-on option, so a
     # per-hub secret sticks across restarts without rewriting options.json.
     st = load_hub()
@@ -372,12 +436,12 @@ def ha(path: str, method: str = "GET", body: dict | None = None, timeout: int = 
     if not TOKEN:
         TOKEN = read_token()
     if not TOKEN:
-        err = "missing SUPERVISOR_TOKEN"
+        err = token_missing()
         ha_ok = False
         return None
     data = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(
-        f"http://supervisor/core/api{path}",
+        core_api(path),
         data=data,
         method=method,
         headers={
@@ -404,10 +468,10 @@ def ha_or_raise(path: str, method: str = "GET", body: dict | None = None, timeou
     if not TOKEN:
         TOKEN = read_token()
     if not TOKEN:
-        raise RuntimeError("missing SUPERVISOR_TOKEN")
+        raise RuntimeError(token_missing())
     data = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(
-        f"http://supervisor/core/api{path}",
+        core_api(path),
         data=data,
         method=method,
         headers={
@@ -530,9 +594,9 @@ class HaWs:
         except ImportError as e:
             raise RuntimeError("websocket-client not installed") from e
         if not TOKEN:
-            raise RuntimeError("missing SUPERVISOR_TOKEN")
+            raise RuntimeError(token_missing())
         self._ws = websocket.create_connection(
-            "ws://supervisor/core/websocket", timeout=timeout
+            core_ws(), timeout=timeout
         )
         self._next_id = 1
         try:
@@ -964,6 +1028,306 @@ def device_remove(payload: dict | None = None, entity_id: str = "") -> dict:
     raise ValueError("device_id or entity_id required")
 
 
+LIGHT_GROUP_MIN = 2
+LIGHT_GROUP_MAX = 48
+LIGHT_GROUP_NAME_MAX = 80
+
+
+def parse_light_group_payload(payload: dict | None) -> tuple[str, list[str], str | None]:
+    """Pure: (name, light entity_ids, area_id). Members stay visible in HA."""
+    payload = payload if isinstance(payload, dict) else {}
+    name = str(payload.get("name") or "").strip()
+    if not name or len(name) > LIGHT_GROUP_NAME_MAX:
+        raise ValueError("name_required")
+    raw = payload.get("entity_ids")
+    if raw is None:
+        raw = payload.get("entities")
+    if not isinstance(raw, list):
+        raise ValueError("entity_ids_required")
+    seen: list[str] = []
+    for item in raw:
+        eid = str(item or "")
+        if not ENTITY_ID_RE.fullmatch(eid) or not eid.startswith("light."):
+            raise ValueError("invalid_entity_id")
+        if eid not in seen:
+            seen.append(eid)
+    if not (LIGHT_GROUP_MIN <= len(seen) <= LIGHT_GROUP_MAX):
+        raise ValueError("need_2_to_48_lights")
+    area_raw = payload.get("area_id")
+    if area_raw is None or area_raw == "":
+        area_id = None
+    else:
+        area_id = str(area_raw)
+        if not AREA_ID_RE.fullmatch(area_id):
+            raise ValueError("invalid_area_id")
+    return name, seen, area_id
+
+
+def _abort_config_flow(flow_id: str) -> None:
+    if not CAMERA_FLOW_ID_RE.fullmatch(flow_id):
+        return
+    try:
+        ha_or_raise(f"/config/config_entries/flow/{flow_id}", "DELETE")
+    except Exception:
+        pass
+
+
+def _light_named(states: object, name: str, exclude: set[str]) -> str | None:
+    want = name.strip().casefold()
+    if not isinstance(states, list) or not want:
+        return None
+    for e in states:
+        if not isinstance(e, dict):
+            continue
+        eid = str(e.get("entity_id") or "")
+        if not eid.startswith("light.") or eid in exclude:
+            continue
+        attrs = e.get("attributes") if isinstance(e.get("attributes"), dict) else {}
+        fn = str(attrs.get("friendly_name") or "").strip()
+        if fn.casefold() == want:
+            return eid
+    return None
+
+
+def _group_flow_is_menu(raw: dict) -> bool:
+    if raw.get("type") == "menu":
+        return True
+    return isinstance(raw.get("menu_options"), (list, dict))
+
+
+def light_group(payload: dict | None = None) -> dict:
+    """Create a Light Group helper via the documented Group config flow. hide_members stays false
+    so Partner still sees the members; Home hides them with entity_meta."""
+    name, entities, area_id = parse_light_group_payload(payload)
+    raw = ha_or_raise("/config/config_entries/flow", "POST", {"handler": "group"})
+    if not isinstance(raw, dict):
+        raise RuntimeError("group_flow_failed")
+    flow_id = str(raw.get("flow_id") or "")
+    try:
+        if _group_flow_is_menu(raw):
+            if not CAMERA_FLOW_ID_RE.fullmatch(flow_id):
+                raise RuntimeError("group_flow_failed")
+            raw = ha_or_raise(
+                f"/config/config_entries/flow/{flow_id}",
+                "POST",
+                {"next_step_id": "light"},
+            )
+            if not isinstance(raw, dict):
+                raise RuntimeError("group_flow_failed")
+            flow_id = str(raw.get("flow_id") or flow_id)
+        if str(raw.get("type") or "") != "create_entry":
+            if not CAMERA_FLOW_ID_RE.fullmatch(flow_id):
+                raise RuntimeError("group_flow_failed")
+            raw = ha_or_raise(
+                f"/config/config_entries/flow/{flow_id}",
+                "POST",
+                {
+                    "name": name,
+                    "entities": entities,
+                    "hide_members": False,
+                    "all": False,
+                },
+            )
+            if not isinstance(raw, dict):
+                raise RuntimeError("group_flow_failed")
+        if str(raw.get("type") or "") != "create_entry":
+            errors = raw.get("errors") if isinstance(raw.get("errors"), dict) else {}
+            reason = str(raw.get("reason") or raw.get("error") or "")
+            return {
+                "ok": False,
+                "phase": str(raw.get("type") or "unknown"),
+                "step_id": raw.get("step_id"),
+                "errors": errors,
+                "error": reason or "group_flow_failed",
+            }
+    except Exception:
+        _abort_config_flow(flow_id)
+        raise
+    created = None
+    exclude = set(entities)
+    for _ in range(10):
+        created = _light_named(ha("/states") or [], name, exclude)
+        if created:
+            break
+        time.sleep(0.2)
+    if created and area_id:
+        try:
+            ha_ws_command(
+                "config/entity_registry/update",
+                extra={"entity_id": created, "area_id": area_id},
+            )
+        except Exception:
+            pass
+    schedule_registry_refresh("light_group", delay=0.4)
+    return {
+        "ok": True,
+        "entity_id": created,
+        "name": name,
+        "entity_ids": entities,
+        "area_id": area_id,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Scenes — real HA scenes through the frontend scene-config API
+# (`homeassistant/components/config/scene.py`, EditSceneConfigView →
+# /api/config/scene/config/{id}; its post_write_hook reloads scenes). Same
+# family as /config/automation/config that scenarios use. Per-entity attributes
+# per light/cover `reproduce_state.py`: brightness 0–255, rgb_color,
+# color_temp_kelvin, current_position. The cloud has already converted % → 0–255.
+
+SCENE_ID_RE = re.compile(r"^arvio_[a-z0-9_]{1,60}$")
+SCENE_NAME_MAX = 80
+SCENE_MAX_ENTITIES = 48
+SCENE_ICON_RE = re.compile(r"^mdi:[a-z0-9-]{1,64}$")
+SCENE_ATTRS = {
+    "light": {"state": ("on", "off"), "brightness": (1, 255), "rgb_color": None, "color_temp_kelvin": (1000, 10000)},
+    "switch": {"state": ("on", "off")},
+    "cover": {"state": ("open", "closed"), "current_position": (0, 100)},
+}
+
+
+def _scene_int(v, lo: int, hi: int, err: str) -> int:
+    try:
+        n = int(round(float(v)))
+    except (TypeError, ValueError):
+        raise ValueError(err)
+    if n < lo or n > hi:
+        raise ValueError(err)
+    return n
+
+
+def parse_scene_payload(payload: dict | None) -> tuple[str, str, str | None, str | None, dict]:
+    """Pure: (id, name, area_id, icon, HA `entities` map). Refuses anything outside
+    light/switch/cover and the attribute allowlist — a scene must never carry a lock."""
+    payload = payload if isinstance(payload, dict) else {}
+    sid = str(payload.get("id") or "").strip()
+    if not SCENE_ID_RE.fullmatch(sid):
+        raise ValueError("invalid_id")
+    name = str(payload.get("name") or "").strip()
+    if not name or len(name) > SCENE_NAME_MAX:
+        raise ValueError("name_required")
+    area_raw = payload.get("area_id")
+    area_id = None
+    if area_raw not in (None, ""):
+        area_id = str(area_raw)
+        if not AREA_ID_RE.fullmatch(area_id):
+            raise ValueError("invalid_area_id")
+    icon = None
+    if payload.get("icon"):
+        icon = str(payload["icon"])
+        if not SCENE_ICON_RE.fullmatch(icon):
+            raise ValueError("invalid_icon")
+    raw = payload.get("entities")
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError("entities_required")
+    if len(raw) > SCENE_MAX_ENTITIES:
+        raise ValueError("too_many_entities")
+    entities: dict = {}
+    for eid, st in raw.items():
+        eid = str(eid)
+        if not ENTITY_ID_RE.fullmatch(eid):
+            raise ValueError("invalid_entity_id")
+        domain = eid.split(".", 1)[0]
+        spec = SCENE_ATTRS.get(domain)
+        if spec is None:
+            raise ValueError("invalid_entity_id")
+        row = {"state": st} if isinstance(st, str) else st
+        if not isinstance(row, dict):
+            raise ValueError("invalid_state")
+        state = str(row.get("state") or "")
+        if state not in spec["state"]:
+            raise ValueError("invalid_state")
+        out = {"state": state}
+        if state in ("on", "open"):
+            for key, bounds in spec.items():
+                if key == "state" or row.get(key) is None:
+                    continue
+                if key == "rgb_color":
+                    rgb = row[key]
+                    if not isinstance(rgb, list) or len(rgb) != 3:
+                        raise ValueError("invalid_rgb")
+                    out[key] = [_scene_int(x, 0, 255, "invalid_rgb") for x in rgb]
+                else:
+                    out[key] = _scene_int(row[key], bounds[0], bounds[1], f"invalid_{key}")
+            if "rgb_color" in out and "color_temp_kelvin" in out:
+                raise ValueError("one_colour")
+        entities[eid] = out
+    return sid, name, area_id, icon, entities
+
+
+def _scene_entity_for_id(sid: str) -> str | None:
+    states = ha("/states")
+    if not isinstance(states, list):
+        return None
+    for e in states:
+        if not isinstance(e, dict):
+            continue
+        eid = str(e.get("entity_id") or "")
+        if not eid.startswith("scene."):
+            continue
+        attrs = e.get("attributes") if isinstance(e.get("attributes"), dict) else {}
+        if str(attrs.get("id") or "") == sid:
+            return eid
+    return None
+
+
+def upsert_scene(payload: dict | None = None) -> dict:
+    sid, name, area_id, icon, entities = parse_scene_payload(payload)
+    body: dict = {"id": sid, "name": name, "entities": entities}
+    if icon:
+        body["icon"] = icon
+    ha_or_raise(f"/config/scene/config/{sid}", "POST", body, timeout=45)
+    created = None
+    for _ in range(10):
+        created = _scene_entity_for_id(sid)
+        if created:
+            break
+        time.sleep(0.2)
+    if created and area_id:
+        try:
+            ha_ws_command("config/entity_registry/update", extra={"entity_id": created, "area_id": area_id})
+        except Exception:
+            pass
+    schedule_registry_refresh("scene_upsert", delay=0.4)
+    return {
+        "ok": True,
+        "id": sid,
+        "entity_id": created,
+        "name": name,
+        "area_id": area_id,
+        "affected_entity_ids": [created] if created else [],
+    }
+
+
+def _scene_id_from(payload: dict | None, entity_id: str = "") -> str:
+    payload = payload if isinstance(payload, dict) else {}
+    sid = str(payload.get("id") or payload.get("scene_id") or "").strip()
+    if not sid and entity_id.startswith("scene."):
+        st_obj = ha(f"/states/{entity_id}")
+        attrs = st_obj.get("attributes") if isinstance(st_obj, dict) and isinstance(st_obj.get("attributes"), dict) else {}
+        sid = str(attrs.get("id") or "")
+    if not SCENE_ID_RE.fullmatch(sid):
+        raise ValueError("scene id must start with arvio_")
+    return sid
+
+
+def delete_scene(payload: dict | None = None, entity_id: str = "") -> dict:
+    sid = _scene_id_from(payload, entity_id)
+    ha_or_raise(f"/config/scene/config/{sid}", "DELETE", timeout=45)
+    schedule_registry_refresh("scene_delete", delay=0.4)
+    return {"ok": True, "id": sid, "deleted": True}
+
+
+def scene_config(payload: dict | None = None, entity_id: str = "") -> dict:
+    """Read one Arvio scene back for editing."""
+    sid = _scene_id_from(payload, entity_id)
+    cfg = ha(f"/config/scene/config/{sid}", timeout=15)
+    if not isinstance(cfg, dict):
+        raise RuntimeError("scene_not_found")
+    return {"ok": True, "id": sid, "config": cfg, "entity_id": _scene_entity_for_id(sid)}
+
+
 def list_blueprints() -> dict:
     """List automation blueprints via HA websocket."""
     result = ha_ws_command("blueprint/list", {"domain": "automation"})
@@ -1123,10 +1487,13 @@ def trigger_scenario(payload: dict, entity_id: str = "") -> dict:
 def supervisor(path: str, method: str = "GET", body: dict | None = None, timeout: int = 120):
     """Home Assistant Supervisor API (not Core). Documented /backups endpoints."""
     global TOKEN, err
+    if not uses_supervisor():
+        err = "supervisor:not available (HA Container)"
+        return None
     if not TOKEN:
         TOKEN = read_token()
     if not TOKEN:
-        err = "missing SUPERVISOR_TOKEN"
+        err = token_missing()
         return None
     data = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(
@@ -1574,7 +1941,7 @@ def entities() -> list:
         caps = {
             "brightness": domain == "light"
             and (
-                "brightness" in color_modes
+                light_modes_dimmable(color_modes)
                 or attrs.get("brightness") is not None
                 or attrs.get("brightness_pct") is not None
             ),
@@ -2053,6 +2420,14 @@ def execute_action(
         return device_update(payload, entity_id)
     if action == "arvio.device_remove":
         return device_remove(payload, entity_id)
+    if action == "arvio.light_group":
+        return light_group(payload)
+    if action == "arvio.upsert_scene":
+        return upsert_scene(payload)
+    if action == "arvio.delete_scene":
+        return delete_scene(payload, entity_id)
+    if action == "arvio.scene_config":
+        return scene_config(payload, entity_id)
     if action == "arvio.upsert_scenario":
         return upsert_scenario(payload)
     if action == "arvio.delete_scenario":
@@ -2069,6 +2444,12 @@ def execute_action(
         return media_search(payload, entity_id)
     if action == "arvio.camera_setup":
         return camera_setup(payload)
+    if action == "arvio.integration_setup":
+        return integration_setup(payload)
+    if action == "arvio.integration_discovery":
+        return integration_discovery(payload)
+    if action == "arvio.integration_handlers":
+        return integration_handlers(payload)
     if action == "arvio.camera_snapshot":
         return camera_snapshot(payload, entity_id)
     if action == "arvio.camera_stream":
@@ -2376,6 +2757,34 @@ TODO_AGENT_ACTIONS = frozenset({"arvio.todo"})
 CAMERA_AGENT_ACTIONS = frozenset(
     {"arvio.camera_setup", "arvio.camera_snapshot", "arvio.camera_stream"}
 )
+INTEGRATION_AGENT_ACTIONS = frozenset(
+    {
+        "arvio.integration_setup",
+        "arvio.integration_discovery",
+        "arvio.integration_handlers",
+    }
+)
+# Core / Supervisor / Nabu Casa — Partner programs devices, not the box itself.
+BLOCKED_INTEGRATION_HANDLERS = frozenset(
+    {
+        "analytics",
+        "api",
+        "backup",
+        "cloud",
+        "frontend",
+        "hassio",
+        "homeassistant",
+        "http",
+        "image",
+        "logger",
+        "raspberry_pi",
+        "recorder",
+        "stream",
+        "websocket_api",
+    }
+)
+INTEGRATION_HANDLER_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+INTEGRATION_SECRET_KEY_RE = re.compile(r"(password|secret|token|api_key|pin)", re.I)
 # Music is not dangerous: every media action is allowed on the relay AND the LAN path (§15.5).
 MEDIA_ACTIONS = MEDIA_PLAYER_ACTIONS | MUSIC_ASSISTANT_ACTIONS | MEDIA_AGENT_ACTIONS
 # The LAN path forwards only these payload keys, and only for MEDIA_ACTIONS
@@ -2456,6 +2865,10 @@ AGENT_SERVICE_ALLOWLIST = frozenset(
         "arvio.zigbee_permit",
         "arvio.device_update",
         "arvio.device_remove",
+        "arvio.light_group",
+        "arvio.upsert_scene",
+        "arvio.delete_scene",
+        "arvio.scene_config",
         "arvio.upsert_scenario",
         "arvio.delete_scenario",
         "arvio.set_scenario_enabled",
@@ -2469,6 +2882,7 @@ AGENT_SERVICE_ALLOWLIST = frozenset(
     | MEDIA_ACTIONS
     | TODO_AGENT_ACTIONS
     | CAMERA_AGENT_ACTIONS
+    | INTEGRATION_AGENT_ACTIONS
 )
 
 # Mirrors HOME_DANGEROUS_ACTIONS / HOME_SECURITY_ACTIONS in home-model.ts.
@@ -2966,6 +3380,19 @@ def media_art_hash(media_content_id, entity_picture) -> str | None:
     return hashlib.sha1((str(media_content_id or "") + str(entity_picture)).encode("utf-8")).hexdigest()
 
 
+# HA light ColorMode (developers.home-assistant.io/docs/core/entity/light): every mode except
+# `onoff` / `unknown` supports brightness. A Hue colour bulb reports ["color_temp", "xy"] —
+# never the literal "brightness" — so a dimmable light that is OFF has no `brightness` attr
+# and used to lose its dimmer in Home until someone switched it on.
+LIGHT_NON_DIMMABLE_MODES = frozenset({"onoff", "unknown"})
+
+
+def light_modes_dimmable(color_modes) -> bool:
+    if not isinstance(color_modes, list):
+        return False
+    return any(isinstance(m, str) and m and m not in LIGHT_NON_DIMMABLE_MODES for m in color_modes)
+
+
 def entity_capabilities(domain: str, attrs: dict) -> dict:
     color_modes = attrs.get("supported_color_modes") or []
     if not isinstance(color_modes, list):
@@ -2992,7 +3419,7 @@ def entity_capabilities(domain: str, attrs: dict) -> dict:
     return {
         "brightness": domain == "light"
         and (
-            "brightness" in color_modes
+            light_modes_dimmable(color_modes)
             or attrs.get("brightness") is not None
             or attrs.get("brightness_pct") is not None
         ),
@@ -3081,6 +3508,8 @@ def typed_attrs(
     elif domain == "scene":
         # Scene entities list their members in the `entity_id` attribute (best-effort).
         out["scene_entity_ids"] = _str_list(attrs.get("entity_id"))
+        # Config id — `arvio_*` means Arvio made it and may edit / delete it.
+        out["scene_id"] = str(attrs["id"]) if attrs.get("id") not in (None, "") else None
     elif domain == "script":
         out["labels"] = list(labels or [])
     elif domain == "sensor":
@@ -3900,8 +4329,8 @@ def fetch_entity_picture(picture: str, timeout: int = 10) -> tuple[bytes, str | 
         if not TOKEN:
             TOKEN = read_token()
         if not TOKEN:
-            raise RuntimeError("missing SUPERVISOR_TOKEN")
-        url = "http://supervisor/core/api" + picture[len("/api"):]
+            raise RuntimeError(token_missing())
+        url = core_api(picture[len("/api") :])
         headers["Authorization"] = f"Bearer {TOKEN}"
     elif picture.startswith(("http://", "https://")):
         url = picture
@@ -4001,10 +4430,10 @@ def fetch_camera_proxy(entity_id: str, width: int, timeout: int = 20) -> tuple[b
     if not TOKEN:
         TOKEN = read_token()
     if not TOKEN:
-        raise RuntimeError("missing SUPERVISOR_TOKEN")
+        raise RuntimeError(token_missing())
     path = f"/camera_proxy/{entity_id}?width={width}"
     req = urllib.request.Request(
-        f"http://supervisor/core/api{path}",
+        core_api(path),
         headers={"Authorization": f"Bearer {TOKEN}"},
         method="GET",
     )
@@ -4137,6 +4566,281 @@ def camera_setup(payload: dict | None = None) -> dict:
         sanitize_camera_user_input(user_input),
     )
     return _camera_flow_view(raw)
+
+
+def integration_handler_allowed(handler: str) -> bool:
+    return bool(INTEGRATION_HANDLER_RE.fullmatch(handler)) and handler not in BLOCKED_INTEGRATION_HANDLERS
+
+
+def sanitize_integration_user_input(raw) -> dict:
+    if not isinstance(raw, dict):
+        raise ValueError("user_input required")
+    if len(raw) > 32:
+        raise ValueError("user_input too large")
+    out: dict = {}
+    for key, value in raw.items():
+        k = str(key)
+        if not CAMERA_USER_INPUT_KEY_RE.fullmatch(k):
+            continue
+        if value is None or isinstance(value, bool):
+            out[k] = value
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            out[k] = value
+        elif isinstance(value, str) and len(value) <= 2048:
+            out[k] = value
+        elif isinstance(value, list):
+            out[k] = [
+                str(x)[:120]
+                for x in value[:16]
+                if isinstance(x, str) and 0 < len(x) <= 120
+            ]
+    return out
+
+
+def _integration_option_pair(raw) -> dict | None:
+    if isinstance(raw, str) and 0 < len(raw) <= 120:
+        return {"value": raw, "label": raw}
+    if isinstance(raw, (list, tuple)) and raw:
+        value = str(raw[0] or "")[:120]
+        label = str(raw[1] if len(raw) > 1 else raw[0] or value)[:120]
+        if value:
+            return {"value": value, "label": label}
+    if isinstance(raw, dict):
+        value = str(raw.get("value") or raw.get(0) or "")[:120]
+        label = str(raw.get("label") or raw.get("name") or value)[:120]
+        if value:
+            return {"value": value, "label": label}
+    return None
+
+
+def sanitize_integration_schema(raw) -> list:
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for item in raw[:32]:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "")
+        if not CAMERA_USER_INPUT_KEY_RE.fullmatch(name):
+            continue
+        field = {
+            "name": name,
+            "type": str(item.get("type") or "string")[:32],
+            "required": item.get("required") is not False and item.get("optional") is not True,
+        }
+        options = item.get("options")
+        if isinstance(options, list):
+            pairs = [p for p in (_integration_option_pair(o) for o in options[:64]) if p]
+            if pairs:
+                field["options"] = pairs
+        if not INTEGRATION_SECRET_KEY_RE.search(name):
+            default = item.get("default")
+            if default is None or isinstance(default, bool):
+                if "default" in item:
+                    field["default"] = default
+            elif isinstance(default, (int, float)) and not isinstance(default, bool):
+                field["default"] = default
+            elif isinstance(default, str) and len(default) <= 2048:
+                field["default"] = default
+        out.append(field)
+    return out
+
+
+def sanitize_integration_handlers(raw) -> list:
+    items: list = []
+    if isinstance(raw, list):
+        items = raw[:400]
+    elif isinstance(raw, dict):
+        for key, val in list(raw.items())[:400]:
+            if isinstance(val, dict):
+                row = {"handler": key, **val}
+            else:
+                row = {"handler": key, "name": val if isinstance(val, str) else key}
+            items.append(row)
+    out = []
+    seen: set[str] = set()
+    for item in items:
+        rec = {"handler": item} if isinstance(item, str) else item if isinstance(item, dict) else None
+        if not rec:
+            continue
+        handler = str(rec.get("handler") or rec.get("domain") or "")
+        if not integration_handler_allowed(handler) or handler in seen:
+            continue
+        seen.add(handler)
+        name = str(rec.get("name") or rec.get("title") or handler)[:80]
+        out.append({"handler": handler, "name": name or handler})
+    out.sort(key=lambda r: r["handler"])
+    return out
+
+
+def sanitize_integration_discovery(raw) -> list:
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for item in raw[:40]:
+        if not isinstance(item, dict):
+            continue
+        flow_id = str(item.get("flow_id") or "")
+        handler = str(item.get("handler") or "")
+        if not CAMERA_FLOW_ID_RE.fullmatch(flow_id) or not integration_handler_allowed(handler):
+            continue
+        ctx = item.get("context") if isinstance(item.get("context"), dict) else {}
+        source = str(ctx.get("source") or item.get("source") or "discovery")[:40]
+        title = str(item.get("title") or handler)[:80]
+        row = {
+            "flow_id": flow_id,
+            "handler": handler,
+            "source": source,
+            "title": title or handler,
+        }
+        step = str(item.get("step_id") or "")
+        if CAMERA_USER_INPUT_KEY_RE.fullmatch(step):
+            row["step_id"] = step
+        out.append(row)
+    return out
+
+
+def sanitize_menu_options(raw) -> list:
+    out = []
+    if isinstance(raw, dict):
+        seq = list(raw.items())[:32]
+        for key, val in seq:
+            value = str(key)[:80]
+            if not value:
+                continue
+            out.append({"value": value, "label": str(val or value)[:80]})
+        return out
+    if not isinstance(raw, list):
+        return []
+    for item in raw[:32]:
+        pair = _integration_option_pair(item)
+        if pair:
+            out.append(pair)
+    return out
+
+
+def sanitize_flow_errors(raw) -> dict:
+    if not isinstance(raw, dict):
+        return {}
+    out = {}
+    for key, val in list(raw.items())[:16]:
+        k = str(key)
+        if k != "base" and not CAMERA_USER_INPUT_KEY_RE.fullmatch(k):
+            continue
+        out[k] = str(val)[:80]
+    return out
+
+
+def _integration_flow_view(raw) -> dict:
+    if not isinstance(raw, dict):
+        return {"ok": False, "phase": "error", "error": "bad_flow"}
+    kind = raw.get("type")
+    if kind == "create_entry":
+        title = raw.get("title")
+        return {"ok": True, "phase": "created", "title": str(title)[:80] if title else None}
+    if kind == "abort":
+        return {"ok": False, "phase": "abort", "reason": str(raw.get("reason") or "aborted")[:80]}
+    if kind == "external":
+        return {
+            "ok": False,
+            "phase": "sfk",
+            "handler": raw.get("handler") if integration_handler_allowed(str(raw.get("handler") or "")) else None,
+            "error": "oauth_or_external",
+        }
+    if kind == "progress":
+        return {
+            "ok": True,
+            "phase": "progress",
+            "flow_id": raw.get("flow_id"),
+            "handler": raw.get("handler"),
+            "progress_action": str(raw.get("progress_action") or "")[:80] or None,
+        }
+    if kind == "menu":
+        return {
+            "ok": True,
+            "phase": "menu",
+            "flow_id": raw.get("flow_id"),
+            "handler": raw.get("handler"),
+            "step_id": str(raw.get("step_id") or "") or None,
+            "menu_options": sanitize_menu_options(raw.get("menu_options")),
+        }
+    if kind == "form":
+        return {
+            "ok": True,
+            "phase": "form",
+            "flow_id": raw.get("flow_id"),
+            "handler": raw.get("handler"),
+            "step_id": str(raw.get("step_id") or "") or None,
+            "errors": sanitize_flow_errors(raw.get("errors")),
+            "data_schema": sanitize_integration_schema(raw.get("data_schema")),
+        }
+    return {"ok": False, "phase": "error", "error": str(kind or "unknown_step")[:40]}
+
+
+def integration_handlers(payload: dict | None = None) -> dict:
+    """List config-flow handlers. Documented REST GET /config/config_entries/flow_handlers."""
+    raw = ha_or_raise("/config/config_entries/flow_handlers")
+    return {"ok": True, "handlers": sanitize_integration_handlers(raw)}
+
+
+def integration_discovery(payload: dict | None = None) -> dict:
+    """Discovered (non-user) in-progress flows.
+
+    TODO confirm: WS `config_entries/flow/progress` is used by the HA frontend
+    (homeassistant/components/config/config_entries.py) and is not listed on
+    developers.home-assistant.io/docs/api/websocket/.
+    """
+    raw = ha_ws_command("config_entries/flow/progress")
+    return {"ok": True, "flows": sanitize_integration_discovery(raw)}
+
+
+def integration_setup(payload: dict | None = None) -> dict:
+    """Drive any allowed HA config flow. Same REST as camera_setup, any handler except blocked."""
+    payload = payload if isinstance(payload, dict) else {}
+    handler = str(payload.get("handler") or "")
+    if handler and not integration_handler_allowed(handler):
+        raise ValueError("handler not allowed")
+    if payload.get("abort"):
+        flow_id = str(payload.get("flow_id") or "")
+        if not CAMERA_FLOW_ID_RE.fullmatch(flow_id):
+            raise ValueError("flow_id required to abort")
+        ha_or_raise(f"/config/config_entries/flow/{flow_id}", "DELETE")
+        return {"ok": True, "phase": "abort", "reason": "user"}
+    flow_id = str(payload.get("flow_id") or "")
+    user_input = payload.get("user_input")
+    if not handler and not flow_id:
+        raise ValueError("handler or flow_id required")
+    try:
+        if not flow_id:
+            raw = ha_or_raise(
+                "/config/config_entries/flow",
+                "POST",
+                {"handler": handler, "show_advanced_options": True},
+            )
+            if isinstance(user_input, dict):
+                fid = str((raw or {}).get("flow_id") or "")
+                if CAMERA_FLOW_ID_RE.fullmatch(fid):
+                    raw = ha_or_raise(
+                        f"/config/config_entries/flow/{fid}",
+                        "POST",
+                        sanitize_integration_user_input(user_input),
+                    )
+            return _integration_flow_view(raw)
+        if not CAMERA_FLOW_ID_RE.fullmatch(flow_id):
+            raise ValueError("invalid flow_id")
+        if user_input is None:
+            raw = ha_or_raise(f"/config/config_entries/flow/{flow_id}", "GET")
+            return _integration_flow_view(raw)
+        if not isinstance(user_input, dict):
+            raise ValueError("user_input required")
+        raw = ha_or_raise(
+            f"/config/config_entries/flow/{flow_id}",
+            "POST",
+            sanitize_integration_user_input(user_input),
+        )
+        return _integration_flow_view(raw)
+    except RuntimeError as e:
+        return {"ok": False, "phase": "error", "error": str(e)[:200]}
 
 
 def camera_stream(payload: dict | None = None, entity_id: str = "") -> dict:
@@ -4686,7 +5390,7 @@ def _handle_relay_command(cmd: dict) -> None:
 
 # --- SFK Console remote HA UI (ADR 008): proxy Core frontend over the hub WS ----
 
-HA_CORE_BASE = os.environ.get("ARVIO_HA_CORE_URL") or "http://homeassistant:8123"
+HA_CORE_BASE = "http://homeassistant:8123"
 HA_UI_MAX_BYTES = 8 * 1024 * 1024
 HA_UI_CHUNK = 24 * 1024
 HA_UI_METHODS = frozenset({"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"})
@@ -4743,7 +5447,7 @@ def ha_ui_safe_query(raw: str) -> str:
 
 
 def _rewrite_ha_location(value: str) -> str:
-    bases = (HA_CORE_BASE.rstrip("/"), "http://homeassistant:8123", "http://homeassistant")
+    bases = (ha_ui_origin(), "http://homeassistant:8123", "http://homeassistant")
     for base in bases:
         if value.startswith(base):
             rest = value[len(base) :]
@@ -4778,7 +5482,7 @@ def camera_http_via_supervisor(method: str, cam_path: str) -> tuple[int, dict[st
     if not TOKEN:
         return 502, {"content-type": "text/plain; charset=utf-8"}, [], b"missing token"
     req = urllib.request.Request(
-        "http://supervisor/core" + cam_path,
+        core_resource(cam_path),
         headers={"Authorization": f"Bearer {TOKEN}"},
         method=method_u,
     )
@@ -4820,7 +5524,7 @@ def ha_ui_http_via_core(
     cam = camera_safe_ha_path(safe + (f"?{q}" if q else ""))
     if cam:
         return camera_http_via_supervisor(method_u, cam)
-    parsed = urlparse(HA_CORE_BASE)
+    parsed = urlparse(ha_ui_origin())
     host = parsed.hostname or "homeassistant"
     port = parsed.port or 8123
     hdrs: dict[str, str] = {}
@@ -4899,7 +5603,7 @@ def _ha_ui_ws_open(req_id: str, path: str) -> None:
         relay_send({"type": "ha_ui_ws_close", "id": req_id, "code": 1008, "reason": "path"})
         return
     query = ha_ui_safe_query(path.split("?", 1)[1] if isinstance(path, str) and "?" in path else "")
-    parsed = urlparse(HA_CORE_BASE)
+    parsed = urlparse(ha_ui_origin())
     host = parsed.hostname or "homeassistant"
     port = parsed.port or 8123
     ws_url = f"ws://{host}:{port}/api/websocket" + (f"?{query}" if query else "")
@@ -5543,7 +6247,7 @@ if __name__ == "__main__":
     threading.Thread(target=push_flush_loop, daemon=True).start()
     threading.Thread(target=heartbeat_loop, daemon=True).start()
     print(
-        f"arvio-agent :{PORT} mode={mode} hub={hub_id} relay={RELAY_URL or 'off'} token={'yes' if TOKEN else 'NO'}",
+        f"arvio-agent :{PORT} mode={mode} hub={hub_id} ha={core_origin() or 'supervisor'} relay={RELAY_URL or 'off'} token={'yes' if TOKEN else 'NO'}",
         flush=True,
     )
     ThreadingHTTPServer(("0.0.0.0", PORT), H).serve_forever()
