@@ -16,6 +16,9 @@
       }
       * { box-sizing: border-box; }
       html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); }
+      body.has-wallpaper {
+        background-color: var(--bg);
+      }
       body {
         font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
         overflow: hidden;
@@ -235,6 +238,23 @@
         if (kids[pageIx]) kids[pageIx].scrollIntoView({ inline: "start", block: "nearest" });
       }
 
+      function applyWallpaper(s) {
+        if (s && s.has_wallpaper) {
+          var a = Number(s.wallpaper_scrim);
+          if (!isFinite(a)) a = 0.55;
+          a = Math.min(0.9, Math.max(0.1, a));
+          document.body.classList.add("has-wallpaper");
+          document.body.style.backgroundImage =
+            "linear-gradient(rgba(5,5,5," + a + "), rgba(5,5,5," + a + ")), url('/api/screens/wallpaper?id=" +
+            encodeURIComponent(s.screen_id) + "&v=" + encodeURIComponent(s.updated_at || "") + "')";
+          document.body.style.backgroundSize = "cover";
+          document.body.style.backgroundPosition = "center";
+        } else {
+          document.body.classList.remove("has-wallpaper");
+          document.body.style.backgroundImage = "";
+        }
+      }
+
       async function load(keepPage) {
         const r = await fetch("/api/screens");
         snap = await r.json();
@@ -245,11 +265,13 @@
           localStorage.removeItem(KEY);
           gate.classList.remove("hidden");
           board.classList.add("hidden");
+          applyWallpaper(null);
           return;
         }
         if (!keepPage) pageIx = 0;
         gate.classList.add("hidden");
         board.classList.remove("hidden");
+        applyWallpaper(screen);
         render();
       }
 

@@ -1,7 +1,9 @@
 """Wall screens: hub-local store, LAN list/pair only, relay put/delete, /panel without webfonts."""
 from __future__ import annotations
 
+import base64
 import json
+import shutil
 import threading
 import unittest
 import urllib.error
@@ -12,14 +14,21 @@ from unittest import mock
 from helpers import ROOT, agent
 
 
+JPEG = bytes([0xFF, 0xD8, 0xFF]) + b"\x11" * 80 + bytes([0xFF, 0xD9])
+
+
 class ScreenStoreTest(unittest.TestCase):
     def setUp(self):
         if agent.SCREENS.exists():
             agent.SCREENS.unlink()
+        if agent.WALLPAPERS.exists():
+            shutil.rmtree(agent.WALLPAPERS)
 
     def tearDown(self):
         if agent.SCREENS.exists():
             agent.SCREENS.unlink()
+        if agent.WALLPAPERS.exists():
+            shutil.rmtree(agent.WALLPAPERS)
 
     def _row(self, **patch):
         row = {
@@ -45,6 +54,23 @@ class ScreenStoreTest(unittest.TestCase):
         self.assertEqual(listed[0]["orientation"], "square")
         self.assertNotIn("pairing_code_hash", listed[0])
         self.assertTrue(agent.SCREENS.exists())
+
+    def test_wallpaper_file_not_in_json(self):
+        b64 = base64.b64encode(JPEG).decode()
+        out = agent.put_wall_screen(
+            self._row(
+                wallpaper={"asset_id": "wp_aaaaaaaaaaaaaaaa", "scrim": 0.4},
+                wallpaper_image={"mime": "image/jpeg", "data_base64": b64, "scrim": 0.4},
+            )
+        )
+        self.assertTrue(out["screen"]["has_wallpaper"])
+        self.assertEqual(out["screen"]["wallpaper_scrim"], 0.4)
+        dumped = agent.SCREENS.read_text(encoding="utf-8")
+        self.assertNotIn(b64, dumped)
+        self.assertTrue(agent.wallpaper_file("scr_aaaaaaaaaaaaaaaa").is_file())
+        cleared = agent.put_wall_screen(self._row(wallpaper=None))
+        self.assertFalse(cleared["screen"]["has_wallpaper"])
+        self.assertFalse(agent.wallpaper_file("scr_aaaaaaaaaaaaaaaa").is_file())
 
     def test_refuses_lock_tiles(self):
         with self.assertRaises(ValueError) as cm:
@@ -99,6 +125,8 @@ class ScreenLanHttpTest(unittest.TestCase):
     def setUp(self):
         if agent.SCREENS.exists():
             agent.SCREENS.unlink()
+        if agent.WALLPAPERS.exists():
+            shutil.rmtree(agent.WALLPAPERS)
 
     def request(self, method, path, body=None):
         data = None if body is None else json.dumps(body).encode()
@@ -148,6 +176,26 @@ class ScreenLanHttpTest(unittest.TestCase):
         dumped = json.dumps(body)
         self.assertNotIn("deadbeef", dumped)
         self.assertNotIn(digest, dumped)
+
+    def test_wallpaper_http(self):
+        b64 = base64.b64encode(JPEG).decode()
+        agent.put_wall_screen(
+            {
+                "screen_id": "scr_aaaaaaaaaaaaaaaa",
+                "site_id": "site_1",
+                "name": "Πάνελ",
+                "hardware": "generic_square",
+                "orientation": "square",
+                "pages": [{"id": "pg_aaaaaaaa", "tiles": [{"kind": "clock"}]}],
+                "wallpaper": {"asset_id": "wp_aaaaaaaaaaaaaaaa", "scrim": 0.3},
+                "wallpaper_image": {"mime": "image/jpeg", "data_base64": b64, "scrim": 0.3},
+            }
+        )
+        status, raw = self.request("GET", "/api/screens/wallpaper?id=scr_aaaaaaaaaaaaaaaa")
+        self.assertEqual(status, 200)
+        self.assertEqual(raw, JPEG)
+        status, _ = self.request("GET", "/api/screens/wallpaper?id=scr_nope")
+        self.assertEqual(status, 404)
 
     def test_pair_http(self):
         digest = agent.hash_screen_pairing("654321", "site_1", "scr_bbbbbbbbbbbbbbbb")

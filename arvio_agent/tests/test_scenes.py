@@ -1,4 +1,4 @@
-"""Arvio scenes via HA scene-config API + Hue dimming capability. Agent 0.1.31."""
+"""Arvio scenes via HA scene-config API + Hue dimming capability. Agent 0.1.32."""
 import unittest
 from unittest import mock
 

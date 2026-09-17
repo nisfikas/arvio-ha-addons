@@ -33,6 +33,7 @@ except OSError:
 STATE = DATA / "hub.json"
 LAB = DATA / "lab_store.json"
 SCREENS = DATA / "screens.json"
+WALLPAPERS = DATA / "wallpapers"
 APP = Path("/app")
 
 CLOUD = "https://cloud.arvio.systems"
@@ -40,7 +41,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.31"
+AGENT_VERSION = "0.1.32"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -231,7 +232,9 @@ def save_screens(doc: dict) -> None:
 
 
 def public_screen(row: dict) -> dict:
-    return {
+    sid = str(row.get("screen_id") or "")
+    has = bool(sid) and wallpaper_file(sid).is_file()
+    out = {
         "screen_id": row.get("screen_id"),
         "site_id": row.get("site_id"),
         "hub_id": row.get("hub_id"),
@@ -242,7 +245,68 @@ def public_screen(row: dict) -> dict:
         "rights": "member",
         "last_seen_at": row.get("last_seen_at"),
         "updated_at": row.get("updated_at"),
+        "has_wallpaper": has,
     }
+    if has:
+        try:
+            out["wallpaper_scrim"] = max(0.1, min(0.9, float(row.get("wallpaper_scrim", 0.55))))
+        except (TypeError, ValueError):
+            out["wallpaper_scrim"] = 0.55
+    return out
+
+
+def _safe_screen_id(screen_id: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_-]", "", str(screen_id))[:40]
+
+
+def wallpaper_file(screen_id: str) -> Path:
+    return WALLPAPERS / f"{_safe_screen_id(screen_id)}.jpg"
+
+
+def apply_screen_wallpaper(row: dict, payload: dict) -> None:
+    sid = str(row.get("screen_id") or "")
+    if not sid:
+        return
+    wp = payload.get("wallpaper")
+    img = payload.get("wallpaper_image")
+    if "wallpaper" in payload and wp is None and not isinstance(img, dict):
+        try:
+            wallpaper_file(sid).unlink()
+        except FileNotFoundError:
+            pass
+        row.pop("wallpaper_scrim", None)
+        row.pop("wallpaper_asset", None)
+        return
+    if isinstance(wp, dict) and "scrim" in wp:
+        try:
+            row["wallpaper_scrim"] = max(0.1, min(0.9, round(float(wp.get("scrim")), 2)))
+        except (TypeError, ValueError):
+            pass
+        asset = wp.get("asset_id")
+        if isinstance(asset, str) and asset:
+            row["wallpaper_asset"] = asset[:40]
+    if not isinstance(img, dict):
+        return
+    raw_b64 = str(img.get("data_base64") or "").replace(" ", "").replace("\n", "")
+    if len(raw_b64) < 32:
+        raise ValueError("invalid_wallpaper")
+    try:
+        raw = base64.b64decode(raw_b64, validate=False)
+    except Exception as e:
+        raise ValueError("invalid_wallpaper") from e
+    if len(raw) < 32 or len(raw) > 280_000:
+        raise ValueError("invalid_wallpaper")
+    jpeg = raw.startswith(b"\xff\xd8\xff")
+    webp = len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP"
+    if not jpeg and not webp:
+        raise ValueError("invalid_wallpaper")
+    WALLPAPERS.mkdir(parents=True, exist_ok=True)
+    wallpaper_file(sid).write_bytes(raw)
+    if "wallpaper_scrim" not in row:
+        try:
+            row["wallpaper_scrim"] = max(0.1, min(0.9, round(float(img.get("scrim", 0.55)), 2)))
+        except (TypeError, ValueError):
+            row["wallpaper_scrim"] = 0.55
 
 
 def _parse_screen_pages(raw) -> list:
@@ -315,6 +379,11 @@ def put_wall_screen(payload: dict | None, entity_id: str = "") -> dict:
         "last_seen_at": prev.get("last_seen_at"),
         "updated_at": str(payload.get("updated_at") or now_iso()),
     }
+    if "wallpaper_scrim" in prev:
+        row["wallpaper_scrim"] = prev.get("wallpaper_scrim")
+    if "wallpaper_asset" in prev:
+        row["wallpaper_asset"] = prev.get("wallpaper_asset")
+    apply_screen_wallpaper(row, payload)
     doc["screens"][screen_id] = row
     save_screens(doc)
     return {"ok": True, "screen_id": screen_id, "screen": public_screen(row)}
@@ -328,6 +397,10 @@ def delete_wall_screen(payload: dict | None, entity_id: str = "") -> dict:
     doc = load_screens()
     doc["screens"].pop(screen_id, None)
     save_screens(doc)
+    try:
+        wallpaper_file(screen_id).unlink()
+    except FileNotFoundError:
+        pass
     return {"ok": True, "screen_id": screen_id}
 
 
@@ -6042,6 +6115,26 @@ class H(BaseHTTPRequestHandler):
             return self._file("remote.html", "text/html; charset=utf-8")
         if path in ("/panel", "/panel/"):
             return self._file("panel.html", "text/html; charset=utf-8")
+        if path == "/api/screens/wallpaper":
+            qs = parse_qs(urlparse(self.path).query)
+            sid = (qs.get("id") or [None])[0]
+            if not sid or _safe_screen_id(sid) != sid:
+                return self._j(400, {"error": "invalid_screen"})
+            doc = load_screens()
+            if sid not in doc["screens"]:
+                return self._j(404, {"error": "not_found"})
+            path_file = wallpaper_file(sid)
+            if not path_file.is_file():
+                return self._j(404, {"error": "not_found"})
+            data = path_file.read_bytes()
+            mime = "image/webp" if data[:4] == b"RIFF" else "image/jpeg"
+            self.send_response(200)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "private, max-age=3600")
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if path == "/api/screens":
             qs = parse_qs(urlparse(self.path).query)
             sid = (qs.get("screen_id") or [None])[0]
