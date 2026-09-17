@@ -128,11 +128,11 @@ class FakePillow:
 
 class VersionPinTest(unittest.TestCase):
     def test_three_places_agree(self):
-        self.assertEqual(agent.AGENT_VERSION, "0.1.32")
+        self.assertEqual(agent.AGENT_VERSION, "0.1.33")
         cfg = (ROOT / "config.yaml").read_text(encoding="utf-8")
-        self.assertIn('\nversion: "0.1.32"\n', cfg)
+        self.assertIn('\nversion: "0.1.33"\n', cfg)
         docker = (ROOT / "Dockerfile").read_text(encoding="utf-8")
-        self.assertIn('io.hass.version="0.1.32"', docker)
+        self.assertIn('io.hass.version="0.1.33"', docker)
         self.assertIn("COPY panel.html", docker)
         self.assertRegex(docker, r"pillow", "Pillow must be installed for the art resize path")
         self.assertIn("0.1.21", (ROOT / "DOCS.md").read_text(encoding="utf-8"))
@@ -448,6 +448,12 @@ def browse_child(i: int, thumb=None, **kw) -> dict:
 
 
 class MediaBrowseTest(unittest.TestCase):
+    def setUp(self):
+        agent.MA_INFO["entry_id"] = None
+
+    def tearDown(self):
+        agent.MA_INFO["entry_id"] = None
+
     def test_mapping_thumbnails_and_cap(self):
         result = {
             "title": "Spotify", "media_class": "directory", "media_content_type": "library", "media_content_id": "spotify://",
@@ -515,6 +521,64 @@ class MediaBrowseTest(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 agent.media_browse({"entity_id": "media_player.saloni"})
 
+    def test_root_uses_music_assistant_library_playlists(self):
+        agent.MA_INFO["entry_id"] = "ma1"
+        ws_calls = []
+
+        def fake_ws(msg_type, extra=None):
+            ws_calls.append((msg_type, extra))
+            if extra and extra.get("service") == "get_library":
+                return {"context": {"id": "ctx_lib"}, "response": {"items": [
+                    {"name": "Discover Weekly", "uri": "spotify://playlist/dw", "media_type": "playlist",
+                     "image": "https://i.scdn.co/1"},
+                    {"name": "no uri"},
+                    {"name": "Liked", "uri": "library://playlist/2", "media_type": "playlist"},
+                ], "media_type": "playlist"}}
+            return {"title": "Cast", "children": [browse_child(1)]}
+
+        with mock.patch.object(agent, "ha_ws_query_command", side_effect=fake_ws), \
+             mock.patch.object(agent, "ha_ws_shared_command") as cmd_ws:
+            out = agent.media_browse({"entity_id": "media_player.saloni"})
+            cmd_ws.assert_not_called()
+        self.assertEqual(ws_calls[0], ("call_service", {
+            "domain": "music_assistant", "service": "get_library",
+            "service_data": {"config_entry_id": "ma1", "media_type": "playlist", "limit": 100, "order_by": "name"},
+            "return_response": True,
+        }))
+        self.assertEqual(out["source"], "music_assistant")
+        self.assertEqual(out["title"], "Playlists")
+        self.assertEqual([i["media_content_id"] for i in out["items"]],
+                         ["spotify://playlist/dw", "library://playlist/2"])
+        self.assertEqual(out["items"][0]["title"], "Discover Weekly")
+        self.assertEqual(out["items"][0]["thumbnail"], "https://i.scdn.co/1")
+        self.assertTrue(out["items"][0]["can_play"])
+        self.assertFalse(out["items"][0]["can_expand"], "playlists play whole; MA browse_media is album/artist only")
+        # expanding a node still uses the player's browse_media
+        with mock.patch.object(agent, "ha_ws_query_command", side_effect=fake_ws):
+            nested = agent.media_browse({"entity_id": "media_player.saloni",
+                                        "media_content_id": "spotify://playlist/dw",
+                                        "media_content_type": "playlist"})
+        self.assertEqual(ws_calls[-1], ("media_player/browse_media", {
+            "entity_id": "media_player.saloni", "media_content_id": "spotify://playlist/dw",
+            "media_content_type": "playlist"}))
+        self.assertEqual(nested["items"][0]["media_content_id"], "spotify://playlist/1")
+        self.assertNotIn("source", nested)
+        # get_library failure → Cast browse_media fallback
+        ws_calls.clear()
+
+        def fail_then_browse(msg_type, extra=None):
+            ws_calls.append((msg_type, extra))
+            if extra and extra.get("service") == "get_library":
+                raise RuntimeError("no such service")
+            return {"title": "Cast", "children": [browse_child(9)]}
+
+        with mock.patch.object(agent, "ha_ws_query_command", side_effect=fail_then_browse):
+            fallback = agent.media_browse({"entity_id": "media_player.saloni"})
+        self.assertEqual(fallback["items"][0]["media_content_id"], "spotify://playlist/9")
+        self.assertEqual(ws_calls[-1][0], "media_player/browse_media")
+        self.assertEqual(agent.ma_library_items(None, "playlist"), [])
+        self.assertEqual(agent.ma_library_items({"items": "nope"}, "playlist"), [])
+
 
 # --- 5. arvio.media_search ------------------------------------------------------------------------
 
@@ -533,6 +597,9 @@ MA_RESPONSE = {
 class MediaSearchTest(unittest.TestCase):
     def setUp(self):
         self.fake = MediaFakeHa(media_states(), entries=[], response=MA_RESPONSE)
+        agent.MA_INFO["entry_id"] = None
+
+    def tearDown(self):
         agent.MA_INFO["entry_id"] = None
 
     def test_search_media_ws_when_player_supports_it(self):
@@ -589,19 +656,26 @@ class MediaSearchTest(unittest.TestCase):
         })])
         self.assertEqual(out["source"], "music_assistant")
         items = out["items"]
-        self.assertEqual([i["media_content_id"] for i in items],
-                         ["library://artist/1", "spotify://album/2", "spotify://track/3", "spotify://playlist/4", "tunein://radio/5"])
-        self.assertEqual([i["media_content_type"] for i in items], ["artist", "album", "track", "playlist", "radio"])
-        self.assertEqual(items[0]["thumbnail"], "https://img/1")
-        self.assertIsNone(items[2]["thumbnail"])  # MA proxy image → hash only
-        self.assertTrue(items[2]["thumbnail_hash"])
-        self.assertEqual(items[2]["artist"], "Miles Davis · Bill Evans")
-        self.assertEqual(items[2]["album"], "Kind of Blue")
-        self.assertEqual(items[2]["title"], "So What")
-        self.assertTrue(items[2]["can_play"]); self.assertFalse(items[2]["can_expand"])
-        self.assertTrue(items[0]["can_expand"]); self.assertTrue(items[3]["can_expand"])
+        self.assertEqual([i["media_content_id"] for i in items], ["spotify://track/3"])
+        self.assertEqual(items[0]["title"], "So What")
+        self.assertEqual(items[0]["media_content_type"], "track")
+        self.assertIsNone(items[0]["thumbnail"])  # MA proxy image → hash only
+        self.assertTrue(items[0]["thumbnail_hash"])
+        self.assertEqual(items[0]["artist"], "Miles Davis · Bill Evans")
+        self.assertEqual(items[0]["album"], "Kind of Blue")
+        self.assertTrue(items[0]["can_play"]); self.assertFalse(items[0]["can_expand"])
         for key in ("title", "media_content_id", "media_content_type", "media_class", "can_play", "can_expand", "thumbnail", "thumbnail_hash"):
             self.assertIn(key, items[0])
+        # without media_type: tracks first so a song title is not buried under artists
+        with mock.patch.object(agent, "ha", side_effect=self.fake), \
+             mock.patch.object(agent, "ha_ws_query_command", side_effect=fake_ws), \
+             mock.patch.object(agent, "ha_ws_shared_command"):
+            mixed = agent.media_search({"entity_id": "media_player.kouzina", "query": "miles"})
+        self.assertEqual([i["media_content_id"] for i in mixed["items"]],
+                         ["spotify://track/3", "spotify://playlist/4", "spotify://album/2", "library://artist/1", "tunein://radio/5"])
+        self.assertEqual([i["media_content_type"] for i in mixed["items"]], ["track", "playlist", "album", "artist", "radio"])
+        self.assertEqual(mixed["items"][3]["thumbnail"], "https://img/1")
+        self.assertTrue(mixed["items"][3]["can_expand"]); self.assertTrue(mixed["items"][1]["can_expand"])
         # REST fallback (no websocket) uses POST …?return_response and reads service_response
         with mock.patch.object(agent, "ha", side_effect=self.fake), \
              mock.patch.object(agent, "ha_ws_query_command", side_effect=agent.HaWsUnavailable("no ws")):
@@ -633,6 +707,9 @@ class MediaSearchTest(unittest.TestCase):
             agent.media_search({"entity_id": "switch.a", "query": "x"})
         self.assertEqual(agent.ma_search_items(None), [])
         self.assertEqual(len(agent.ma_search_items({"tracks": [{"name": "t", "uri": f"u{i}"} for i in range(300)]})), 200)
+        self.assertEqual([i["media_content_type"] for i in agent.ma_search_items(MA_RESPONSE)],
+                         ["track", "playlist", "album", "artist", "radio"])
+        self.assertEqual(len(agent.ma_search_items(MA_RESPONSE, media_type="track")), 1)
 
 
 # --- 6. services: allowlists, service data, volume_max, acks -----------------------------------------

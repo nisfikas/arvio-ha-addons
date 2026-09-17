@@ -148,7 +148,7 @@ class SafetyTest(unittest.TestCase):
             self.assertEqual(cm.exception.code, "lan_forbidden", action)
         for action in ("arvio.model", "arvio.batch", "backup.create", "agent.update", "lock.lock",
                        "light.toggle", "arvio.zigbee_permit", "arvio.upsert_scenario",
-                       "arvio.put_screen", "arvio.delete_screen", "arvio.device_update", "arvio.device_remove"):
+                       "arvio.put_screen", "arvio.delete_screen", "arvio.device_update", "arvio.area_update", "arvio.device_remove"):
             self.assertNotIn(action, agent.LAN_ALLOWED_ACTIONS)
         # unknown actions stay "action_not_allowed" (never reach the LAN check)
         with self.assertRaises(agent.CommandRejected) as cm:
@@ -570,6 +570,7 @@ class SharedHaWsTest(unittest.TestCase):
 
     def test_query_channel_is_separate_and_never_blocks_call_service(self):
         """A slow browse_media (query channel) must not delay a call_service (command channel)."""
+        agent.MA_INFO["entry_id"] = None
         sockets = self.sockets
         browse_started = threading.Event()
         release_browse = threading.Event()

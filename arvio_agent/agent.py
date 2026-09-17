@@ -41,7 +41,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.32"
+AGENT_VERSION = "0.1.33"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -857,8 +857,8 @@ def config_entry_for_domain(entries: list, domain: str) -> dict | None:
     return None
 
 
-# Music Assistant (0.1.21 §15): the config entry id feeds `music_assistant.search`
-# and the model's `ma_available`; refreshed on every arvio.model read.
+# Music Assistant (0.1.21 §15): the config entry id feeds `music_assistant.search` /
+# `get_library` and the model's `ma_available`; refreshed on every arvio.model read.
 MA_INFO: dict = {"entry_id": None, "checked_at": 0.0}
 
 
@@ -874,7 +874,7 @@ def music_assistant_entry_id(entries: list | None = None) -> str | None:
 def ha_call_service_response(domain: str, service: str, data: dict) -> tuple[str | None, dict | None]:
     """call_service with a response (documented WS `return_response: true`; REST `?return_response`).
 
-    → (context_id, response dict | None). Used for `music_assistant.search` / `get_queue`.
+    → (context_id, response dict | None). Used for `music_assistant.search` / `get_library` / `get_queue`.
     Read-only, so it rides the query channel (`ha_ws_query_command`), not the command one.
     """
     try:
@@ -1063,6 +1063,29 @@ def parse_device_update_extra(payload: dict | None) -> dict:
                 raise ValueError("invalid area_id")
             extra["area_id"] = a
     return extra
+
+
+def parse_area_update(payload: dict | None) -> dict:
+    """Pure: area_id + name for config/area_registry/update. Raises ValueError."""
+    payload = payload if isinstance(payload, dict) else {}
+    area_id = str(payload.get("area_id") or "").strip()
+    if not AREA_ID_RE.fullmatch(area_id):
+        raise ValueError("invalid area_id")
+    name = payload.get("name")
+    n = str(name).strip() if name is not None else ""
+    if not n or len(n) > DEVICE_NAME_MAX:
+        raise ValueError("invalid name")
+    return {"area_id": area_id, "name": n}
+
+
+def area_update(payload: dict | None = None, entity_id: str = "") -> dict:
+    """Rename an HA area via documented area registry WS. entity_id unused."""
+    del entity_id
+    extra = parse_area_update(payload)
+    # TODO confirm: config/area_registry/update is frontend-internal but stable.
+    ha_ws_command("config/area_registry/update", extra)
+    schedule_registry_refresh("area_update", delay=0.4)
+    return {"ok": True, **extra}
 
 
 def device_update(payload: dict | None = None, entity_id: str = "") -> dict:
@@ -2491,6 +2514,8 @@ def execute_action(
         return zigbee_permit(payload)
     if action == "arvio.device_update":
         return device_update(payload, entity_id)
+    if action == "arvio.area_update":
+        return area_update(payload, entity_id)
     if action == "arvio.device_remove":
         return device_remove(payload, entity_id)
     if action == "arvio.light_group":
@@ -2937,6 +2962,7 @@ AGENT_SERVICE_ALLOWLIST = frozenset(
         "arvio.pairing_status",
         "arvio.zigbee_permit",
         "arvio.device_update",
+        "arvio.area_update",
         "arvio.device_remove",
         "arvio.light_group",
         "arvio.upsert_scene",
@@ -4970,13 +4996,46 @@ def browse_result_to_page(result, cap: int = MEDIA_BROWSE_MAX_ITEMS) -> dict:
 
 
 def media_browse(payload: dict, entity_id: str = "") -> dict:
-    """arvio.media_browse {entity_id, media_content_id?, media_content_type?} via HA WS media_player/browse_media."""
+    """arvio.media_browse {entity_id, media_content_id?, media_content_type?}.
+
+    Root (no media_content_id) with Music Assistant in the house → documented
+    `music_assistant.get_library {config_entry_id, media_type: playlist}` so Playlists
+    is the connected library (Spotify & co.), not Cast's YouTube/TuneIn browse tree.
+    Expanding a node still uses HA WS `media_player/browse_media`.
+    """
     payload = payload if isinstance(payload, dict) else {}
     eid = str(payload.get("entity_id") or entity_id or "")
     if not eid.startswith("media_player."):
         raise ValueError("media_player entity_id required")
+    has_node = payload.get("media_content_id") not in (None, "")
+    entry_id = MA_INFO.get("entry_id")
+    if entry_id and not has_node:
+        data = {
+            "config_entry_id": entry_id,
+            "media_type": "playlist",
+            "limit": min(100, MEDIA_BROWSE_MAX_ITEMS),
+            "order_by": "name",
+        }
+        try:
+            _ctx, response = ha_call_service_response("music_assistant", "get_library", data)
+            items = ma_library_items(response, "playlist")
+            return {
+                "ok": True,
+                "entity_id": eid,
+                "title": "Playlists",
+                "media_content_id": None,
+                "media_content_type": "playlist",
+                "media_class": "directory",
+                "thumbnail": None,
+                "items": items,
+                "total": len(items),
+                "truncated": False,
+                "source": "music_assistant",
+            }
+        except (RuntimeError, TypeError, ValueError, KeyError):
+            pass
     extra: dict = {"entity_id": eid}
-    if payload.get("media_content_id") not in (None, ""):
+    if has_node:
         extra["media_content_id"] = str(payload["media_content_id"])
     if payload.get("media_content_type"):
         extra["media_content_type"] = str(payload["media_content_type"])
@@ -4989,39 +5048,73 @@ def media_browse(payload: dict, entity_id: str = "") -> dict:
     return page
 
 
-MA_SEARCH_KEYS = (("artists", "artist"), ("albums", "album"), ("tracks", "track"), ("playlists", "playlist"), ("radio", "radio"))
+# Tracks first: a song title in Home search must not drown under 10 matching artists.
+MA_SEARCH_KEYS = (("tracks", "track"), ("playlists", "playlist"), ("albums", "album"), ("artists", "artist"), ("radio", "radio"))
 
 
-def ma_search_items(response, cap: int = MEDIA_BROWSE_MAX_ITEMS) -> list:
-    """music_assistant.search response → items (media_content_id = MA uri, media_content_type = MA media_type). Pure."""
+def ma_item_to_browse(it, default_type: str, *, expand_playlists: bool = True) -> dict | None:
+    """One Music Assistant media item (search or library) → browse/search row. Pure."""
+    if not isinstance(it, dict) or not it.get("uri"):
+        return None
+    mtype = str(it.get("media_type") or default_type)
+    image = it.get("image")
+    image = str(image) if isinstance(image, str) and image else None
+    artists = it.get("artists") if isinstance(it.get("artists"), list) else []
+    artist_names = [str(a.get("name")) for a in artists if isinstance(a, dict) and a.get("name")]
+    album = it.get("album") if isinstance(it.get("album"), dict) else None
+    expand = mtype in ("artist", "album") or (expand_playlists and mtype == "playlist")
+    return {
+        "title": str(it.get("name") or ""),
+        "media_content_id": str(it["uri"]),
+        "media_content_type": mtype,
+        "media_class": mtype,
+        "can_play": True,
+        "can_expand": expand,
+        "thumbnail": image if image and image.startswith("https://") else None,
+        "thumbnail_hash": hashlib.sha1(image.encode("utf-8")).hexdigest() if image else None,
+        "artist": " · ".join(artist_names) or None,
+        "album": str(album.get("name")) if album and album.get("name") else None,
+    }
+
+
+def ma_search_items(response, cap: int = MEDIA_BROWSE_MAX_ITEMS, media_type: str | None = None) -> list:
+    """music_assistant.search response → items (media_content_id = MA uri, media_content_type = MA media_type). Pure.
+
+    Flatten order is tracks → playlists → albums → artists → radio so a title query
+    surfaces songs before the artist rows MA returns in parallel. `media_type` keeps
+    only that bucket (HA still serialises every key).
+    """
     response = response if isinstance(response, dict) else {}
+    keys = MA_SEARCH_KEYS
+    if media_type:
+        want = str(media_type)
+        keys = tuple((k, t) for k, t in MA_SEARCH_KEYS if t == want)
     items: list = []
-    for key, default_type in MA_SEARCH_KEYS:
+    for key, default_type in keys:
         for it in response.get(key) or []:
-            if not isinstance(it, dict) or not it.get("uri"):
+            mapped = ma_item_to_browse(it, default_type)
+            if not mapped:
                 continue
-            mtype = str(it.get("media_type") or default_type)
-            image = it.get("image")
-            image = str(image) if isinstance(image, str) and image else None
-            artists = it.get("artists") if isinstance(it.get("artists"), list) else []
-            artist_names = [str(a.get("name")) for a in artists if isinstance(a, dict) and a.get("name")]
-            album = it.get("album") if isinstance(it.get("album"), dict) else None
-            items.append(
-                {
-                    "title": str(it.get("name") or ""),
-                    "media_content_id": str(it["uri"]),
-                    "media_content_type": mtype,
-                    "media_class": mtype,
-                    "can_play": True,
-                    "can_expand": mtype in ("artist", "album", "playlist"),
-                    "thumbnail": image if image and image.startswith("https://") else None,
-                    "thumbnail_hash": hashlib.sha1(image.encode("utf-8")).hexdigest() if image else None,
-                    "artist": " · ".join(artist_names) or None,
-                    "album": str(album.get("name")) if album and album.get("name") else None,
-                }
-            )
+            items.append(mapped)
             if len(items) >= cap:
                 return items
+    return items
+
+
+def ma_library_items(response, default_type: str, cap: int = MEDIA_BROWSE_MAX_ITEMS) -> list:
+    """music_assistant.get_library `{items: [...]}` → browse rows. Pure. Playlists play, they do not expand."""
+    response = response if isinstance(response, dict) else {}
+    raw = response.get("items")
+    if not isinstance(raw, list):
+        return []
+    items: list = []
+    for it in raw:
+        mapped = ma_item_to_browse(it, default_type, expand_playlists=False)
+        if not mapped:
+            continue
+        items.append(mapped)
+        if len(items) >= cap:
+            break
     return items
 
 
@@ -5065,7 +5158,7 @@ def media_search(payload: dict, entity_id: str = "") -> dict:
         if media_type:
             data["media_type"] = [media_type]
         _ctx, response = ha_call_service_response("music_assistant", "search", data)
-        return {**base, "source": "music_assistant", "items": ma_search_items(response)}
+        return {**base, "source": "music_assistant", "items": ma_search_items(response, media_type=media_type)}
     return {**base, "source": None, "items": [], "reason": "search_unavailable"}
 
 

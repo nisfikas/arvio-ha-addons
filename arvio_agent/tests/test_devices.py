@@ -23,6 +23,12 @@ class DeviceRegistryParseTest(unittest.TestCase):
             agent.parse_device_update_extra({})
         with self.assertRaises(ValueError):
             agent.parse_device_update_extra({"name": ""})
+        area = agent.parse_area_update({"area_id": "saloni", "name": "  Καθιστικό  "})
+        self.assertEqual(area, {"area_id": "saloni", "name": "Καθιστικό"})
+        with self.assertRaises(ValueError):
+            agent.parse_area_update({"area_id": "../x", "name": "Σαλόνι"})
+        with self.assertRaises(ValueError):
+            agent.parse_area_update({"area_id": "saloni", "name": ""})
 
     def test_update_and_remove_call_documented_ws(self):
         calls = []
@@ -45,11 +51,16 @@ class DeviceRegistryParseTest(unittest.TestCase):
             self.assertEqual(calls[-1][0], "config/device_registry/remove")
             out = agent.device_remove({}, "light.orphan")
             self.assertEqual(calls[-1][0], "config/entity_registry/remove")
+            out = agent.area_update({"area_id": "saloni", "name": "Καθιστικό"})
+            self.assertEqual(calls[-1][0], "config/area_registry/update")
+            self.assertEqual(calls[-1][1]["name"], "Καθιστικό")
 
     def test_not_on_lan_allowlist(self):
         self.assertIn("arvio.device_update", agent.AGENT_SERVICE_ALLOWLIST)
+        self.assertIn("arvio.area_update", agent.AGENT_SERVICE_ALLOWLIST)
         self.assertIn("arvio.device_remove", agent.AGENT_SERVICE_ALLOWLIST)
         self.assertNotIn("arvio.device_update", agent.LAN_ALLOWED_ACTIONS)
+        self.assertNotIn("arvio.area_update", agent.LAN_ALLOWED_ACTIONS)
         self.assertNotIn("arvio.device_remove", agent.LAN_ALLOWED_ACTIONS)
 
 
