@@ -96,6 +96,31 @@
       .kind { font-size: 0.62rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
       .name { font-size: 1.05rem; }
       .state { font-size: 0.85rem; color: var(--muted); }
+      #doorbell {
+        position: absolute;
+        inset: 0;
+        z-index: 8;
+        display: flex;
+        flex-direction: column;
+        background: #050505;
+      }
+      #doorbell.hidden { display: none; }
+      #doorbell-img {
+        flex: 1;
+        width: 100%;
+        object-fit: cover;
+        background: #121212;
+      }
+      #doorbell-bar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        padding: 16px;
+        padding-bottom: max(16px, env(safe-area-inset-bottom));
+        align-items: center;
+      }
+      #doorbell-bar p { flex: 1 1 8rem; color: var(--ink); }
+      #doorbell-confirm { color: var(--on); }
     </style>
   </head>
   <body>
@@ -109,6 +134,15 @@
     <main id="board" class="hidden">
       <div class="pages" id="pages"></div>
     </main>
+    <aside id="doorbell" class="hidden">
+      <img id="doorbell-img" alt="" />
+      <div id="doorbell-bar">
+        <p id="doorbell-title">Κάποιος στο κουδούνι</p>
+        <button type="button" id="doorbell-open" class="hidden">Άνοιγμα πόρτας</button>
+        <button type="button" id="doorbell-yes" class="hidden">Ναι, άνοιξε</button>
+        <button type="button" id="doorbell-dismiss">Κλείσιμο</button>
+      </div>
+    </aside>
     <script>
       const KEY = "arvio.panel.screen_id";
       const gate = document.getElementById("gate");
@@ -119,6 +153,14 @@
       let snap = { screens: [], entities: [], areas: [], weather: null };
       let screen = null;
       let pageIx = 0;
+      let doorbellWasRinging = false;
+      let doorbellDismissed = false;
+      let doorbellJpegTimer = null;
+      const doorbellEl = document.getElementById("doorbell");
+      const doorbellImg = document.getElementById("doorbell-img");
+      const doorbellOpen = document.getElementById("doorbell-open");
+      const doorbellYes = document.getElementById("doorbell-yes");
+      const doorbellTitle = document.getElementById("doorbell-title");
 
       function byId(id) {
         return snap.entities.find((e) => e.entity_id === id) || null;
@@ -255,17 +297,69 @@
         }
       }
 
+      function doorbellJpegSrc() {
+        if (!screen) return "";
+        return "/api/screens/doorbell.jpg?id=" + encodeURIComponent(screen.screen_id) + "&t=" + Date.now();
+      }
+      function stopDoorbellJpeg() {
+        if (doorbellJpegTimer) {
+          clearInterval(doorbellJpegTimer);
+          doorbellJpegTimer = null;
+        }
+      }
+      function startDoorbellJpeg() {
+        if (doorbellJpegTimer) return;
+        doorbellImg.src = doorbellJpegSrc();
+        doorbellJpegTimer = setInterval(function () {
+          doorbellImg.src = doorbellJpegSrc();
+        }, 1000);
+      }
+      function hideDoorbell() {
+        doorbellEl.classList.add("hidden");
+        doorbellOpen.classList.add("hidden");
+        doorbellYes.classList.add("hidden");
+        doorbellTitle.textContent = "Κάποιος στο κουδούνι";
+        stopDoorbellJpeg();
+      }
+      function showDoorbell() {
+        if (!doorbellEl.classList.contains("hidden")) return;
+        const db = screen && screen.doorbell;
+        doorbellEl.classList.remove("hidden");
+        doorbellYes.classList.add("hidden");
+        if (db && db.unlock_entity_id) doorbellOpen.classList.remove("hidden");
+        else doorbellOpen.classList.add("hidden");
+        startDoorbellJpeg();
+      }
+      function syncDoorbell() {
+        const db = screen && screen.doorbell;
+        const ringing = Boolean(db && db.ringing);
+        if (!ringing) {
+          doorbellWasRinging = false;
+          doorbellDismissed = false;
+          hideDoorbell();
+          return;
+        }
+        if (!doorbellWasRinging) doorbellDismissed = false;
+        doorbellWasRinging = true;
+        if (doorbellDismissed) {
+          hideDoorbell();
+          return;
+        }
+        showDoorbell();
+      }
+
       async function load(keepPage) {
-        const r = await fetch("/api/screens");
+        const sid = localStorage.getItem(KEY);
+        const r = await fetch("/api/screens" + (sid ? "?screen_id=" + encodeURIComponent(sid) : ""));
         snap = await r.json();
         hubId = snap.hub_id || hubId;
-        const sid = localStorage.getItem(KEY);
         screen = (snap.screens || []).find((s) => s.screen_id === sid) || null;
         if (!screen) {
           localStorage.removeItem(KEY);
           gate.classList.remove("hidden");
           board.classList.add("hidden");
           applyWallpaper(null);
+          hideDoorbell();
           return;
         }
         if (!keepPage) pageIx = 0;
@@ -273,6 +367,7 @@
         board.classList.remove("hidden");
         applyWallpaper(screen);
         render();
+        syncDoorbell();
       }
 
       async function pair() {
@@ -299,6 +394,30 @@
       document.getElementById("pair").addEventListener("click", pair);
       document.getElementById("code").addEventListener("keydown", (e) => {
         if (e.key === "Enter") pair();
+      });
+      document.getElementById("doorbell-dismiss").addEventListener("click", () => {
+        doorbellDismissed = true;
+        hideDoorbell();
+      });
+      doorbellOpen.addEventListener("click", () => {
+        doorbellOpen.classList.add("hidden");
+        doorbellYes.classList.remove("hidden");
+        doorbellTitle.textContent = "Να ανοίξει η πόρτα;";
+      });
+      doorbellYes.addEventListener("click", async () => {
+        if (!screen) return;
+        doorbellYes.disabled = true;
+        try {
+          await fetch("/api/screens/doorbell/unlock", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ screen_id: screen.screen_id }),
+          });
+        } finally {
+          doorbellYes.disabled = false;
+          doorbellDismissed = true;
+          hideDoorbell();
+        }
       });
       pagesEl.addEventListener("scroll", () => {
         const w = pagesEl.clientWidth || 1;

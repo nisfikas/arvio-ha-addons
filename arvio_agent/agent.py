@@ -41,7 +41,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.33"
+AGENT_VERSION = "0.1.34"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -199,6 +199,11 @@ SCREEN_TILE_KINDS = frozenset(
 )
 SCREEN_SECURITY_DOMAINS = frozenset({"lock", "alarm_control_panel"})
 SCREEN_ORIENTATIONS = frozenset({"landscape", "portrait", "square"})
+CAMERA_STREAM_SUFFIXES = ("_main", "_sub", "_high", "_low")
+DOORBELL_CALL_RE = re.compile(r"^binary_sensor\.[a-z0-9_]+$")
+DOORBELL_UNLOCK_RE = re.compile(r"^(lock|switch)\.[a-z0-9_]+$")
+DOORBELL_LATCH_S = 45.0
+DOORBELL_LATCH: dict[str, float] = {}
 
 
 def hash_screen_pairing(code: str, site_id: str, screen_id: str) -> str:
@@ -231,6 +236,165 @@ def save_screens(doc: dict) -> None:
     tmp.replace(SCREENS)
 
 
+def doorbell_call_guesses(camera_entity_id: str) -> list[str]:
+    """camera.{serial}_main → binary_sensor.{serial}_button_pressed (HACS dahua)."""
+    if not CAMERA_ENTITY_RE.fullmatch(camera_entity_id):
+        return []
+    object_id = camera_entity_id.split(".", 1)[1]
+    for suffix in CAMERA_STREAM_SUFFIXES:
+        if object_id.endswith(suffix):
+            object_id = object_id[: -len(suffix)]
+            break
+    return [f"binary_sensor.{object_id}_button_pressed", f"binary_sensor.{object_id}_call"]
+
+
+def parse_screen_doorbell(raw) -> dict | None:
+    if raw in (None, "", False):
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("invalid_doorbell")
+    cam = raw.get("camera_entity_id")
+    if cam in (None, ""):
+        return None
+    if not isinstance(cam, str) or not CAMERA_ENTITY_RE.fullmatch(cam):
+        raise ValueError("invalid_doorbell_camera")
+    out: dict = {"camera_entity_id": cam}
+    call = raw.get("call_entity_id")
+    if call not in (None, ""):
+        if not isinstance(call, str) or not DOORBELL_CALL_RE.fullmatch(call):
+            raise ValueError("invalid_doorbell_call")
+        out["call_entity_id"] = call
+    unlock = raw.get("unlock_entity_id")
+    if unlock not in (None, ""):
+        if not isinstance(unlock, str) or not DOORBELL_UNLOCK_RE.fullmatch(unlock):
+            raise ValueError("invalid_doorbell_unlock")
+        out["unlock_entity_id"] = unlock
+    return out
+
+
+def doorbell_watched_call_ids() -> set[str]:
+    ids: set[str] = set()
+    for row in load_screens().get("screens", {}).values():
+        if not isinstance(row, dict):
+            continue
+        try:
+            cfg = parse_screen_doorbell(row.get("doorbell"))
+        except ValueError:
+            continue
+        if not cfg:
+            continue
+        if cfg.get("call_entity_id"):
+            ids.add(str(cfg["call_entity_id"]))
+        ids.update(doorbell_call_guesses(str(cfg.get("camera_entity_id") or "")))
+    return ids
+
+
+def note_doorbell_ring(entity_id: str, new_state) -> None:
+    eid = str(entity_id or "")
+    if not eid.startswith("binary_sensor.") or eid not in doorbell_watched_call_ids():
+        return
+    state = str((new_state or {}).get("state") or "") if isinstance(new_state, dict) else ""
+    if state == "on":
+        DOORBELL_LATCH[eid] = time.monotonic() + DOORBELL_LATCH_S
+
+
+def resolve_doorbell_call(cfg: dict, have: set[str]) -> str | None:
+    explicit = cfg.get("call_entity_id")
+    if isinstance(explicit, str) and explicit in have:
+        return explicit
+    guesses = doorbell_call_guesses(str(cfg.get("camera_entity_id") or ""))
+    for guess in guesses:
+        if guess in have:
+            return guess
+    if isinstance(explicit, str) and explicit:
+        return explicit
+    cam = str(cfg.get("camera_entity_id") or "")
+    if not CAMERA_ENTITY_RE.fullmatch(cam):
+        return guesses[0] if guesses else None
+    object_id = cam.split(".", 1)[1]
+    for suffix in CAMERA_STREAM_SUFFIXES:
+        if object_id.endswith(suffix):
+            object_id = object_id[: -len(suffix)]
+            break
+    prefix = f"binary_sensor.{object_id}_"
+    for eid in have:
+        if eid.startswith(prefix) and "button" in eid:
+            return eid
+    return guesses[0] if guesses else None
+
+
+def doorbell_is_ringing(call_entity_id: str | None, states_by_id: dict) -> bool:
+    if not call_entity_id:
+        return False
+    if DOORBELL_LATCH.get(call_entity_id, 0) > time.monotonic():
+        return True
+    st = states_by_id.get(call_entity_id)
+    if isinstance(st, dict):
+        return str(st.get("state") or "") == "on"
+    return False
+
+
+def attach_doorbell_live(screens: list, states) -> None:
+    states_by_id: dict = {}
+    have: set[str] = set()
+    if isinstance(states, list):
+        for st in states:
+            if not isinstance(st, dict):
+                continue
+            eid = str(st.get("entity_id") or "")
+            if eid:
+                states_by_id[eid] = st
+                have.add(eid)
+    for screen in screens:
+        if not isinstance(screen, dict):
+            continue
+        cfg = screen.get("doorbell")
+        if not isinstance(cfg, dict):
+            continue
+        call = resolve_doorbell_call(cfg, have)
+        live = dict(cfg)
+        if call:
+            live["call_entity_id"] = call
+        live["ringing"] = doorbell_is_ringing(call, states_by_id)
+        screen["doorbell"] = live
+
+
+def doorbell_row(screen_id: str) -> tuple[dict | None, dict | None]:
+    sid = _safe_screen_id(screen_id)
+    if not sid or sid != str(screen_id or ""):
+        return None, None
+    row = load_screens().get("screens", {}).get(sid)
+    if not isinstance(row, dict):
+        return None, None
+    try:
+        cfg = parse_screen_doorbell(row.get("doorbell"))
+    except ValueError:
+        return row, None
+    return row, cfg
+
+
+def doorbell_jpeg(screen_id: str, width: int = 720) -> tuple[bytes, str]:
+    _, cfg = doorbell_row(screen_id)
+    if not cfg:
+        raise ValueError("not_found")
+    raw, mime = fetch_camera_proxy(cfg["camera_entity_id"], clamp_camera_width(width))
+    return raw, mime or "image/jpeg"
+
+
+def doorbell_unlock(screen_id: str) -> dict:
+    """Configured lock/switch only — not a general LAN lock.unlock."""
+    _, cfg = doorbell_row(screen_id)
+    unlock = (cfg or {}).get("unlock_entity_id") if cfg else None
+    if not isinstance(unlock, str) or not unlock:
+        raise ValueError("doorbell_unlock_unavailable")
+    domain = unlock.split(".", 1)[0]
+    if domain == "lock":
+        return call_service("lock", "unlock", {"entity_id": unlock})
+    if domain == "switch":
+        return call_service("switch", "turn_on", {"entity_id": unlock})
+    raise ValueError("doorbell_unlock_unavailable")
+
+
 def public_screen(row: dict) -> dict:
     sid = str(row.get("screen_id") or "")
     has = bool(sid) and wallpaper_file(sid).is_file()
@@ -252,6 +416,12 @@ def public_screen(row: dict) -> dict:
             out["wallpaper_scrim"] = max(0.1, min(0.9, float(row.get("wallpaper_scrim", 0.55))))
         except (TypeError, ValueError):
             out["wallpaper_scrim"] = 0.55
+    try:
+        doorbell = parse_screen_doorbell(row.get("doorbell"))
+    except ValueError:
+        doorbell = None
+    if doorbell:
+        out["doorbell"] = doorbell
     return out
 
 
@@ -384,6 +554,12 @@ def put_wall_screen(payload: dict | None, entity_id: str = "") -> dict:
     if "wallpaper_asset" in prev:
         row["wallpaper_asset"] = prev.get("wallpaper_asset")
     apply_screen_wallpaper(row, payload)
+    if "doorbell" in payload:
+        parsed = parse_screen_doorbell(payload.get("doorbell"))
+        if parsed:
+            row["doorbell"] = parsed
+    elif prev.get("doorbell"):
+        row["doorbell"] = prev["doorbell"]
     doc["screens"][screen_id] = row
     save_screens(doc)
     return {"ok": True, "screen_id": screen_id, "screen": public_screen(row)}
@@ -451,6 +627,7 @@ def panel_snapshot(screen_id: str | None = None) -> dict:
     entities_out = []
     areas_out = []
     weather = None
+    states = []
     try:
         snap = registries_for_commands()
         entity_regs = snap.get("entity_regs") or {}
@@ -477,7 +654,7 @@ def panel_snapshot(screen_id: str | None = None) -> dict:
                     "area_id": effective_area_id(entity_regs.get(eid), devices),
                 }
             )
-        states = ha("/states")
+        states = ha("/states") or []
         if isinstance(states, list):
             for st in states:
                 if not isinstance(st, dict):
@@ -492,12 +669,16 @@ def panel_snapshot(screen_id: str | None = None) -> dict:
                         "unit": attrs.get("temperature_unit") or attrs.get("unit_of_measurement"),
                     }
                     break
+        else:
+            states = []
     except Exception:
-        pass
+        states = []
+    screens = listed.get("screens") or []
+    attach_doorbell_live(screens, states)
     return {
         "ok": True,
         "hub_id": hub_id,
-        "screens": listed.get("screens") or [],
+        "screens": screens,
         "entities": entities_out,
         "areas": areas_out,
         "weather": weather,
@@ -838,6 +1019,23 @@ def ha_call_service(domain: str, service: str, data: dict) -> str | None:
     ctx = result.get("context") if isinstance(result, dict) else None
     cid = ctx.get("id") if isinstance(ctx, dict) else None
     return str(cid) if cid else None
+
+
+# Tests set this False so fake HA runs on the same thread. Production True: Spotify /
+# Music Assistant `call_service` can take many seconds; the Home ack must not wait.
+MEDIA_CALL_ASYNC = True
+
+
+def _spawn_media_call(domain: str, service: str, data: dict) -> None:
+    """Fire a media service on the HA command socket without blocking the hub ack."""
+
+    def run() -> None:
+        try:
+            ha_call_service(domain, service, data)
+        except Exception:
+            pass
+
+    threading.Thread(target=run, name=f"ha-{domain}.{service}", daemon=True).start()
 
 
 def config_entries() -> list:
@@ -2228,13 +2426,13 @@ def call_service(
     0.1.20 (§14.3): no "expected state" fallback — the snapshot is what HA reports, and
     `ok` is False (`error: "state_not_confirmed"`) when HA did not confirm within the wait.
     0.1.21: `expected_attrs` confirms via attributes (media volume_set / select_source …).
+    0.1.34: media_player / music_assistant never wait — Spotify holds the socket;
+    Home already paints the intent, and the state stream is the confirmation.
     """
     if isinstance(data, str):
         data = {"entity_id": data}
     data = dict(data) if isinstance(data, dict) else {}
     sent_at = time.time()
-    ha_context_id = ha_call_service(domain, service, data)
-
     raw_ids = data.get("entity_id")
     if wait_entity_ids:
         entity_ids = [str(x) for x in wait_entity_ids]
@@ -2247,13 +2445,29 @@ def call_service(
     entity_id = entity_ids[0] if len(entity_ids) == 1 else ""
 
     expected = _expected_state_for(domain, service)
-    states = wait_for_states(domain, expected, entity_ids, sent_at=sent_at, expected_attrs=expected_attrs)
-    settled = all(
-        _state_matches(domain, expected, _state_of(states.get(e))) and _attrs_match(states.get(e), expected_attrs)
-        for e in entity_ids
-    )
-
-    confirmed = (expected is None and not expected_attrs) or not entity_ids or settled
+    # Spotify / Music Assistant hold the HA websocket until the player answers.
+    # Waiting here for volume_level or «playing» queues the next skip/volume
+    # behind 2 s of silence. Home paints the intent immediately; the state
+    # stream is the confirmation.
+    media = domain in ("media_player", "music_assistant")
+    if media and MEDIA_CALL_ASYNC:
+        ha_context_id = None
+        _spawn_media_call(domain, service, data)
+        states = _overlay_feed(_read_states_rest(entity_ids), entity_ids, sent_at)
+        confirmed = True
+    else:
+        ha_context_id = ha_call_service(domain, service, data)
+        if media:
+            states = _overlay_feed(_read_states_rest(entity_ids), entity_ids, sent_at)
+            confirmed = True
+        else:
+            states = wait_for_states(domain, expected, entity_ids, sent_at=sent_at, expected_attrs=expected_attrs)
+            settled = all(
+                _state_matches(domain, expected, _state_of(states.get(e)))
+                and _attrs_match(states.get(e), expected_attrs)
+                for e in entity_ids
+            )
+            confirmed = (expected is None and not expected_attrs) or not entity_ids or settled
     snapshot_entities: dict = {}
     for e in entity_ids[:BATCH_MAX_CALLS]:
         snapshot_entities[e] = _snapshot_entry(states.get(e))
@@ -5410,9 +5624,11 @@ def handle_ha_event(event: dict) -> None:
     if etype == "state_changed":
         data = event.get("data") if isinstance(event.get("data"), dict) else {}
         eid = str(data.get("entity_id") or "")
+        new_state = data.get("new_state")
+        if isinstance(new_state, dict):
+            note_doorbell_ring(eid, new_state)
         if eid.split(".", 1)[0] not in HOME_ENTITY_DOMAINS:
             return
-        new_state = data.get("new_state")
         if isinstance(new_state, dict):
             note_state_change(eid, new_state)  # commands waiting on this entity
         regs = registry_snapshot()
@@ -6228,6 +6444,29 @@ class H(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(data)
             return
+        if path == "/api/screens/doorbell.jpg":
+            qs = parse_qs(urlparse(self.path).query)
+            sid = (qs.get("id") or [None])[0]
+            width = (qs.get("w") or [None])[0]
+            if not sid or _safe_screen_id(sid) != sid:
+                return self._j(400, {"error": "invalid_screen"})
+            try:
+                w = int(width) if width else 720
+            except (TypeError, ValueError):
+                w = 720
+            try:
+                data, mime = doorbell_jpeg(sid, w)
+            except ValueError:
+                return self._j(404, {"error": "not_found"})
+            except Exception:
+                return self._j(502, {"error": "camera_unavailable"})
+            self.send_response(200)
+            self.send_header("Content-Type", mime or "image/jpeg")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if path == "/api/screens":
             qs = parse_qs(urlparse(self.path).query)
             sid = (qs.get("screen_id") or [None])[0]
@@ -6323,6 +6562,15 @@ class H(BaseHTTPRequestHandler):
                 body = self._read_json()
                 out = pair_wall_screen(str(body.get("code") or ""))
                 return self._j(200, out)
+
+            if path == "/api/screens/doorbell/unlock":
+                body = self._read_json()
+                sid = str(body.get("screen_id") or "")
+                try:
+                    out = doorbell_unlock(sid)
+                except ValueError:
+                    return self._j(403, {"ok": False, "error": "doorbell_unlock_unavailable"})
+                return self._j(200, {"ok": True, **(out if isinstance(out, dict) else {})})
 
             if path.startswith("/api/service/"):
                 # /api/service/{domain}/{service}

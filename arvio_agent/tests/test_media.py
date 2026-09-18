@@ -3,6 +3,7 @@ import base64
 import hashlib
 import json
 import threading
+import time
 import unittest
 import urllib.request
 from http.server import ThreadingHTTPServer
@@ -128,11 +129,11 @@ class FakePillow:
 
 class VersionPinTest(unittest.TestCase):
     def test_three_places_agree(self):
-        self.assertEqual(agent.AGENT_VERSION, "0.1.33")
+        self.assertEqual(agent.AGENT_VERSION, "0.1.34")
         cfg = (ROOT / "config.yaml").read_text(encoding="utf-8")
-        self.assertIn('\nversion: "0.1.33"\n', cfg)
+        self.assertIn('\nversion: "0.1.34"\n', cfg)
         docker = (ROOT / "Dockerfile").read_text(encoding="utf-8")
-        self.assertIn('io.hass.version="0.1.33"', docker)
+        self.assertIn('io.hass.version="0.1.34"', docker)
         self.assertIn("COPY panel.html", docker)
         self.assertRegex(docker, r"pillow", "Pillow must be installed for the art resize path")
         self.assertIn("0.1.21", (ROOT / "DOCS.md").read_text(encoding="utf-8"))
@@ -870,6 +871,7 @@ class MediaExecuteTest(unittest.TestCase):
             mock.patch.object(agent, "ha_ws_query_command", side_effect=agent.HaWsUnavailable("no ws")),
             mock.patch.object(agent, "HA_INFO", {"version": "2025.8.1", "time_zone": "Europe/Athens"}),
             mock.patch.object(agent, "WAIT_FOR_STATE_S", 0.3),
+            mock.patch.object(agent, "MEDIA_CALL_ASYNC", False),
             mock.patch.object(agent, "STATE_FEED_LIVE", False),
             mock.patch.object(agent, "REGISTRY_CACHE", agent.RegistrySnapshot(**{k: v for k, v in regs().items() if k != "loaded_at"}, loaded_at=1.0)),
         ]
@@ -892,7 +894,8 @@ class MediaExecuteTest(unittest.TestCase):
         self.assertEqual(out["state_snapshot"]["attrs"]["platform"], "music_assistant")  # registry platform in the snapshot
         self.assertEqual(out["volume_level"], 0.5)
         self.assertEqual(out["ha_context_id"], "ctx_media")
-        # a stubborn device that keeps its old volume → state_not_confirmed
+        # a stubborn device that keeps its old volume: we still ack ok — Home keeps
+        # the optimistic level; waiting 2 s here queued the next skip behind silence.
         stubborn = MediaFakeHa(media_states())
         orig = stubborn.__call__
 
@@ -904,9 +907,25 @@ class MediaExecuteTest(unittest.TestCase):
 
         with mock.patch.object(agent, "ha", side_effect=no_change):
             out = agent.execute_action("media_player.volume_set", "media_player.saloni", {"volume_level": 0.5})
-        self.assertFalse(out["ok"])
-        self.assertEqual(out["error"], "state_not_confirmed")
+        self.assertTrue(out["ok"])
+        self.assertIsNone(out["error"])
         self.assertEqual(out["state_snapshot"]["attrs"]["volume_level"], 0.35)
+
+    def test_media_ack_does_not_wait_for_spotify(self):
+        release = threading.Event()
+        orig = agent.ha_call_service
+
+        def blocked(domain, service, data):
+            release.wait(2)
+            return orig(domain, service, data)
+
+        with mock.patch.object(agent, "MEDIA_CALL_ASYNC", True), mock.patch.object(agent, "ha_call_service", side_effect=blocked):
+            t0 = time.monotonic()
+            out = agent.execute_action("media_player.volume_set", "media_player.saloni", {"volume_level": 0.5})
+            elapsed = time.monotonic() - t0
+        release.set()
+        self.assertTrue(out["ok"])
+        self.assertLess(elapsed, 0.5)
 
     def test_select_source_and_play_pause_states(self):
         out = agent.execute_action("media_player.select_source", "media_player.saloni", {"source": "Radio"})

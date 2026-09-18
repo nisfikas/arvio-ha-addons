@@ -19,6 +19,7 @@ JPEG = bytes([0xFF, 0xD8, 0xFF]) + b"\x11" * 80 + bytes([0xFF, 0xD9])
 
 class ScreenStoreTest(unittest.TestCase):
     def setUp(self):
+        agent.DOORBELL_LATCH.clear()
         if agent.SCREENS.exists():
             agent.SCREENS.unlink()
         if agent.WALLPAPERS.exists():
@@ -109,6 +110,32 @@ class ScreenStoreTest(unittest.TestCase):
         self.assertTrue(out["ok"])
         self.assertEqual(out["screen"]["name"], "Κουζίνα")
 
+    def test_doorbell_infer_and_latch(self):
+        self.assertEqual(
+            agent.doorbell_call_guesses("camera.8b014b9pajf9590_main"),
+            ["binary_sensor.8b014b9pajf9590_button_pressed", "binary_sensor.8b014b9pajf9590_call"],
+        )
+        agent.put_wall_screen(
+            self._row(
+                doorbell={
+                    "camera_entity_id": "camera.8b014b9pajf9590_main",
+                    "unlock_entity_id": "lock.front",
+                }
+            )
+        )
+        listed = agent.list_wall_screens()["screens"][0]
+        self.assertEqual(listed["doorbell"]["camera_entity_id"], "camera.8b014b9pajf9590_main")
+        self.assertNotIn("ringing", listed["doorbell"])
+        agent.note_doorbell_ring("binary_sensor.8b014b9pajf9590_button_pressed", {"state": "on"})
+        screens = [{"doorbell": dict(listed["doorbell"])}]
+        agent.attach_doorbell_live(screens, [])
+        self.assertTrue(screens[0]["doorbell"]["ringing"])
+        self.assertEqual(screens[0]["doorbell"]["call_entity_id"], "binary_sensor.8b014b9pajf9590_button_pressed")
+        agent.note_doorbell_ring("binary_sensor.other_button_pressed", {"state": "on"})
+        self.assertNotIn("binary_sensor.other_button_pressed", agent.DOORBELL_LATCH)
+        agent.put_wall_screen(self._row(doorbell=None))
+        self.assertNotIn("doorbell", agent.list_wall_screens()["screens"][0])
+
 
 class ScreenLanHttpTest(unittest.TestCase):
     @classmethod
@@ -123,6 +150,7 @@ class ScreenLanHttpTest(unittest.TestCase):
         cls.server.server_close()
 
     def setUp(self):
+        agent.DOORBELL_LATCH.clear()
         if agent.SCREENS.exists():
             agent.SCREENS.unlink()
         if agent.WALLPAPERS.exists():
@@ -148,6 +176,7 @@ class ScreenLanHttpTest(unittest.TestCase):
         self.assertNotIn("fonts.googleapis", html)
         self.assertNotIn("fonts.gstatic", html)
         self.assertIn("Κωδικός", html)
+        self.assertIn("Κάποιος στο κουδούνι", html)
 
     def test_api_screens_omits_hash(self):
         digest = agent.hash_screen_pairing("123456", "site_1", "scr_aaaaaaaaaaaaaaaa")
@@ -215,6 +244,35 @@ class ScreenLanHttpTest(unittest.TestCase):
         self.assertEqual(status, 200)
         body = json.loads(raw.decode())
         self.assertEqual(body["screen_id"], "scr_bbbbbbbbbbbbbbbb")
+
+    def test_doorbell_jpeg_and_unlock(self):
+        agent.put_wall_screen(
+            {
+                "screen_id": "scr_aaaaaaaaaaaaaaaa",
+                "site_id": "site_1",
+                "name": "Πάνελ",
+                "hardware": "generic_square",
+                "orientation": "square",
+                "pages": [{"id": "pg_aaaaaaaa", "tiles": [{"kind": "clock"}]}],
+                "doorbell": {
+                    "camera_entity_id": "camera.8b014b9pajf9590_main",
+                    "unlock_entity_id": "lock.front",
+                },
+            }
+        )
+        status, _ = self.request("GET", "/api/screens/doorbell.jpg?id=scr_nope")
+        self.assertEqual(status, 404)
+        with mock.patch.object(agent, "fetch_camera_proxy", return_value=(JPEG, "image/jpeg")):
+            status, raw = self.request("GET", "/api/screens/doorbell.jpg?id=scr_aaaaaaaaaaaaaaaa")
+        self.assertEqual(status, 200)
+        self.assertEqual(raw, JPEG)
+        status, raw = self.request("POST", "/api/screens/doorbell/unlock", {"screen_id": "scr_nope"})
+        self.assertEqual(status, 403)
+        with mock.patch.object(agent, "call_service", return_value={"ok": True, "entity_id": "lock.front"}) as cs:
+            status, raw = self.request("POST", "/api/screens/doorbell/unlock", {"screen_id": "scr_aaaaaaaaaaaaaaaa"})
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(raw.decode())["ok"])
+        cs.assert_called_once_with("lock", "unlock", {"entity_id": "lock.front"})
 
 
 if __name__ == "__main__":
