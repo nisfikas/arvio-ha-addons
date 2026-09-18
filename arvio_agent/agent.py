@@ -41,7 +41,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.37"
+AGENT_VERSION = "0.1.38"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -245,7 +245,11 @@ def doorbell_call_guesses(camera_entity_id: str) -> list[str]:
         if object_id.endswith(suffix):
             object_id = object_id[: -len(suffix)]
             break
-    return [f"binary_sensor.{object_id}_button_pressed", f"binary_sensor.{object_id}_call"]
+    return [
+        f"binary_sensor.{object_id}_button_pressed",
+        f"binary_sensor.{object_id}_call",
+        f"binary_sensor.{object_id}_doorbell",
+    ]
 
 
 def parse_screen_doorbell(raw) -> dict | None:
@@ -290,7 +294,7 @@ def doorbell_watched_call_ids() -> set[str]:
 
 
 def doorbell_call_ids_from_cameras(entity_ids) -> set[str]:
-    """camera.{id}_main → the two usual Dahua/ONVIF call binary_sensors."""
+    """camera.{id}_main → the usual Dahua/ONVIF call binary_sensors."""
     ids: set[str] = set()
     for eid in entity_ids or ():
         if str(eid).startswith("camera."):
@@ -4025,8 +4029,9 @@ def entity_model_from_state(
             return None
     elif reg.get("entity_category") == "config":
         return None
-    if reg.get("hidden"):
+    if reg.get("hidden") and not doorbell_call:
         # §14.2: list_for_display `hb` (hidden) entries never reach the Home app.
+        # Doorbell call sensors are often hidden diagnostics — Home still needs them.
         return None
     device_class = attrs.get("device_class") or reg.get("original_device_class")
     device_class = str(device_class) if device_class else None

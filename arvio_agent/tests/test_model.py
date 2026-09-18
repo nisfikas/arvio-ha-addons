@@ -91,12 +91,16 @@ class ModelBuilderTest(unittest.TestCase):
             "entities": [
                 *ENTITY_REGISTRY_DISPLAY["entities"],
                 {"ei": "camera.vto_main", "pl": "onvif"},
-                {"ei": eid, "pl": "dahua", "ec": 1},
+                {"ei": eid, "pl": "dahua", "ec": 1, "hb": True},
             ],
         }
         self.assertEqual(
             agent.doorbell_call_ids_from_cameras(["camera.vto_main", "light.x"]),
-            {"binary_sensor.vto_button_pressed", "binary_sensor.vto_call"},
+            {
+                "binary_sensor.vto_button_pressed",
+                "binary_sensor.vto_call",
+                "binary_sensor.vto_doorbell",
+            },
         )
         self.assertNotIn(eid, by_id(build(states=STATES + [call], entity_registry_raw=raw)))
         row = by_id(build(states=STATES + [cam, call], entity_registry_raw=raw))[eid]

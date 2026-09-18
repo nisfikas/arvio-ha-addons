@@ -121,11 +121,19 @@ class ScreenStoreTest(unittest.TestCase):
     def test_doorbell_infer_and_latch(self):
         self.assertEqual(
             agent.doorbell_call_guesses("camera.8b014b9pajf9590_main"),
-            ["binary_sensor.8b014b9pajf9590_button_pressed", "binary_sensor.8b014b9pajf9590_call"],
+            [
+                "binary_sensor.8b014b9pajf9590_button_pressed",
+                "binary_sensor.8b014b9pajf9590_call",
+                "binary_sensor.8b014b9pajf9590_doorbell",
+            ],
         )
         self.assertEqual(
             agent.doorbell_call_ids_from_cameras(["camera.8b014b9pajf9590_main"]),
-            {"binary_sensor.8b014b9pajf9590_button_pressed", "binary_sensor.8b014b9pajf9590_call"},
+            {
+                "binary_sensor.8b014b9pajf9590_button_pressed",
+                "binary_sensor.8b014b9pajf9590_call",
+                "binary_sensor.8b014b9pajf9590_doorbell",
+            },
         )
         agent.put_wall_screen(
             self._row(

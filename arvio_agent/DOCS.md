@@ -225,7 +225,7 @@ HA WS `media_player/browse_media` (τεκμηριωμένο, στο **query chan
 2. Στο Mac, από το repo:
 
 ```bash
-docker build -f addons/arvio_agent/Dockerfile.standalone -t arvio-agent:0.1.37 addons/arvio_agent
+docker build -f addons/arvio_agent/Dockerfile.standalone -t arvio-agent:0.1.38 addons/arvio_agent
 ```
 
 3. Στο NAS, νέο stack / compose από `addons/arvio_agent/compose.nas.example.yml`. Βάλε το token και το `ARVIO_HA_URL` (π.χ. `http://192.168.68.77:8123` ή `http://homeassistant:8123` αν είναι στο ίδιο δίκτυο). **Serial** μοναδικό: `nas-home-1` (όχι `rpi-lab-1`).

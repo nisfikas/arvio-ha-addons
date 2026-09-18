@@ -65,6 +65,30 @@ class StateEventTest(unittest.TestCase):
         self.assertEqual(msg["entity_id"], eid)
         self.assertEqual(msg["state"], "on")
 
+    def test_hidden_doorbell_call_state_event(self):
+        eid = "binary_sensor.vto_button_pressed"
+        regs = {
+            **self.regs,
+            "entity_regs": {
+                **self.regs["entity_regs"],
+                eid: {
+                    "device_id": None,
+                    "area_id": None,
+                    "entity_category": "diagnostic",
+                    "icon": None,
+                    "labels": [],
+                    "hidden": True,
+                    "name": None,
+                    "platform": "dahua",
+                },
+            },
+        }
+        new = st(eid, "on")
+        self.assertIsNone(agent.state_event_message({"entity_id": eid, "new_state": new}, regs))
+        msg = agent.state_event_message({"entity_id": eid, "new_state": new}, regs, {eid})
+        self.assertEqual(msg["entity_id"], eid)
+        self.assertEqual(msg["state"], "on")
+
     def test_handle_ha_event_dispatch(self):
         sent = []
         with mock.patch.object(agent, "registry_snapshot", return_value=self.regs), \
