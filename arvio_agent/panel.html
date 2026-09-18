@@ -8,21 +8,29 @@
     <style>
       :root {
         --ink: #f2f2f2;
-        --muted: #868686;
+        --muted: #9a9a9a;
         --bg: #050505;
         --tile: #121212;
-        --line: #f2f2f214;
+        --line: #f2f2f218;
         --on: #f6e2c0;
+        --gap: 12px;
       }
       * { box-sizing: border-box; }
       html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); }
-      body.has-wallpaper {
-        background-color: var(--bg);
-      }
       body {
         font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
         overflow: hidden;
+        -webkit-user-select: none;
+        user-select: none;
       }
+      button {
+        font: inherit;
+        color: inherit;
+        background: var(--tile);
+        border: 1px solid var(--line);
+        cursor: pointer;
+      }
+      button:disabled { opacity: 0.4; }
       #gate, #board { position: absolute; inset: 0; }
       #gate {
         display: flex;
@@ -33,7 +41,7 @@
         padding: 1.5rem;
         text-align: center;
       }
-      #gate.hidden, #board.hidden { display: none; }
+      #gate.hidden, #board.hidden, #sheet.hidden, #doorbell.hidden { display: none; }
       h1 { margin: 0; font-size: 1.4rem; font-weight: 600; letter-spacing: -0.03em; }
       p { margin: 0; color: var(--muted); }
       input {
@@ -47,16 +55,6 @@
         background: var(--tile);
         color: var(--ink);
       }
-      button {
-        font: inherit;
-        color: inherit;
-        background: var(--tile);
-        border: 1px solid var(--line);
-        min-height: 3.5rem;
-        padding: 0 1.2rem;
-        cursor: pointer;
-      }
-      button:disabled { opacity: 0.4; }
       .err { color: #e55551; min-height: 1.2em; }
       .pages {
         display: flex;
@@ -70,32 +68,116 @@
         flex: 0 0 100%;
         scroll-snap-align: start;
         display: grid;
-        gap: 12px;
-        padding: 16px;
+        gap: var(--gap);
+        padding: var(--gap);
+        padding-bottom: max(var(--gap), env(safe-area-inset-bottom));
         grid-template-columns: repeat(2, minmax(0, 1fr));
-        grid-auto-rows: 1fr;
-        align-content: stretch;
-        align-items: stretch;
+        grid-auto-rows: minmax(0, 1fr);
         min-height: 100%;
-        box-sizing: border-box;
       }
       html[data-orientation="landscape"] .page { grid-template-columns: repeat(3, minmax(0, 1fr)); }
       .tile {
         min-height: 0;
+        min-width: 0;
         height: 100%;
-        padding: 0.85rem 0.9rem;
+        padding: 1rem 1.05rem;
         background: var(--tile);
         border: 1px solid var(--line);
+        border-radius: 28px;
         display: flex;
         flex-direction: column;
         justify-content: space-between;
         text-align: left;
       }
-      .tile.wide { grid-column: 1 / -1; }
+      .tile[data-size="m"], .tile.wide { grid-column: 1 / -1; }
+      .tile[data-size="l"] { grid-column: 1 / -1; grid-row: span 2; }
       .tile.on { color: var(--on); }
-      .kind { font-size: 0.62rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
-      .name { font-size: 1.05rem; }
-      .state { font-size: 0.85rem; color: var(--muted); }
+      .kicker {
+        font-size: 0.95rem;
+        letter-spacing: 0.04em;
+        color: var(--muted);
+        font-weight: 500;
+      }
+      .face {
+        font-variant-numeric: tabular-nums;
+        font-weight: 300;
+        letter-spacing: -0.06em;
+        line-height: 0.95;
+        font-size: clamp(2.4rem, 11vw, 4.4rem);
+      }
+      .tile[data-size="m"] .face { font-size: clamp(3.4rem, 14vw, 6rem); }
+      .tile[data-size="l"] .face { font-size: clamp(5rem, 22vw, 10rem); }
+      .tile--clock .kicker, .tile--weather .kicker { font-size: 1.05rem; }
+      .name {
+        font-size: clamp(1.15rem, 3.6vw, 1.75rem);
+        font-weight: 600;
+        letter-spacing: -0.03em;
+        line-height: 1.15;
+      }
+      .state { font-size: 1.05rem; color: var(--muted); }
+      .tile.on .state { color: var(--on); opacity: 0.85; }
+      #sheet {
+        position: absolute;
+        inset: 0;
+        z-index: 6;
+        display: flex;
+        flex-direction: column;
+        background: var(--bg);
+        padding: 16px;
+        padding-bottom: max(16px, env(safe-area-inset-bottom));
+        gap: 16px;
+      }
+      #sheet-top {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      #sheet-back {
+        min-height: 72px;
+        min-width: 72px;
+        border-radius: 28px;
+        font-size: 1.1rem;
+      }
+      #sheet-title {
+        font-size: 1.75rem;
+        font-weight: 600;
+        letter-spacing: -0.04em;
+      }
+      #sheet-sub { font-size: 1.1rem; }
+      #sheet-body { flex: 1; overflow: auto; display: flex; flex-direction: column; gap: 12px; }
+      .sheet-clock {
+        font-variant-numeric: tabular-nums;
+        font-weight: 300;
+        letter-spacing: -0.07em;
+        font-size: clamp(5rem, 24vw, 10rem);
+        line-height: 0.9;
+      }
+      .sheet-date { font-size: 1.25rem; color: var(--muted); }
+      .presets, .devices { display: grid; gap: 12px; }
+      .presets { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+      .devices { grid-template-columns: 1fr; }
+      .chip, .device {
+        min-height: 72px;
+        border-radius: 28px;
+        padding: 0 1.1rem;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        font-size: 1.2rem;
+      }
+      .device.on { color: var(--on); }
+      .wx-now { display: flex; flex-direction: column; gap: 0.4rem; }
+      .wx-days { display: grid; gap: 8px; }
+      .wx-day {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        min-height: 56px;
+        font-size: 1.15rem;
+        color: var(--muted);
+      }
+      .wx-day b { color: var(--ink); font-weight: 500; }
       #doorbell {
         position: absolute;
         inset: 0;
@@ -104,7 +186,6 @@
         flex-direction: column;
         background: #050505;
       }
-      #doorbell.hidden { display: none; }
       #doorbell-img {
         flex: 1;
         width: 100%;
@@ -121,6 +202,7 @@
       }
       #doorbell-bar p { flex: 1 1 8rem; color: var(--ink); }
       #doorbell-confirm { color: var(--on); }
+      #doorbell-bar button { min-height: 72px; border-radius: 28px; padding: 0 1.2rem; font-size: 1.1rem; }
     </style>
   </head>
   <body>
@@ -134,6 +216,16 @@
     <main id="board" class="hidden">
       <div class="pages" id="pages"></div>
     </main>
+    <section id="sheet" class="hidden">
+      <div id="sheet-top">
+        <button type="button" id="sheet-back">Πίσω</button>
+        <div>
+          <div id="sheet-title"></div>
+          <p id="sheet-sub"></p>
+        </div>
+      </div>
+      <div id="sheet-body"></div>
+    </section>
     <aside id="doorbell" class="hidden">
       <img id="doorbell-img" alt="" />
       <div id="doorbell-bar">
@@ -145,23 +237,58 @@
     </aside>
     <script>
       const KEY = "arvio.panel.screen_id";
+      const TIMER_KEY = "arvio.panel.timer";
+      const WX = {
+        "clear-night": "Καθαρός",
+        cloudy: "Συννεφιά",
+        fog: "Ομίχλη",
+        hail: "Χαλάζι",
+        lightning: "Καταιγίδα",
+        "lightning-rainy": "Καταιγίδα",
+        partlycloudy: "Αραιή συννεφιά",
+        pouring: "Έντονη βροχή",
+        rainy: "Βροχή",
+        snowy: "Χιόνι",
+        "snowy-rainy": "Χιονόνερο",
+        sunny: "Ηλιοφάνεια",
+        windy: "Άνεμος",
+        "windy-variant": "Άνεμος",
+      };
+      const ROOM_DOMAINS = { light: 1, switch: 1, cover: 1, climate: 1, media_player: 1 };
       const gate = document.getElementById("gate");
       const board = document.getElementById("board");
       const pagesEl = document.getElementById("pages");
       const gateErr = document.getElementById("gate-err");
+      const sheetEl = document.getElementById("sheet");
+      const sheetTitle = document.getElementById("sheet-title");
+      const sheetSub = document.getElementById("sheet-sub");
+      const sheetBody = document.getElementById("sheet-body");
       let hubId = null;
-      let snap = { screens: [], entities: [], areas: [], weather: null };
+      let snap = { screens: [], entities: [], areas: [], weather: null, timezone: "Europe/Athens" };
       let screen = null;
       let pageIx = 0;
+      let sheet = null;
+      let sheetTimer = 0;
       let doorbellWasRinging = false;
       let doorbellDismissed = false;
       let doorbellJpegTimer = null;
+      let lastBeep = 0;
       const doorbellEl = document.getElementById("doorbell");
       const doorbellImg = document.getElementById("doorbell-img");
       const doorbellOpen = document.getElementById("doorbell-open");
       const doorbellYes = document.getElementById("doorbell-yes");
       const doorbellTitle = document.getElementById("doorbell-title");
 
+      function esc(s) {
+        return String(s == null ? "" : s)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+      }
+      function tz() {
+        return snap.timezone || "Europe/Athens";
+      }
       function byId(id) {
         return snap.entities.find((e) => e.entity_id === id) || null;
       }
@@ -172,37 +299,67 @@
       function lightsIn(areaId) {
         return snap.entities.filter((e) => e.domain === "light" && (!areaId || e.area_id === areaId));
       }
-      function tileLabel(t) {
-        if (t.kind === "room") return areaName(t.ref);
-        if (t.kind === "entity" || t.kind === "scene") {
-          const e = byId(t.ref);
-          return e ? e.name : t.ref;
-        }
-        if (t.kind === "allOff") return "Σβήσε όλα";
-        if (t.kind === "security") return "Ασφάλεια";
-        if (t.kind === "clock") return clockText();
-        if (t.kind === "weather") {
-          const w = snap.weather;
-          if (!w) return "Καιρός";
-          const u = w.unit === "°F" || w.unit === "F" ? "°F" : "°";
-          return w.temperature != null ? w.temperature + u : "Καιρός";
-        }
-        return t.kind;
+      function devicesIn(areaId) {
+        return snap.entities.filter((e) => ROOM_DOMAINS[e.domain] && e.area_id === areaId);
       }
-      function clockText() {
-        const d = new Date();
-        return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+      function tileSize(t) {
+        if (t.size === "l" || t.size === "m" || t.size === "s") return t.size;
+        return t.span === 2 ? "m" : "s";
       }
-      function tileState(t) {
-        if (t.kind === "entity") {
-          const e = byId(t.ref);
-          return e ? e.state : "";
+      function clockText(d) {
+        const date = d || new Date();
+        try {
+          return new Intl.DateTimeFormat("el-GR", {
+            hour: "2-digit",
+            minute: "2-digit",
+            hourCycle: "h23",
+            timeZone: tz(),
+          }).format(date);
+        } catch (e) {
+          return String(date.getHours()).padStart(2, "0") + ":" + String(date.getMinutes()).padStart(2, "0");
         }
-        if (t.kind === "room") {
-          const on = lightsIn(t.ref).filter((e) => e.state === "on").length;
-          return on ? on + " αναμμένα" : "σβηστά";
+      }
+      function dateText(d) {
+        try {
+          return new Intl.DateTimeFormat("el-GR", {
+            weekday: "long",
+            day: "numeric",
+            month: "long",
+            timeZone: tz(),
+          }).format(d || new Date());
+        } catch (e) {
+          return "";
         }
-        return "";
+      }
+      function formatTemp(n) {
+        if (typeof n !== "number" || !isFinite(n)) return "";
+        return new Intl.NumberFormat("el-GR", { maximumFractionDigits: 1 }).format(n) + "°";
+      }
+      function weatherWord() {
+        const w = snap.weather;
+        if (!w) return "Καιρός";
+        const c = w.condition || w.state;
+        return (c && WX[c]) || c || "Καιρός";
+      }
+      function weatherTemp() {
+        const w = snap.weather;
+        if (!w || w.temperature == null) return "";
+        return formatTemp(Number(w.temperature));
+      }
+      function entityWord(e) {
+        if (!e) return "";
+        const s = e.state;
+        if (s === "on") return "αναμμένο";
+        if (s === "off") return "σβηστό";
+        if (s === "playing") return "παίζει";
+        if (s === "paused") return "παύση";
+        if (s === "idle") return "έτοιμο";
+        if (s === "open" || s === "opening") return "ανοιχτό";
+        if (s === "closed" || s === "closing") return "κλειστό";
+        if (s === "heat") return "θέρμανση";
+        if (s === "cool") return "ψύξη";
+        if (s === "unavailable") return "εκτός";
+        return s || "";
       }
       function tileOn(t) {
         if (t.kind === "entity") {
@@ -211,6 +368,50 @@
         }
         if (t.kind === "room") return lightsIn(t.ref).some((e) => e.state === "on");
         return false;
+      }
+      function timerRec() {
+        try {
+          return JSON.parse(localStorage.getItem(TIMER_KEY) || "null");
+        } catch (e) {
+          return null;
+        }
+      }
+      function timerRemain() {
+        const rec = timerRec();
+        if (!rec || !rec.end) return 0;
+        return Math.max(0, rec.end - Date.now());
+      }
+      function formatCountdown(ms) {
+        const s = Math.max(0, Math.ceil(ms / 1000));
+        return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
+      }
+      function startTimer(min) {
+        localStorage.setItem(TIMER_KEY, JSON.stringify({ end: Date.now() + min * 60000, ringing: false }));
+        paintTime();
+        if (sheet && sheet.kind === "clock") renderSheet();
+      }
+      function clearTimer() {
+        localStorage.removeItem(TIMER_KEY);
+        paintTime();
+        if (sheet && sheet.kind === "clock") renderSheet();
+      }
+      function ackTimer() {
+        localStorage.removeItem(TIMER_KEY);
+        paintTime();
+        if (sheet && sheet.kind === "clock") renderSheet();
+      }
+      function beep() {
+        try {
+          const c = new AudioContext();
+          const o = c.createOscillator();
+          const g = c.createGain();
+          o.connect(g);
+          g.connect(c.destination);
+          o.frequency.value = 880;
+          g.gain.value = 0.12;
+          o.start();
+          o.stop(c.currentTime + 0.35);
+        } catch (e) {}
       }
 
       async function cmd(action, entityId, payload) {
@@ -223,25 +424,144 @@
           body: JSON.stringify(body),
         });
       }
-      async function tap(t) {
-        if (t.kind === "entity" && t.ref) {
-          const e = byId(t.ref) || { entity_id: t.ref, domain: t.ref.split(".")[0], state: "off" };
-          if (e.domain === "light" || e.domain === "switch") {
-            await cmd(e.state === "on" ? e.domain + ".turn_off" : e.domain + ".turn_on", e.entity_id);
-          } else if (e.domain === "cover") {
-            await cmd(e.state === "open" || e.state === "opening" ? "cover.close_cover" : "cover.open_cover", e.entity_id);
-          } else if (e.domain === "climate") {
-            await cmd(e.state === "off" ? "climate.turn_on" : "climate.turn_off", e.entity_id);
-          } else if (e.domain === "media_player") {
-            await cmd(e.state === "playing" ? "media_player.media_pause" : "media_player.media_play", e.entity_id);
-          }
-        } else if (t.kind === "room") {
-          const lights = lightsIn(t.ref);
+      async function toggleEntity(e) {
+        if (!e) return;
+        if (e.domain === "light" || e.domain === "switch") {
+          await cmd(e.state === "on" ? e.domain + ".turn_off" : e.domain + ".turn_on", e.entity_id);
+        } else if (e.domain === "cover") {
+          await cmd(e.state === "open" || e.state === "opening" ? "cover.close_cover" : "cover.open_cover", e.entity_id);
+        } else if (e.domain === "climate") {
+          await cmd(e.state === "off" ? "climate.turn_on" : "climate.turn_off", e.entity_id);
+        } else if (e.domain === "media_player") {
+          await cmd(e.state === "playing" ? "media_player.media_pause" : "media_player.media_play", e.entity_id);
+        }
+      }
+
+      function armSheet() {
+        clearTimeout(sheetTimer);
+        sheetTimer = setTimeout(closeSheet, 30000);
+      }
+      function closeSheet() {
+        sheet = null;
+        clearTimeout(sheetTimer);
+        sheetEl.classList.add("hidden");
+        sheetBody.innerHTML = "";
+      }
+      function openSheet(next) {
+        sheet = next;
+        sheetEl.classList.remove("hidden");
+        renderSheet();
+        armSheet();
+      }
+      function renderSheet() {
+        if (!sheet) return;
+        if (sheet.kind === "clock") {
+          const remain = timerRemain();
+          const rec = timerRec();
+          const ringing = rec && rec.ringing;
+          sheetTitle.textContent = "Ρολόι";
+          sheetSub.textContent = ringing ? "Τέλος" : remain ? "Χρονόμετρο " + formatCountdown(remain) : dateText();
+          sheetBody.innerHTML =
+            '<div class="sheet-clock" data-clock="1">' +
+            esc(clockText()) +
+            '</div><p class="sheet-date" data-date="1">' +
+            esc(dateText()) +
+            "</p>" +
+            (ringing
+              ? '<button type="button" class="chip" data-ack="1">ΟΚ</button>'
+              : remain
+                ? '<button type="button" class="chip" data-cancel="1">Ακύρωση · ' +
+                  esc(formatCountdown(remain)) +
+                  "</button>"
+                : '<div class="presets">' +
+                  [1, 5, 10, 15]
+                    .map((n) => '<button type="button" class="chip" data-min="' + n + '">' + n + "′</button>")
+                    .join("") +
+                  "</div>");
+        } else if (sheet.kind === "weather") {
+          const w = snap.weather;
+          const days = (w && w.forecast) || [];
+          sheetTitle.textContent = "Καιρός";
+          sheetSub.textContent = weatherWord();
+          sheetBody.innerHTML =
+            '<div class="wx-now"><div class="face" style="font-size:clamp(4rem,18vw,8rem)">' +
+            esc(weatherTemp() || "—") +
+            "</div><p class=\"kicker\">" +
+            esc(weatherWord()) +
+            "</p></div>" +
+            (days.length
+              ? '<div class="wx-days">' +
+                days
+                  .slice(0, 7)
+                  .map((d) => {
+                    const name = d.datetime
+                      ? new Intl.DateTimeFormat("el-GR", { weekday: "short", timeZone: tz() }).format(new Date(d.datetime))
+                      : "";
+                    const hi = formatTemp(Number(d.temperature));
+                    const lo = formatTemp(Number(d.templow));
+                    return (
+                      '<div class="wx-day"><span>' +
+                      esc(name) +
+                      "</span><b>" +
+                      esc(lo && hi ? lo + " / " + hi : hi) +
+                      "</b></div>"
+                    );
+                  })
+                  .join("") +
+                "</div>"
+              : "");
+        } else if (sheet.kind === "room") {
+          const lights = lightsIn(sheet.ref);
           const anyOn = lights.some((e) => e.state === "on");
-          for (const e of lights) await cmd(anyOn ? "light.turn_off" : "light.turn_on", e.entity_id);
+          const list = devicesIn(sheet.ref);
+          sheetTitle.textContent = areaName(sheet.ref);
+          sheetSub.textContent = anyOn ? lights.filter((e) => e.state === "on").length + " αναμμένα" : "σβηστά";
+          sheetBody.innerHTML =
+            (lights.length
+              ? '<button type="button" class="chip" data-alloff="1">' +
+                (anyOn ? "Σβήσε όλα" : "Άναψε όλα") +
+                "</button>"
+              : "") +
+            '<div class="devices">' +
+            (list.length
+              ? list
+                  .map((e) => {
+                    const on = e.state === "on" || e.state === "open" || e.state === "playing";
+                    return (
+                      '<button type="button" class="device' +
+                      (on ? " on" : "") +
+                      '" data-eid="' +
+                      esc(e.entity_id) +
+                      '"><span>' +
+                      esc(e.name) +
+                      "</span><span class=\"state\">" +
+                      esc(entityWord(e)) +
+                      "</span></button>"
+                    );
+                  })
+                  .join("")
+              : "<p>Δεν υπάρχουν συσκευές σε αυτό το δωμάτιο.</p>") +
+            "</div>";
+        }
+      }
+
+      async function tap(t) {
+        if (t.kind === "clock") {
+          openSheet({ kind: "clock" });
+          return;
+        }
+        if (t.kind === "weather") {
+          openSheet({ kind: "weather" });
+          return;
+        }
+        if (t.kind === "room") {
+          openSheet({ kind: "room", ref: t.ref });
+          return;
+        }
+        if (t.kind === "entity" && t.ref) {
+          await toggleEntity(byId(t.ref) || { entity_id: t.ref, domain: t.ref.split(".")[0], state: "off" });
         } else if (t.kind === "allOff") {
-          const lights = lightsIn(t.ref);
-          for (const e of lights) await cmd("light.turn_off", e.entity_id);
+          for (const e of lightsIn(t.ref)) await cmd("light.turn_off", e.entity_id);
         } else if (t.kind === "scene" && t.ref) {
           if (t.ref.startsWith("scene.")) await cmd("scene.turn_on", t.ref);
           else if (t.ref.startsWith("script.arvio_")) await cmd("script.turn_on", t.ref);
@@ -249,7 +569,62 @@
             await cmd("arvio.trigger_scenario", "", { scenario_id: t.ref.slice("scenario:".length) });
           }
         }
-        await load(false);
+        await load(true);
+      }
+
+      function tileInner(t) {
+        if (t.kind === "clock") {
+          const remain = timerRemain();
+          const rec = timerRec();
+          const face = rec && rec.ringing ? "Τέλος" : remain ? formatCountdown(remain) : clockText();
+          return (
+            '<span class="face" data-clock="1">' +
+            esc(face) +
+            "</span><span class=\"state\" data-clock-sub=\"1\">" +
+            esc(remain && !(rec && rec.ringing) ? "χρονόμετρο" : dateText()) +
+            "</span>"
+          );
+        }
+        if (t.kind === "weather") {
+          return (
+            '<span class="kicker">' +
+            esc(weatherWord()) +
+            '</span><span class="face">' +
+            esc(weatherTemp() || "—") +
+            "</span>"
+          );
+        }
+        if (t.kind === "room") {
+          const on = lightsIn(t.ref).filter((e) => e.state === "on").length;
+          return (
+            '<span class="name">' +
+            esc(areaName(t.ref)) +
+            '</span><span class="state">' +
+            esc(on ? on + " αναμμένα" : "σβηστά") +
+            "</span>"
+          );
+        }
+        if (t.kind === "entity") {
+          const e = byId(t.ref);
+          return (
+            '<span class="kicker"></span><span class="name">' +
+            esc(e ? e.name : t.ref) +
+            '</span><span class="state">' +
+            esc(entityWord(e)) +
+            "</span>"
+          );
+        }
+        if (t.kind === "scene") {
+          const e = byId(t.ref);
+          return '<span class="kicker">Σκηνή</span><span class="name">' + esc(e ? e.name : t.ref) + "</span>";
+        }
+        if (t.kind === "allOff") {
+          return '<span class="kicker"></span><span class="name">Σβήσε όλα</span>';
+        }
+        if (t.kind === "security") {
+          return '<span class="kicker"></span><span class="name">Ασφάλεια</span>';
+        }
+        return '<span class="name">' + esc(t.kind) + "</span>";
       }
 
       function render() {
@@ -262,15 +637,10 @@
           for (const t of page.tiles || []) {
             const b = document.createElement("button");
             b.type = "button";
-            b.className = "tile" + (t.span === 2 ? " wide" : "") + (tileOn(t) ? " on" : "");
-            b.innerHTML =
-              '<span class="kind">' +
-              t.kind +
-              '</span><span class="name">' +
-              tileLabel(t) +
-              '</span><span class="state">' +
-              tileState(t) +
-              "</span>";
+            const size = tileSize(t);
+            b.className = "tile tile--" + t.kind + (size !== "s" ? " wide" : "") + (tileOn(t) ? " on" : "");
+            b.dataset.size = size;
+            b.innerHTML = tileInner(t);
             b.addEventListener("click", () => tap(t));
             el.appendChild(b);
           }
@@ -280,19 +650,45 @@
         if (kids[pageIx]) kids[pageIx].scrollIntoView({ inline: "start", block: "nearest" });
       }
 
+      function paintTime() {
+        const rec = timerRec();
+        if (rec && rec.end && Date.now() >= rec.end && !rec.ringing) {
+          rec.ringing = true;
+          localStorage.setItem(TIMER_KEY, JSON.stringify(rec));
+          if (!sheet || sheet.kind !== "clock") openSheet({ kind: "clock" });
+        }
+        if (rec && rec.ringing && Date.now() - lastBeep > 2000) {
+          lastBeep = Date.now();
+          beep();
+        }
+        const remain = timerRemain();
+        const ringing = rec && rec.ringing;
+        const face = ringing ? "Τέλος" : remain ? formatCountdown(remain) : clockText();
+        document.querySelectorAll("[data-clock]").forEach((el) => {
+          el.textContent = face;
+        });
+        document.querySelectorAll("[data-clock-sub]").forEach((el) => {
+          el.textContent = remain && !ringing ? "χρονόμετρο" : dateText();
+        });
+        document.querySelectorAll("[data-date]").forEach((el) => {
+          el.textContent = dateText();
+        });
+        if (sheet && sheet.kind === "clock") {
+          sheetSub.textContent = ringing ? "Τέλος" : remain ? "Χρονόμετρο " + formatCountdown(remain) : dateText();
+        }
+      }
+
       function applyWallpaper(s) {
         if (s && s.has_wallpaper) {
           var a = Number(s.wallpaper_scrim);
           if (!isFinite(a)) a = 0.55;
           a = Math.min(0.9, Math.max(0.1, a));
-          document.body.classList.add("has-wallpaper");
           document.body.style.backgroundImage =
             "linear-gradient(rgba(5,5,5," + a + "), rgba(5,5,5," + a + ")), url('/api/screens/wallpaper?id=" +
             encodeURIComponent(s.screen_id) + "&v=" + encodeURIComponent(s.updated_at || "") + "')";
           document.body.style.backgroundSize = "cover";
           document.body.style.backgroundPosition = "center";
         } else {
-          document.body.classList.remove("has-wallpaper");
           document.body.style.backgroundImage = "";
         }
       }
@@ -360,6 +756,7 @@
           board.classList.add("hidden");
           applyWallpaper(null);
           hideDoorbell();
+          closeSheet();
           return;
         }
         if (!keepPage) pageIx = 0;
@@ -367,6 +764,7 @@
         board.classList.remove("hidden");
         applyWallpaper(screen);
         render();
+        if (sheet) renderSheet();
         syncDoorbell();
       }
 
@@ -394,6 +792,25 @@
       document.getElementById("pair").addEventListener("click", pair);
       document.getElementById("code").addEventListener("keydown", (e) => {
         if (e.key === "Enter") pair();
+      });
+      document.getElementById("sheet-back").addEventListener("click", closeSheet);
+      sheetEl.addEventListener("click", async (e) => {
+        armSheet();
+        const min = e.target.getAttribute && e.target.getAttribute("data-min");
+        if (min) startTimer(Number(min));
+        if (e.target.getAttribute && e.target.getAttribute("data-cancel")) clearTimer();
+        if (e.target.getAttribute && e.target.getAttribute("data-ack")) ackTimer();
+        if (e.target.getAttribute && e.target.getAttribute("data-alloff") && sheet && sheet.kind === "room") {
+          const lights = lightsIn(sheet.ref);
+          const anyOn = lights.some((x) => x.state === "on");
+          for (const ent of lights) await cmd(anyOn ? "light.turn_off" : "light.turn_on", ent.entity_id);
+          await load(true);
+        }
+        const eid = e.target.closest && e.target.closest("[data-eid]");
+        if (eid) {
+          await toggleEntity(byId(eid.getAttribute("data-eid")));
+          await load(true);
+        }
       });
       document.getElementById("doorbell-dismiss").addEventListener("click", () => {
         doorbellDismissed = true;
@@ -433,6 +850,7 @@
         setInterval(() => {
           if (screen) load(true).catch(() => {});
         }, 4000);
+        setInterval(paintTime, 1000);
       })();
     </script>
   </body>

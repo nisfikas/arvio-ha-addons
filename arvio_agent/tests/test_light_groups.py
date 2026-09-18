@@ -7,12 +7,13 @@ from helpers import agent
 
 class LightGroupParseTest(unittest.TestCase):
     def test_two_lights(self):
-        name, ids, area = agent.parse_light_group_payload(
+        name, ids, area, group = agent.parse_light_group_payload(
             {"name": "  Σαλόνι  ", "entity_ids": ["light.a", "light.a", "light.b"], "area_id": "saloni"}
         )
         self.assertEqual(name, "Σαλόνι")
         self.assertEqual(ids, ["light.a", "light.b"])
         self.assertEqual(area, "saloni")
+        self.assertIsNone(group)
 
     def test_rejects_bad_lists(self):
         with self.assertRaises(ValueError):
@@ -85,3 +86,49 @@ class LightGroupFlowTest(unittest.TestCase):
         self.assertEqual(ws[-1][0], "config/entity_registry/update")
         self.assertEqual(ws[-1][1]["area_id"], "saloni")
         self.assertEqual(posts[0][2], {"handler": "group"})
+
+    def test_options_flow_updates_members(self):
+        posts = []
+
+        def fake_or_raise(path, method="GET", body=None, timeout=30):
+            posts.append((method, path, body))
+            if method == "POST" and path == "/config/config_entries/options/flow":
+                self.assertEqual(body, {"handler": "entrygrp01"})
+                return {"type": "form", "flow_id": "optflow001aa", "step_id": "init"}
+            if method == "POST" and path.endswith("/optflow001aa"):
+                self.assertEqual(body["entities"], ["light.sofa", "light.bar"])
+                return {"type": "create_entry", "title": body["name"]}
+            raise AssertionError((method, path, body))
+
+        def fake_ws(msg_type, extra=None, timeout=20.0):
+            if msg_type == "config/entity_registry/list":
+                return [{"entity_id": "light.saloni_fota", "config_entry_id": "entrygrp01", "platform": "group"}]
+            return None
+
+        with mock.patch.object(agent, "ha_or_raise", side_effect=fake_or_raise), \
+             mock.patch.object(agent, "ha_ws_command", side_effect=fake_ws), \
+             mock.patch.object(agent, "schedule_registry_refresh"):
+            out = agent.light_group(
+                {
+                    "name": "Σαλόνι φώτα",
+                    "entity_id": "light.saloni_fota",
+                    "entity_ids": ["light.sofa", "light.bar"],
+                    "area_id": "saloni",
+                }
+            )
+        self.assertTrue(out["ok"])
+        self.assertTrue(out["updated"])
+        self.assertEqual(out["entity_id"], "light.saloni_fota")
+        self.assertEqual(out["entity_ids"], ["light.sofa", "light.bar"])
+
+    def test_parse_strips_self_from_members(self):
+        name, ids, area, group = agent.parse_light_group_payload(
+            {
+                "name": "G",
+                "entity_id": "light.g",
+                "entity_ids": ["light.a", "light.b", "light.g"],
+            }
+        )
+        self.assertEqual(group, "light.g")
+        self.assertEqual(ids, ["light.a", "light.b"])
+        self.assertIsNone(area)

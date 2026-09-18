@@ -82,6 +82,28 @@ class ModelBuilderTest(unittest.TestCase):
             self.assertIsNone(item["entity_category"])
             self.assertIn(item["domain"], agent.HOME_ENTITY_DOMAINS)
 
+    def test_doorbell_call_reaches_model_as_diagnostic(self):
+        eid = "binary_sensor.vto_button_pressed"
+        call = st(eid, "off", friendly_name="Κλήση")
+        cam = st("camera.vto_main", "idle", friendly_name="Κουδούνι")
+        raw = {
+            **ENTITY_REGISTRY_DISPLAY,
+            "entities": [
+                *ENTITY_REGISTRY_DISPLAY["entities"],
+                {"ei": "camera.vto_main", "pl": "onvif"},
+                {"ei": eid, "pl": "dahua", "ec": 1},
+            ],
+        }
+        self.assertEqual(
+            agent.doorbell_call_ids_from_cameras(["camera.vto_main", "light.x"]),
+            {"binary_sensor.vto_button_pressed", "binary_sensor.vto_call"},
+        )
+        self.assertNotIn(eid, by_id(build(states=STATES + [call], entity_registry_raw=raw)))
+        row = by_id(build(states=STATES + [cam, call], entity_registry_raw=raw))[eid]
+        self.assertEqual(row["entity_category"], "diagnostic")
+        self.assertEqual(row["domain"], "binary_sensor")
+        self.assertEqual(row["name"], "Κλήση")
+
     def test_typed_attrs(self):
         e = by_id(build())
         light = e["light.saloni"]["attrs"]
@@ -106,6 +128,9 @@ class ModelBuilderTest(unittest.TestCase):
         self.assertTrue(e["climate.ypno"]["capabilities"]["fan"])
         self.assertEqual(e["cover.ypno"]["attrs"]["current_position"], 60)
         self.assertTrue(e["cover.ypno"]["capabilities"]["position"])
+        group = agent.typed_attrs("light", "on", {"entity_id": ["light.a", "light.b"], "brightness": 10})
+        self.assertEqual(group["light_entity_ids"], ["light.a", "light.b"])
+        self.assertNotIn("light_entity_ids", e["light.saloni"]["attrs"])
         lock = e["lock.eisodos"]["attrs"]
         self.assertNotIn("is_jammed", lock)  # §14.2: "jammed" is a state
         self.assertEqual(e["lock.eisodos"]["state"], "jammed")

@@ -110,10 +110,22 @@ class ScreenStoreTest(unittest.TestCase):
         self.assertTrue(out["ok"])
         self.assertEqual(out["screen"]["name"], "Κουζίνα")
 
+    def test_keeps_tile_size(self):
+        out = agent.put_wall_screen(
+            self._row(pages=[{"id": "pg_aaaaaaaa", "tiles": [{"kind": "clock", "size": "l"}]}])
+        )
+        tile = out["screen"]["pages"][0]["tiles"][0]
+        self.assertEqual(tile["size"], "l")
+        self.assertEqual(tile["span"], 2)
+
     def test_doorbell_infer_and_latch(self):
         self.assertEqual(
             agent.doorbell_call_guesses("camera.8b014b9pajf9590_main"),
             ["binary_sensor.8b014b9pajf9590_button_pressed", "binary_sensor.8b014b9pajf9590_call"],
+        )
+        self.assertEqual(
+            agent.doorbell_call_ids_from_cameras(["camera.8b014b9pajf9590_main"]),
+            {"binary_sensor.8b014b9pajf9590_button_pressed", "binary_sensor.8b014b9pajf9590_call"},
         )
         agent.put_wall_screen(
             self._row(

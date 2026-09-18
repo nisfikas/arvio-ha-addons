@@ -56,6 +56,15 @@ class StateEventTest(unittest.TestCase):
         self.assertIsNone(agent.state_event_message({"entity_id": "light.saloni", "new_state": None}, self.regs))
         self.assertIsNone(agent.state_event_message(None, self.regs))
 
+    def test_doorbell_call_state_event(self):
+        eid = "binary_sensor.front_button_pressed"
+        new = st(eid, "on")
+        self.assertIsNone(agent.state_event_message({"entity_id": eid, "new_state": new}, self.regs))
+        msg = agent.state_event_message({"entity_id": eid, "new_state": new}, self.regs, {eid})
+        self.assertEqual(msg["type"], "state")
+        self.assertEqual(msg["entity_id"], eid)
+        self.assertEqual(msg["state"], "on")
+
     def test_handle_ha_event_dispatch(self):
         sent = []
         with mock.patch.object(agent, "registry_snapshot", return_value=self.regs), \

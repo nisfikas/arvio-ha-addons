@@ -41,7 +41,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.34"
+AGENT_VERSION = "0.1.35"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -289,6 +289,32 @@ def doorbell_watched_call_ids() -> set[str]:
     return ids
 
 
+def doorbell_call_ids_from_cameras(entity_ids) -> set[str]:
+    """camera.{id}_main → the two usual Dahua/ONVIF call binary_sensors."""
+    ids: set[str] = set()
+    for eid in entity_ids or ():
+        if str(eid).startswith("camera."):
+            ids.update(doorbell_call_guesses(str(eid)))
+    return ids
+
+
+def doorbell_model_call_ids(states=None, entity_regs=None) -> set[str]:
+    """Call sensors Home needs in the model/SSE (wall screens + every camera)."""
+    ids = doorbell_watched_call_ids()
+    eids = []
+    if isinstance(states, list):
+        for st in states:
+            if isinstance(st, dict) and st.get("entity_id"):
+                eids.append(st["entity_id"])
+    if entity_regs is not None:
+        try:
+            eids.extend(entity_regs.keys())
+        except AttributeError:
+            pass
+    ids.update(doorbell_call_ids_from_cameras(eids))
+    return ids
+
+
 def note_doorbell_ring(entity_id: str, new_state) -> None:
     eid = str(entity_id or "")
     if not eid.startswith("binary_sensor.") or eid not in doorbell_watched_call_ids():
@@ -498,8 +524,14 @@ def _parse_screen_pages(raw) -> list:
             if kind not in SCREEN_TILE_KINDS:
                 raise ValueError("invalid_tile_kind")
             span = t.get("span")
+            size = t.get("size")
+            if size not in (None, "", "s", "m", "l"):
+                raise ValueError("invalid_size")
             tile: dict = {"kind": kind}
-            if span == 2:
+            if size in ("m", "l"):
+                tile["size"] = size
+                tile["span"] = 2
+            elif span == 2:
                 tile["span"] = 2
             ref = t.get("ref")
             if kind in ("clock", "weather", "security") and ref:
@@ -655,24 +687,12 @@ def panel_snapshot(screen_id: str | None = None) -> dict:
                 }
             )
         states = ha("/states") or []
-        if isinstance(states, list):
-            for st in states:
-                if not isinstance(st, dict):
-                    continue
-                eid = str(st.get("entity_id") or "")
-                if eid.startswith("weather."):
-                    attrs = st.get("attributes") if isinstance(st.get("attributes"), dict) else {}
-                    weather = {
-                        "entity_id": eid,
-                        "state": st.get("state"),
-                        "temperature": attrs.get("temperature"),
-                        "unit": attrs.get("temperature_unit") or attrs.get("unit_of_measurement"),
-                    }
-                    break
-        else:
+        if not isinstance(states, list):
             states = []
+        weather = weather_block(states)
     except Exception:
         states = []
+        weather = None
     screens = listed.get("screens") or []
     attach_doorbell_live(screens, states)
     return {
@@ -682,6 +702,7 @@ def panel_snapshot(screen_id: str | None = None) -> dict:
         "entities": entities_out,
         "areas": areas_out,
         "weather": weather,
+        "timezone": HA_INFO.get("time_zone") or "Europe/Athens",
     }
 
 
@@ -1327,8 +1348,8 @@ LIGHT_GROUP_MAX = 48
 LIGHT_GROUP_NAME_MAX = 80
 
 
-def parse_light_group_payload(payload: dict | None) -> tuple[str, list[str], str | None]:
-    """Pure: (name, light entity_ids, area_id). Members stay visible in HA."""
+def parse_light_group_payload(payload: dict | None) -> tuple[str, list[str], str | None, str | None]:
+    """Pure: (name, light entity_ids, area_id, existing group entity_id). Members stay visible in HA."""
     payload = payload if isinstance(payload, dict) else {}
     name = str(payload.get("name") or "").strip()
     if not name or len(name) > LIGHT_GROUP_NAME_MAX:
@@ -1345,6 +1366,13 @@ def parse_light_group_payload(payload: dict | None) -> tuple[str, list[str], str
             raise ValueError("invalid_entity_id")
         if eid not in seen:
             seen.append(eid)
+    group_id = str(payload.get("entity_id") or "").strip()
+    if group_id:
+        if not ENTITY_ID_RE.fullmatch(group_id) or not group_id.startswith("light."):
+            raise ValueError("invalid_entity_id")
+        seen = [x for x in seen if x != group_id]
+    else:
+        group_id = None
     if not (LIGHT_GROUP_MIN <= len(seen) <= LIGHT_GROUP_MAX):
         raise ValueError("need_2_to_48_lights")
     area_raw = payload.get("area_id")
@@ -1354,7 +1382,7 @@ def parse_light_group_payload(payload: dict | None) -> tuple[str, list[str], str
         area_id = str(area_raw)
         if not AREA_ID_RE.fullmatch(area_id):
             raise ValueError("invalid_area_id")
-    return name, seen, area_id
+    return name, seen, area_id, group_id or None
 
 
 def _abort_config_flow(flow_id: str) -> None:
@@ -1389,10 +1417,92 @@ def _group_flow_is_menu(raw: dict) -> bool:
     return isinstance(raw.get("menu_options"), (list, dict))
 
 
+def _abort_options_flow(flow_id: str) -> None:
+    if not CAMERA_FLOW_ID_RE.fullmatch(flow_id):
+        return
+    try:
+        ha_or_raise(f"/config/config_entries/options/flow/{flow_id}", "DELETE")
+    except Exception:
+        pass
+
+
+def _light_group_config_entry_id(entity_id: str) -> str | None:
+    rows = ha_ws_command("config/entity_registry/list")
+    if not isinstance(rows, list):
+        return None
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        if str(r.get("entity_id") or "") != entity_id:
+            continue
+        cid = r.get("config_entry_id")
+        return str(cid) if cid else None
+    return None
+
+
+def _update_light_group(entity_id: str, name: str, entities: list[str], area_id: str | None) -> dict:
+    """Reconfigure an existing Light Group helper via the options flow."""
+    entry_id = _light_group_config_entry_id(entity_id)
+    if not entry_id or not CAMERA_FLOW_ID_RE.fullmatch(entry_id):
+        return {"ok": False, "error": "not_a_group"}
+    raw = ha_or_raise("/config/config_entries/options/flow", "POST", {"handler": entry_id})
+    if not isinstance(raw, dict):
+        raise RuntimeError("group_flow_failed")
+    flow_id = str(raw.get("flow_id") or "")
+    try:
+        if str(raw.get("type") or "") != "create_entry":
+            if not CAMERA_FLOW_ID_RE.fullmatch(flow_id):
+                raise RuntimeError("group_flow_failed")
+            raw = ha_or_raise(
+                f"/config/config_entries/options/flow/{flow_id}",
+                "POST",
+                {
+                    "name": name,
+                    "entities": entities,
+                    "hide_members": False,
+                    "all": False,
+                },
+            )
+            if not isinstance(raw, dict):
+                raise RuntimeError("group_flow_failed")
+        if str(raw.get("type") or "") != "create_entry":
+            errors = raw.get("errors") if isinstance(raw.get("errors"), dict) else {}
+            reason = str(raw.get("reason") or raw.get("error") or "")
+            return {
+                "ok": False,
+                "phase": str(raw.get("type") or "unknown"),
+                "step_id": raw.get("step_id"),
+                "errors": errors,
+                "error": reason or "group_flow_failed",
+            }
+    except Exception:
+        _abort_options_flow(flow_id)
+        raise
+    if area_id:
+        try:
+            ha_ws_command(
+                "config/entity_registry/update",
+                extra={"entity_id": entity_id, "area_id": area_id},
+            )
+        except Exception:
+            pass
+    schedule_registry_refresh("light_group", delay=0.4)
+    return {
+        "ok": True,
+        "entity_id": entity_id,
+        "name": name,
+        "entity_ids": entities,
+        "area_id": area_id,
+        "updated": True,
+    }
+
+
 def light_group(payload: dict | None = None) -> dict:
-    """Create a Light Group helper via the documented Group config flow. hide_members stays false
-    so Partner still sees the members; Home hides them with entity_meta."""
-    name, entities, area_id = parse_light_group_payload(payload)
+    """Create or update a Light Group helper. hide_members stays false so Partner
+    still sees the members; Home hides them with entity_meta."""
+    name, entities, area_id, group_id = parse_light_group_payload(payload)
+    if group_id:
+        return _update_light_group(group_id, name, entities, area_id)
     raw = ha_or_raise("/config/config_entries/flow", "POST", {"handler": "group"})
     if not isinstance(raw, dict):
         raise RuntimeError("group_flow_failed")
@@ -3788,6 +3898,10 @@ def typed_attrs(
         else:
             out["max_color_temp_kelvin"] = mireds_to_kelvin(attrs.get("min_mireds"))
         out["supported_color_modes"] = _str_list(attrs.get("supported_color_modes"))
+        members = _str_list(attrs.get("entity_id"))
+        lights = [m for m in members if isinstance(m, str) and m.startswith("light.") and m != ""]
+        if len(lights) >= 2:
+            out["light_entity_ids"] = lights
     elif domain == "climate":
         out["current_temperature"] = _num(attrs.get("current_temperature"))
         out["temperature"] = _num(attrs.get("temperature"))
@@ -3867,7 +3981,7 @@ def typed_attrs(
 
 
 def entity_model_from_state(
-    state_obj: dict, reg: dict | None, devices: dict, areas: dict
+    state_obj: dict, reg: dict | None, devices: dict, areas: dict, *, doorbell_call_ids=None
 ) -> dict | None:
     """One HA state (+ registry entry) → EntityModel (without hub_id), or None when not exposed."""
     if not isinstance(state_obj, dict):
@@ -3880,7 +3994,11 @@ def entity_model_from_state(
         return None
     attrs = state_obj.get("attributes") if isinstance(state_obj.get("attributes"), dict) else {}
     reg = reg or {}
-    if reg.get("entity_category") in ("config", "diagnostic"):
+    doorbell_call = domain == "binary_sensor" and bool(doorbell_call_ids) and eid in doorbell_call_ids
+    if not doorbell_call:
+        if reg.get("entity_category") in ("config", "diagnostic"):
+            return None
+    elif reg.get("entity_category") == "config":
         return None
     if reg.get("hidden"):
         # §14.2: list_for_display `hb` (hidden) entries never reach the Home app.
@@ -3889,7 +4007,7 @@ def entity_model_from_state(
     device_class = str(device_class) if device_class else None
     if domain == "sensor" and device_class not in HOME_SENSOR_DEVICE_CLASSES:
         return None
-    if domain == "binary_sensor" and device_class not in HOME_BINARY_SENSOR_DEVICE_CLASSES:
+    if domain == "binary_sensor" and not doorbell_call and device_class not in HOME_BINARY_SENSOR_DEVICE_CLASSES:
         return None
     if domain == "media_player" and not media_player_exposed(device_class):
         return None
@@ -3917,7 +4035,7 @@ def entity_model_from_state(
         "floor_id": floor_id,
         "icon": reg.get("icon") or attrs.get("icon"),
         "device_class": device_class,
-        "entity_category": None,
+        "entity_category": "diagnostic" if doorbell_call else None,
         # Not in EntityModel (ignored by strict readers); §14.3 alarm buttons need it.
         "supported_features": supported_features,
         "capabilities": entity_capabilities(domain, attrs),
@@ -4111,10 +4229,17 @@ def build_hub_model(
     limit=MODEL_LIMIT_DEFAULT,
     ma_config_entry_id=None,
     weather=None,
+    doorbell_call_ids=None,
 ) -> dict:
     """HubModelPayload (home-model.ts) from raw HA data. Pure.
 
     `ma_available` / `ma_config_entry_id` (0.1.21, §15.2) are not in home-model.ts yet."""
+    if doorbell_call_ids is None:
+        doorbell_call_ids = doorbell_call_ids_from_cameras(
+            str(st.get("entity_id") or "") for st in (states if isinstance(states, list) else []) if isinstance(st, dict)
+        )
+    else:
+        doorbell_call_ids = set(doorbell_call_ids)
     floors = normalize_floors(floors_raw)
     areas = normalize_areas(areas_raw)
     devices = normalize_devices(devices_raw)
@@ -4139,7 +4264,9 @@ def build_hub_model(
                 "next_setting": attrs.get("next_setting"),
             }
             continue
-        model = entity_model_from_state(st, regs.get(eid), devices, areas)
+        model = entity_model_from_state(
+            st, regs.get(eid), devices, areas, doorbell_call_ids=doorbell_call_ids
+        )
         if model is not None:
             entities.append(model)
     entities.sort(key=lambda x: x["entity_id"])
@@ -4559,6 +4686,7 @@ def fetch_hub_model(payload: dict | None = None) -> dict:
         limit=payload.get("limit"),
         ma_config_entry_id=music_assistant_entry_id(),
         weather=weather_block(states, daily, hourly),
+        doorbell_call_ids=doorbell_model_call_ids(states=states, entity_regs=snap.entity_regs),
     )
 
 
@@ -5547,7 +5675,7 @@ def push_model_changed(version: int) -> None:
     PUSH.offer("__model__", {"type": "model", "hub_id": hub_id, "snapshot_version": int(version)})
 
 
-def state_event_message(event_data: dict, regs: dict) -> dict | None:
+def state_event_message(event_data: dict, regs: dict, doorbell_call_ids=None) -> dict | None:
     """state_changed event → {type:"state", …} for exposed entities only; None otherwise. Pure."""
     if not isinstance(event_data, dict):
         return None
@@ -5556,7 +5684,11 @@ def state_event_message(event_data: dict, regs: dict) -> dict | None:
         return None
     eid = str(event_data.get("entity_id") or new_state.get("entity_id") or "")
     model = entity_model_from_state(
-        new_state, regs["entity_regs"].get(eid), regs["devices"], regs["areas"]
+        new_state,
+        regs["entity_regs"].get(eid),
+        regs["devices"],
+        regs["areas"],
+        doorbell_call_ids=doorbell_call_ids,
     )
     if model is None:
         return None
@@ -5636,7 +5768,9 @@ def handle_ha_event(event: dict) -> None:
             # No registry yet → we cannot tell exposed from hidden; refresh_registry_cache
             # pushes {type:"model"} once loaded so clients refetch instead.
             return
-        msg = state_event_message(data, regs)
+        msg = state_event_message(
+            data, regs, doorbell_model_call_ids(entity_regs=regs["entity_regs"])
+        )
         if msg is not None:
             PUSH.offer(msg["entity_id"], msg)
     elif etype in REGISTRY_EVENT_TYPES:
