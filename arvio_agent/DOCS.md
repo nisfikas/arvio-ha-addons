@@ -184,7 +184,7 @@ Music Assistant (MA) ως «μηχανή μουσικής» **και** native έ
 
 HA WS `media_player/browse_media` (τεκμηριωμένο, στο **query channel** — §5.3, δεν κρατά το lock των εντολών) → `{ ok, entity_id, title, media_content_id, media_content_type, media_class, thumbnail, items[], total, truncated }`.
 `items[]` (**cap 200**, `MEDIA_BROWSE_MAX_ITEMS`): `{ title, media_content_id, media_content_type, media_class, can_play, can_expand, thumbnail, thumbnail_hash }` — `thumbnail` **μόνο** όταν είναι απόλυτο `https://` που φορτώνει απευθείας το κινητό, αλλιώς `null`· `thumbnail_hash` = sha1 του αρχικού thumbnail (και του proxy URL) ώστε το app να κλειδώνει το δικό του cache· `children_media_class` και λοιπά πεδία του HA αφαιρούνται. Χωρίς HA websocket → `execution_failed`.
-**Root** (χωρίς `media_content_id`) όταν το `MA_INFO.entry_id` είναι γνωστό → `music_assistant.get_library {config_entry_id, media_type: playlist, limit ≤ 100, order_by: name}` (τεκμηριωμένο, `return_response`, query channel)· `source: "music_assistant"`, items από `items[].uri/name` όπως στο search, `can_expand: false` (playlists παίζονται ολόκληρες· το MA `browse_media` δέχεται μόνο album/artist URI). Αν το `get_library` αποτύχει → fallback στο `browse_media` του player. Expand κόμβου (`media_content_id` γεμάτο) μένει πάντα `browse_media`.
+**Root** (χωρίς `media_content_id`) όταν υπάρχει Music Assistant (`MA_INFO.entry_id` ή lookup στο config entry) → `music_assistant.get_library {config_entry_id, media_type: playlist, limit ≤ 50, order_by: name}` (τεκμηριωμένο, `return_response`, query channel 40 s)· `source: "music_assistant"`, items από `items[].uri/name` όπως στο search, `can_expand: false`. Αν το `get_library` αποτύχει → κενή σελίδα Playlists, **όχι** `browse_media` (οι MA groups δεν το υποστηρίζουν). Expand κόμβου (`media_content_id` γεμάτο) μένει `browse_media`· αποτυχία → κενή σελίδα αντί για `execution_failed`.
 
 ### 6.4 `arvio.media_search {entity_id, query, media_type?, media_content_id?, media_content_type?}` → `{ ok, entity_id, query, source, items[], reason? }`
 
@@ -225,7 +225,7 @@ HA WS `media_player/browse_media` (τεκμηριωμένο, στο **query chan
 2. Στο Mac, από το repo:
 
 ```bash
-docker build -f addons/arvio_agent/Dockerfile.standalone -t arvio-agent:0.1.35 addons/arvio_agent
+docker build -f addons/arvio_agent/Dockerfile.standalone -t arvio-agent:0.1.36 addons/arvio_agent
 ```
 
 3. Στο NAS, νέο stack / compose από `addons/arvio_agent/compose.nas.example.yml`. Βάλε το token και το `ARVIO_HA_URL` (π.χ. `http://192.168.68.77:8123` ή `http://homeassistant:8123` αν είναι στο ίδιο δίκτυο). **Serial** μοναδικό: `nas-home-1` (όχι `rpi-lab-1`).

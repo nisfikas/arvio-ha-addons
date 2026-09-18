@@ -135,7 +135,7 @@ class LanPathTest(unittest.TestCase):
         agent.save_hub({"hub_id": "hub_lan", "snapshot_version": 7})
         with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/health", timeout=5) as r:
             body = json.loads(r.read().decode())
-        self.assertEqual(body["agent_version"], "0.1.35")
+        self.assertEqual(body["agent_version"], "0.1.36")
         self.assertIn("ma_available", body)
         self.assertEqual(body["snapshot_version"], 7)
 

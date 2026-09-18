@@ -129,11 +129,11 @@ class FakePillow:
 
 class VersionPinTest(unittest.TestCase):
     def test_three_places_agree(self):
-        self.assertEqual(agent.AGENT_VERSION, "0.1.35")
+        self.assertEqual(agent.AGENT_VERSION, "0.1.36")
         cfg = (ROOT / "config.yaml").read_text(encoding="utf-8")
-        self.assertIn('\nversion: "0.1.35"\n', cfg)
+        self.assertIn('\nversion: "0.1.36"\n', cfg)
         docker = (ROOT / "Dockerfile").read_text(encoding="utf-8")
-        self.assertIn('io.hass.version="0.1.35"', docker)
+        self.assertIn('io.hass.version="0.1.36"', docker)
         self.assertIn("COPY panel.html", docker)
         self.assertRegex(docker, r"pillow", "Pillow must be installed for the art resize path")
         self.assertIn("0.1.21", (ROOT / "DOCS.md").read_text(encoding="utf-8"))
@@ -543,7 +543,7 @@ class MediaBrowseTest(unittest.TestCase):
             cmd_ws.assert_not_called()
         self.assertEqual(ws_calls[0], ("call_service", {
             "domain": "music_assistant", "service": "get_library",
-            "service_data": {"config_entry_id": "ma1", "media_type": "playlist", "limit": 100, "order_by": "name"},
+            "service_data": {"config_entry_id": "ma1", "media_type": "playlist", "limit": 50, "order_by": "name"},
             "return_response": True,
         }))
         self.assertEqual(out["source"], "music_assistant")
@@ -564,21 +564,57 @@ class MediaBrowseTest(unittest.TestCase):
             "media_content_type": "playlist"}))
         self.assertEqual(nested["items"][0]["media_content_id"], "spotify://playlist/1")
         self.assertNotIn("source", nested)
-        # get_library failure → Cast browse_media fallback
+        # get_library failure on a group player must not fall through to browse_media
         ws_calls.clear()
 
-        def fail_then_browse(msg_type, extra=None):
+        def fail_library(msg_type, extra=None):
             ws_calls.append((msg_type, extra))
             if extra and extra.get("service") == "get_library":
                 raise RuntimeError("no such service")
             return {"title": "Cast", "children": [browse_child(9)]}
 
-        with mock.patch.object(agent, "ha_ws_query_command", side_effect=fail_then_browse):
-            fallback = agent.media_browse({"entity_id": "media_player.saloni"})
-        self.assertEqual(fallback["items"][0]["media_content_id"], "spotify://playlist/9")
-        self.assertEqual(ws_calls[-1][0], "media_player/browse_media")
+        with mock.patch.object(agent, "ha_ws_query_command", side_effect=fail_library), \
+             mock.patch.object(agent, "music_assistant_entry_id", return_value="ma1"):
+            fallback = agent.media_browse({"entity_id": "media_player.office_group"})
+        self.assertEqual(fallback["source"], "music_assistant")
+        self.assertEqual(fallback["items"], [])
+        self.assertTrue(fallback["ok"])
+        self.assertTrue(all(c[0] != "media_player/browse_media" for c in ws_calls))
         self.assertEqual(agent.ma_library_items(None, "playlist"), [])
         self.assertEqual(agent.ma_library_items({"items": "nope"}, "playlist"), [])
+
+    def test_root_looks_up_entry_id_when_cache_empty(self):
+        agent.MA_INFO["entry_id"] = None
+        ws_calls = []
+
+        def fake_ws(msg_type, extra=None):
+            ws_calls.append((msg_type, extra))
+            if extra and extra.get("service") == "get_library":
+                return {"context": {"id": "ctx"}, "response": {"items": [
+                    {"name": "Liked", "uri": "library://playlist/2", "media_type": "playlist"},
+                ]}}
+            raise RuntimeError("Entity does not support browse media")
+
+        with mock.patch.object(agent, "ha_ws_query_command", side_effect=fake_ws), \
+             mock.patch.object(agent, "music_assistant_entry_id", return_value="ma1"):
+            out = agent.media_browse({"entity_id": "media_player.office_group"})
+        self.assertEqual(out["source"], "music_assistant")
+        self.assertEqual(out["items"][0]["title"], "Liked")
+        self.assertEqual(ws_calls[0][1]["service"], "get_library")
+
+    def test_browse_media_unsupported_returns_empty_page(self):
+        agent.MA_INFO["entry_id"] = None
+        with mock.patch.object(agent, "music_assistant_entry_id", return_value=None), \
+             mock.patch.object(agent, "ha_ws_query_command",
+                               side_effect=RuntimeError("Entity does not support browse media")):
+            out = agent.media_browse({"entity_id": "media_player.office_group"})
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["items"], [])
+        with mock.patch.object(agent, "music_assistant_entry_id", return_value=None), \
+             mock.patch.object(agent, "ha_ws_query_command",
+                               side_effect=agent.HaWsUnavailable("no ws")):
+            with self.assertRaises(RuntimeError):
+                agent.media_browse({"entity_id": "media_player.saloni"})
 
 
 # --- 5. arvio.media_search ------------------------------------------------------------------------

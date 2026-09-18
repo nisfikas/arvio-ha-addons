@@ -41,7 +41,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.35"
+AGENT_VERSION = "0.1.36"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -998,7 +998,8 @@ class SharedHaWs:
 # behind a browse; read-only lookups (browse / search / `return_response` reads) go through
 # `_HA_QUERY_CHANNEL`, so each channel only waits on its own kind.
 _HA_CMD_CHANNEL = SharedHaWs("cmd")
-_HA_QUERY_CHANNEL = SharedHaWs("query")
+# Spotify / Music Assistant get_library can exceed the default 20 s socket.
+_HA_QUERY_CHANNEL = SharedHaWs("query", timeout=40.0)
 
 
 def ha_ws_shared_command(msg_type: str, extra: dict | None = None):
@@ -5337,6 +5338,48 @@ def browse_result_to_page(result, cap: int = MEDIA_BROWSE_MAX_ITEMS) -> dict:
     }
 
 
+def _empty_browse_page(eid: str, *, title: str = "Playlists", source: str | None = None) -> dict:
+    page = {
+        "ok": True,
+        "entity_id": eid,
+        "title": title,
+        "media_content_id": None,
+        "media_content_type": "playlist",
+        "media_class": "directory",
+        "thumbnail": None,
+        "items": [],
+        "total": 0,
+        "truncated": False,
+    }
+    if source:
+        page["source"] = source
+    return page
+
+
+def _ma_library_playlists(eid: str, entry_id: str) -> dict:
+    data = {
+        "config_entry_id": entry_id,
+        "media_type": "playlist",
+        "limit": min(50, MEDIA_BROWSE_MAX_ITEMS),
+        "order_by": "name",
+    }
+    _ctx, response = ha_call_service_response("music_assistant", "get_library", data)
+    items = ma_library_items(response, "playlist")
+    return {
+        "ok": True,
+        "entity_id": eid,
+        "title": "Playlists",
+        "media_content_id": None,
+        "media_content_type": "playlist",
+        "media_class": "directory",
+        "thumbnail": None,
+        "items": items,
+        "total": len(items),
+        "truncated": False,
+        "source": "music_assistant",
+    }
+
+
 def media_browse(payload: dict, entity_id: str = "") -> dict:
     """arvio.media_browse {entity_id, media_content_id?, media_content_type?}.
 
@@ -5350,32 +5393,18 @@ def media_browse(payload: dict, entity_id: str = "") -> dict:
     if not eid.startswith("media_player."):
         raise ValueError("media_player entity_id required")
     has_node = payload.get("media_content_id") not in (None, "")
-    entry_id = MA_INFO.get("entry_id")
+    entry_id = MA_INFO.get("entry_id") or music_assistant_entry_id()
     if entry_id and not has_node:
-        data = {
-            "config_entry_id": entry_id,
-            "media_type": "playlist",
-            "limit": min(100, MEDIA_BROWSE_MAX_ITEMS),
-            "order_by": "name",
-        }
         try:
-            _ctx, response = ha_call_service_response("music_assistant", "get_library", data)
-            items = ma_library_items(response, "playlist")
-            return {
-                "ok": True,
-                "entity_id": eid,
-                "title": "Playlists",
-                "media_content_id": None,
-                "media_content_type": "playlist",
-                "media_class": "directory",
-                "thumbnail": None,
-                "items": items,
-                "total": len(items),
-                "truncated": False,
-                "source": "music_assistant",
-            }
+            return _ma_library_playlists(eid, entry_id)
         except (RuntimeError, TypeError, ValueError, KeyError):
-            pass
+            entry_id = music_assistant_entry_id() or entry_id
+            try:
+                return _ma_library_playlists(eid, entry_id)
+            except (RuntimeError, TypeError, ValueError, KeyError):
+                # Group players (MA «Office speakers group») do not support browse_media —
+                # falling through would surface as Home «Το σπίτι απάντησε με σφάλμα».
+                return _empty_browse_page(eid, source="music_assistant")
     extra: dict = {"entity_id": eid}
     if has_node:
         extra["media_content_id"] = str(payload["media_content_id"])
@@ -5385,6 +5414,8 @@ def media_browse(payload: dict, entity_id: str = "") -> dict:
         result = ha_ws_query_command("media_player/browse_media", extra)
     except HaWsUnavailable as e:
         raise RuntimeError(f"HA websocket unavailable: {e}") from e
+    except RuntimeError:
+        return _empty_browse_page(eid)
     page = browse_result_to_page(result)
     page.update({"ok": True, "entity_id": eid})
     return page
