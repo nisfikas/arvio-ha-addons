@@ -41,7 +41,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.38"
+AGENT_VERSION = "0.1.39"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -548,6 +548,8 @@ def _parse_screen_pages(raw) -> list:
                 raise ValueError("tile_security_forbidden")
             if kind == "allOff" and isinstance(ref, str) and ref:
                 tile["ref"] = ref
+            if kind in ("clock", "weather") and t.get("bold") is True:
+                tile["bold"] = True
             tiles.append(tile)
         pages.append({"id": pid, "tiles": tiles})
     return pages
@@ -681,15 +683,22 @@ def panel_snapshot(screen_id: str | None = None) -> dict:
             domain = str(e.get("domain") or eid.split(".", 1)[0])
             if domain in SCREEN_SECURITY_DOMAINS:
                 continue
-            entities_out.append(
-                {
-                    "entity_id": eid,
-                    "state": e.get("state"),
-                    "name": e.get("name"),
-                    "domain": domain,
-                    "area_id": effective_area_id(entity_regs.get(eid), devices),
-                }
-            )
+            item = {
+                "entity_id": eid,
+                "state": e.get("state"),
+                "name": e.get("name"),
+                "domain": domain,
+                "area_id": effective_area_id(entity_regs.get(eid), devices),
+            }
+            if domain == "climate":
+                item["current_temperature"] = e.get("current_temperature")
+                item["temperature"] = e.get("temperature")
+                item["hvac_mode"] = e.get("hvac_mode") or e.get("state")
+                modes = e.get("hvac_modes")
+                item["hvac_modes"] = modes if isinstance(modes, list) else []
+                item["min_temp"] = e.get("min_temp")
+                item["max_temp"] = e.get("max_temp")
+            entities_out.append(item)
         states = ha("/states") or []
         if not isinstance(states, list):
             states = []
@@ -3265,6 +3274,8 @@ LAN_MEDIA_PAYLOAD_KEYS = frozenset(
     }
 )
 LAN_SCENARIO_PAYLOAD_KEYS = frozenset({"id", "scenario_id"})
+LAN_CLIMATE_ACTIONS = frozenset({"climate.set_temperature", "climate.set_hvac_mode"})
+LAN_CLIMATE_PAYLOAD_KEYS = frozenset({"temperature", "hvac_mode"})
 MEDIA_ART_MAX_PX = 256
 MEDIA_ART_JPEG_QUALITY = 80
 MEDIA_ART_WIRE_MAX_BYTES = 40 * 1024  # hard cap for data_base64's decoded bytes
@@ -6816,6 +6827,11 @@ class H(BaseHTTPRequestHandler):
                     raw_payload = body.get("payload") if isinstance(body.get("payload"), dict) else {}
                     cmd["payload"] = {
                         k: v for k, v in raw_payload.items() if k in LAN_SCENARIO_PAYLOAD_KEYS
+                    }
+                elif action in LAN_CLIMATE_ACTIONS:
+                    raw_payload = body.get("payload") if isinstance(body.get("payload"), dict) else {}
+                    cmd["payload"] = {
+                        k: v for k, v in raw_payload.items() if k in LAN_CLIMATE_PAYLOAD_KEYS
                     }
                 ack = handle_command(cmd, via="lan")
                 if not ack.get("ok"):

@@ -105,6 +105,7 @@
         line-height: 0.95;
         font-size: clamp(2.4rem, 11vw, 4.4rem);
       }
+      .tile.bold .face, .sheet-clock.bold, .face.bold { font-weight: 700; }
       .tile[data-size="m"] .face { font-size: clamp(3.4rem, 14vw, 6rem); }
       .tile[data-size="l"] .face { font-size: clamp(5rem, 22vw, 10rem); }
       .tile--clock .kicker, .tile--weather .kicker { font-size: 1.05rem; }
@@ -165,6 +166,19 @@
         justify-content: space-between;
         gap: 12px;
         font-size: 1.2rem;
+      }
+      .chip.on { color: var(--on); }
+      .step {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 16px;
+      }
+      .step button {
+        min-width: 72px;
+        min-height: 72px;
+        border-radius: 28px;
+        font-size: 2rem;
       }
       .device.on { color: var(--on); }
       .wx-now { display: flex; flex-direction: column; gap: 0.4rem; }
@@ -253,6 +267,15 @@
         sunny: "Ηλιοφάνεια",
         windy: "Άνεμος",
         "windy-variant": "Άνεμος",
+      };
+      const HVAC = {
+        off: "Κλειστό",
+        heat: "Θέρμανση",
+        cool: "Ψύξη",
+        heat_cool: "Αυτόματο",
+        auto: "Αυτόματο",
+        dry: "Αφύγρανση",
+        fan_only: "Ανεμιστήρας",
       };
       const ROOM_DOMAINS = { light: 1, switch: 1, cover: 1, climate: 1, media_player: 1 };
       const gate = document.getElementById("gate");
@@ -364,7 +387,9 @@
       function tileOn(t) {
         if (t.kind === "entity") {
           const e = byId(t.ref);
-          return e && (e.state === "on" || e.state === "open" || e.state === "playing");
+          if (!e) return false;
+          if (e.domain === "climate") return e.state && e.state !== "off" && e.state !== "unavailable";
+          return e.state === "on" || e.state === "open" || e.state === "playing";
         }
         if (t.kind === "room") return lightsIn(t.ref).some((e) => e.state === "on");
         return false;
@@ -447,6 +472,10 @@
         sheetEl.classList.add("hidden");
         sheetBody.innerHTML = "";
       }
+      function sheetBack() {
+        if (sheet && sheet.parent) openSheet(sheet.parent);
+        else closeSheet();
+      }
       function openSheet(next) {
         sheet = next;
         sheetEl.classList.remove("hidden");
@@ -462,7 +491,9 @@
           sheetTitle.textContent = "Ρολόι";
           sheetSub.textContent = ringing ? "Τέλος" : remain ? "Χρονόμετρο " + formatCountdown(remain) : dateText();
           sheetBody.innerHTML =
-            '<div class="sheet-clock" data-clock="1">' +
+            '<div class="sheet-clock' +
+            (sheet.bold ? " bold" : "") +
+            '" data-clock="1">' +
             esc(clockText()) +
             '</div><p class="sheet-date" data-date="1">' +
             esc(dateText()) +
@@ -484,7 +515,9 @@
           sheetTitle.textContent = "Καιρός";
           sheetSub.textContent = weatherWord();
           sheetBody.innerHTML =
-            '<div class="wx-now"><div class="face" style="font-size:clamp(4rem,18vw,8rem)">' +
+            '<div class="wx-now"><div class="face' +
+            (sheet.bold ? " bold" : "") +
+            '" style="font-size:clamp(4rem,18vw,8rem)">' +
             esc(weatherTemp() || "—") +
             "</div><p class=\"kicker\">" +
             esc(weatherWord()) +
@@ -542,16 +575,55 @@
                   .join("")
               : "<p>Δεν υπάρχουν συσκευές σε αυτό το δωμάτιο.</p>") +
             "</div>";
+        } else if (sheet.kind === "climate") {
+          const e = byId(sheet.ref);
+          const modes = (e && Array.isArray(e.hvac_modes) && e.hvac_modes.length ? e.hvac_modes : ["off", "heat", "cool"]);
+          const mode = (e && (e.hvac_mode || e.state)) || "";
+          const cur = e ? Number(e.current_temperature) : NaN;
+          const target = e ? Number(e.temperature) : NaN;
+          sheetTitle.textContent = e && e.name ? e.name : "Κλιματιστικό";
+          sheetSub.textContent = formatTemp(cur) || entityWord(e);
+          sheetBody.innerHTML =
+            '<div class="wx-now"><div class="face' +
+            (sheet.bold ? " bold" : "") +
+            '">' +
+            esc(formatTemp(cur) || "—") +
+            '</div><p class="kicker">στόχος ' +
+            esc(formatTemp(target) || "—") +
+            "</p></div>" +
+            '<div class="step">' +
+            '<button type="button" data-temp-step="-0.5">−</button>' +
+            '<span class="face" style="font-size:2.4rem">' +
+            esc(formatTemp(target) || "—") +
+            "</span>" +
+            '<button type="button" data-temp-step="0.5">+</button>' +
+            "</div>" +
+            '<div class="presets">' +
+            modes
+              .map((m) => {
+                const label = HVAC[m] || m;
+                return (
+                  '<button type="button" class="chip' +
+                  (m === mode ? " on" : "") +
+                  '" data-hvac="' +
+                  esc(m) +
+                  '">' +
+                  esc(label) +
+                  "</button>"
+                );
+              })
+              .join("") +
+            "</div>";
         }
       }
 
       async function tap(t) {
         if (t.kind === "clock") {
-          openSheet({ kind: "clock" });
+          openSheet({ kind: "clock", bold: !!t.bold });
           return;
         }
         if (t.kind === "weather") {
-          openSheet({ kind: "weather" });
+          openSheet({ kind: "weather", bold: !!t.bold });
           return;
         }
         if (t.kind === "room") {
@@ -559,7 +631,12 @@
           return;
         }
         if (t.kind === "entity" && t.ref) {
-          await toggleEntity(byId(t.ref) || { entity_id: t.ref, domain: t.ref.split(".")[0], state: "off" });
+          const e = byId(t.ref) || { entity_id: t.ref, domain: t.ref.split(".")[0], state: "off" };
+          if (e.domain === "climate") {
+            openSheet({ kind: "climate", ref: t.ref });
+            return;
+          }
+          await toggleEntity(e);
         } else if (t.kind === "allOff") {
           for (const e of lightsIn(t.ref)) await cmd("light.turn_off", e.entity_id);
         } else if (t.kind === "scene" && t.ref) {
@@ -606,11 +683,12 @@
         }
         if (t.kind === "entity") {
           const e = byId(t.ref);
+          const climateTemp = e && e.domain === "climate" ? formatTemp(Number(e.current_temperature)) : "";
           return (
             '<span class="kicker"></span><span class="name">' +
             esc(e ? e.name : t.ref) +
             '</span><span class="state">' +
-            esc(entityWord(e)) +
+            esc(climateTemp || entityWord(e)) +
             "</span>"
           );
         }
@@ -638,7 +716,7 @@
             const b = document.createElement("button");
             b.type = "button";
             const size = tileSize(t);
-            b.className = "tile tile--" + t.kind + (size !== "s" ? " wide" : "") + (tileOn(t) ? " on" : "");
+            b.className = "tile tile--" + t.kind + (size !== "s" ? " wide" : "") + (tileOn(t) ? " on" : "") + (t.bold ? " bold" : "");
             b.dataset.size = size;
             b.innerHTML = tileInner(t);
             b.addEventListener("click", () => tap(t));
@@ -793,7 +871,7 @@
       document.getElementById("code").addEventListener("keydown", (e) => {
         if (e.key === "Enter") pair();
       });
-      document.getElementById("sheet-back").addEventListener("click", closeSheet);
+      document.getElementById("sheet-back").addEventListener("click", sheetBack);
       sheetEl.addEventListener("click", async (e) => {
         armSheet();
         const min = e.target.getAttribute && e.target.getAttribute("data-min");
@@ -806,9 +884,32 @@
           for (const ent of lights) await cmd(anyOn ? "light.turn_off" : "light.turn_on", ent.entity_id);
           await load(true);
         }
+        const stepBtn = e.target.closest && e.target.closest("[data-temp-step]");
+        if (stepBtn && sheet && sheet.kind === "climate") {
+          const ent = byId(sheet.ref);
+          const cur = ent ? Number(ent.temperature) : NaN;
+          const next = (isFinite(cur) ? cur : 21) + Number(stepBtn.getAttribute("data-temp-step"));
+          const lo = ent ? Number(ent.min_temp) : NaN;
+          const hi = ent ? Number(ent.max_temp) : NaN;
+          const clamped = Math.min(isFinite(hi) ? hi : 32, Math.max(isFinite(lo) ? lo : 16, next));
+          await cmd("climate.set_temperature", sheet.ref, { temperature: Math.round(clamped * 2) / 2 });
+          await load(true);
+          return;
+        }
+        const hvacBtn = e.target.closest && e.target.closest("[data-hvac]");
+        if (hvacBtn && sheet && sheet.kind === "climate") {
+          await cmd("climate.set_hvac_mode", sheet.ref, { hvac_mode: hvacBtn.getAttribute("data-hvac") });
+          await load(true);
+          return;
+        }
         const eid = e.target.closest && e.target.closest("[data-eid]");
         if (eid) {
-          await toggleEntity(byId(eid.getAttribute("data-eid")));
+          const ent = byId(eid.getAttribute("data-eid"));
+          if (ent && ent.domain === "climate") {
+            openSheet({ kind: "climate", ref: ent.entity_id, parent: { kind: "room", ref: sheet && sheet.ref } });
+            return;
+          }
+          await toggleEntity(ent);
           await load(true);
         }
       });
