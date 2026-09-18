@@ -129,11 +129,11 @@ class FakePillow:
 
 class VersionPinTest(unittest.TestCase):
     def test_three_places_agree(self):
-        self.assertEqual(agent.AGENT_VERSION, "0.1.36")
+        self.assertEqual(agent.AGENT_VERSION, "0.1.37")
         cfg = (ROOT / "config.yaml").read_text(encoding="utf-8")
-        self.assertIn('\nversion: "0.1.36"\n', cfg)
+        self.assertIn('\nversion: "0.1.37"\n', cfg)
         docker = (ROOT / "Dockerfile").read_text(encoding="utf-8")
-        self.assertIn('io.hass.version="0.1.36"', docker)
+        self.assertIn('io.hass.version="0.1.37"', docker)
         self.assertIn("COPY panel.html", docker)
         self.assertRegex(docker, r"pillow", "Pillow must be installed for the art resize path")
         self.assertIn("0.1.21", (ROOT / "DOCS.md").read_text(encoding="utf-8"))
@@ -856,7 +856,9 @@ class MediaServiceDataTest(unittest.TestCase):
         self.assertEqual(svc, "play_media")
         self.assertEqual(data, {"entity_id": "media_player.saloni", "media_id": "spotify://playlist/1", "media_type": "playlist",
                                 "artist": "Miles", "enqueue": "replace_next", "radio_mode": True})
-        self.assertEqual(self.sd("music_assistant.play_media", {"media_id": ["a", "b"]})[1]["media_id"], ["a", "b"])
+        listed = self.sd("music_assistant.play_media", {"media_id": ["a", "b"]})[1]
+        self.assertEqual(listed["media_id"], ["a", "b"])
+        self.assertEqual(listed["enqueue"], "replace")
         with self.assertRaises(ValueError):
             self.sd("music_assistant.play_media", {"media_type": "track"})
         with self.assertRaises(ValueError):
@@ -963,6 +965,25 @@ class MediaExecuteTest(unittest.TestCase):
         self.assertTrue(out["ok"])
         self.assertLess(elapsed, 0.5)
 
+    def test_play_media_waits_even_when_volume_is_async(self):
+        orig = agent.ha_call_service
+
+        def delayed(domain, service, data):
+            if service == "play_media":
+                time.sleep(0.12)
+            return orig(domain, service, data)
+
+        with mock.patch.object(agent, "MEDIA_CALL_ASYNC", True), mock.patch.object(agent, "ha_call_service", side_effect=delayed):
+            t0 = time.monotonic()
+            out = agent.execute_action(
+                "music_assistant.play_media",
+                "media_player.saloni",
+                {"media_id": "x", "media_type": "playlist", "enqueue": "replace"},
+            )
+            elapsed = time.monotonic() - t0
+        self.assertTrue(out["ok"])
+        self.assertGreaterEqual(elapsed, 0.1)
+
     def test_select_source_and_play_pause_states(self):
         out = agent.execute_action("media_player.select_source", "media_player.saloni", {"source": "Radio"})
         self.assertTrue(out["ok"])
@@ -1019,6 +1040,22 @@ class MediaExecuteTest(unittest.TestCase):
         self.assertTrue(out["ok"])
         self.assertEqual(self.fake.calls[-1], ("/services/music_assistant/play_media", {
             "entity_id": "media_player.saloni", "media_id": "spotify://playlist/1", "media_type": "playlist", "enqueue": "replace"}))
+        self.fake.states["media_player.saloni"]["state"] = "idle"
+        self.fake.calls.clear()
+        kicked = agent.execute_action("music_assistant.play_media", "media_player.saloni",
+                                      {"media_id": "library://playlist/14", "media_type": "playlist"})
+        self.assertTrue(kicked["ok"])
+        self.assertEqual([c[0] for c in self.fake.calls], [
+            "/services/music_assistant/play_media",
+            "/services/media_player/media_play",
+        ])
+        self.assertEqual(self.fake.calls[0][1]["enqueue"], "replace")
+        self.assertEqual(kicked["state"], "playing")
+        self.fake.states["media_player.saloni"]["state"] = "idle"
+        self.fake.calls.clear()
+        agent.execute_action("music_assistant.play_media", "media_player.saloni",
+                             {"media_id": "library://playlist/14", "media_type": "playlist", "enqueue": "add"})
+        self.assertEqual([c[0] for c in self.fake.calls], ["/services/music_assistant/play_media"])
         self.assertEqual(out["state_snapshot"]["entity_id"], "media_player.saloni")
         agent.execute_action("music_assistant.transfer_queue", "media_player.kouzina", {"source_player": "media_player.saloni", "auto_play": True})
         self.assertEqual(self.fake.calls[-1][1], {"entity_id": "media_player.kouzina", "source_player": "media_player.saloni", "auto_play": True})

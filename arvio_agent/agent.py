@@ -41,7 +41,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.36"
+AGENT_VERSION = "0.1.37"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -1043,9 +1043,11 @@ def ha_call_service(domain: str, service: str, data: dict) -> str | None:
     return str(cid) if cid else None
 
 
-# Tests set this False so fake HA runs on the same thread. Production True: Spotify /
-# Music Assistant `call_service` can take many seconds; the Home ack must not wait.
+# Tests set this False so fake HA runs on the same thread. Production True: volume /
+# skip ack without waiting on Spotify. play_media waits — MA otherwise loads the
+# queue and never starts, and Home paints «Παίζει» on a silent speaker.
 MEDIA_CALL_ASYNC = True
+MEDIA_START_SERVICES = frozenset({"play_media"})
 
 
 def _spawn_media_call(domain: str, service: str, data: dict) -> None:
@@ -1058,6 +1060,22 @@ def _spawn_media_call(domain: str, service: str, data: dict) -> None:
             pass
 
     threading.Thread(target=run, name=f"ha-{domain}.{service}", daemon=True).start()
+
+
+def _kick_idle_queue(entity_ids: list[str], data: dict, states: dict, sent_at: float) -> dict:
+    """MA often fills the queue without play_index; media_play starts the loaded items."""
+    enqueue = str(data.get("enqueue") or "replace")
+    if enqueue not in ("play", "replace") or not entity_ids:
+        return states
+    idle = [e for e in entity_ids if _state_of(states.get(e)) not in ("playing", "buffering")]
+    if not idle:
+        return states
+    for e in idle:
+        try:
+            ha_call_service("media_player", "media_play", {"entity_id": e})
+        except Exception:
+            pass
+    return _overlay_feed(_read_states_rest(entity_ids), entity_ids, sent_at)
 
 
 def config_entries() -> list:
@@ -2559,9 +2577,10 @@ def call_service(
     # Spotify / Music Assistant hold the HA websocket until the player answers.
     # Waiting here for volume_level or «playing» queues the next skip/volume
     # behind 2 s of silence. Home paints the intent immediately; the state
-    # stream is the confirmation.
+    # stream is the confirmation. play_media waits and, if still idle, media_play.
     media = domain in ("media_player", "music_assistant")
-    if media and MEDIA_CALL_ASYNC:
+    start = media and service in MEDIA_START_SERVICES
+    if media and MEDIA_CALL_ASYNC and not start:
         ha_context_id = None
         _spawn_media_call(domain, service, data)
         states = _overlay_feed(_read_states_rest(entity_ids), entity_ids, sent_at)
@@ -2570,6 +2589,8 @@ def call_service(
         ha_context_id = ha_call_service(domain, service, data)
         if media:
             states = _overlay_feed(_read_states_rest(entity_ids), entity_ids, sent_at)
+            if start:
+                states = _kick_idle_queue(entity_ids, data, states, sent_at)
             confirmed = True
         else:
             states = wait_for_states(domain, expected, entity_ids, sent_at=sent_at, expected_attrs=expected_attrs)
@@ -2707,6 +2728,9 @@ def build_service_data(action: str, entity_id: str, payload: dict, ha_version=No
                 if str(payload["enqueue"]) not in MA_ENQUEUE_MODES:
                     raise ValueError("enqueue must be play|replace|next|replace_next|add")
                 data["enqueue"] = str(payload["enqueue"])
+            else:
+                # MA's omitted default can be ADD: queue fills, current_item stays null.
+                data["enqueue"] = "replace"
             if payload.get("radio_mode") is not None:
                 data["radio_mode"] = bool(payload["radio_mode"])
         elif service == "transfer_queue":
