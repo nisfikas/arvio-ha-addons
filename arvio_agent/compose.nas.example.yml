@@ -7,7 +7,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.standalone
-    image: arvio-agent:0.1.46
+    image: arvio-agent:0.1.47
     container_name: arvio-agent
     restart: unless-stopped
     environment:

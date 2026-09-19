@@ -589,6 +589,22 @@ class ScreenLanHttpTest(unittest.TestCase):
         self.assertNotIn("lock.unlock", html)
         self.assertNotIn("alarm_disarm", html)
 
+    def test_panel_climate_is_a_dial_not_a_clipped_hero(self):
+        html = (ROOT / "panel.html").read_text(encoding="utf-8")
+        self.assertIn("clima-dial", html)
+        self.assertIn("clima-nudge", html)
+        self.assertIn("τώρα ", html)
+        self.assertNotIn("clima-hero", html)
+        self.assertNotIn("clima-now", html)
+        self.assertIn("tempCommitTimer", html)
+
+    def test_panel_idle_returns_to_first_page(self):
+        html = (ROOT / "panel.html").read_text(encoding="utf-8")
+        self.assertIn("HOME_IDLE_MS = 60000", html)
+        self.assertIn("function goHome()", html)
+        self.assertIn("function armHomeIdle()", html)
+        self.assertIn('document.addEventListener("pointerdown"', html)
+
     def test_wallpaper_http(self):
         b64 = base64.b64encode(JPEG).decode()
         agent.put_wall_screen(

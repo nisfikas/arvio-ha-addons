@@ -341,90 +341,72 @@
       #sheet-sub { font-size: 1rem; }
       #sheet-body { flex: 1; overflow: auto; display: flex; flex-direction: column; gap: 12px; min-height: 0; }
       #sheet[data-kind="climate"] {
-        padding-top: 12px;
+        padding-top: 10px;
+        gap: 10px;
       }
-      #sheet[data-kind="climate"] #sheet-body { overflow: auto; }
+      #sheet[data-kind="climate"] #sheet-body {
+        overflow: hidden;
+        justify-content: space-between;
+      }
       #sheet[data-hvac="heat"] {
-        background: radial-gradient(120% 90% at 50% -8%, rgba(212, 160, 106, 0.34), transparent 64%), var(--bg);
+        background: radial-gradient(90% 70% at 50% 8%, rgba(212, 160, 106, 0.42), transparent 62%), var(--bg);
       }
       #sheet[data-hvac="cool"] {
-        background: radial-gradient(120% 90% at 50% -8%, rgba(106, 168, 188, 0.32), transparent 64%), var(--bg);
+        background: radial-gradient(90% 70% at 50% 8%, rgba(106, 168, 188, 0.4), transparent 62%), var(--bg);
       }
       #sheet[data-hvac="dry"] {
-        background: radial-gradient(120% 90% at 50% -8%, rgba(122, 158, 196, 0.28), transparent 64%), var(--bg);
+        background: radial-gradient(90% 70% at 50% 8%, rgba(122, 158, 196, 0.34), transparent 62%), var(--bg);
+      }
+      #sheet[data-hvac="fan_only"] {
+        background: radial-gradient(90% 70% at 50% 8%, rgba(154, 163, 170, 0.28), transparent 62%), var(--bg);
       }
       html[data-mode="light"] #sheet[data-hvac="heat"] {
-        background: radial-gradient(120% 90% at 50% -8%, rgba(212, 160, 106, 0.22), transparent 64%), var(--bg);
+        background: radial-gradient(90% 70% at 50% 10%, rgba(212, 160, 106, 0.4), transparent 64%), var(--bg);
       }
       html[data-mode="light"] #sheet[data-hvac="cool"] {
-        background: radial-gradient(120% 90% at 50% -8%, rgba(106, 168, 188, 0.2), transparent 64%), var(--bg);
+        background: radial-gradient(90% 70% at 50% 10%, rgba(80, 148, 172, 0.38), transparent 64%), var(--bg);
       }
       .clima {
         flex: 1;
         display: flex;
         flex-direction: column;
         min-height: 0;
-        gap: 14px;
+        gap: 12px;
       }
-      .clima-hero {
+      .clima-dial {
         flex: 1;
-        display: flex;
-        flex-direction: column;
+        min-height: 7.2rem;
+        display: grid;
+        grid-template-columns: 72px minmax(0, 1fr) 72px;
         align-items: center;
-        justify-content: center;
-        min-height: 0;
+        gap: 4px;
       }
-      .clima-now {
+      .clima-nudge {
+        width: 72px;
+        height: 72px;
+        min-width: 72px;
+        min-height: 72px;
+        border-radius: 50%;
+        border: 1px solid var(--line);
+        background: var(--tile);
+        font-size: 2rem;
+        font-weight: 200;
+        line-height: 1;
+        box-shadow: 0 10px 28px rgba(20, 28, 36, 0.08);
+      }
+      .clima-nudge:active { transform: scale(0.96); }
+      .clima-face { text-align: center; min-width: 0; }
+      .clima-target {
         font-variant-numeric: tabular-nums;
         font-weight: 200;
         letter-spacing: -0.07em;
         line-height: 0.88;
-        font-size: clamp(4.2rem, 22vw, 7.2rem);
+        font-size: clamp(3.6rem, 17vw, 5.6rem);
       }
-      .clima-now-k {
-        margin-top: 0.35rem;
-        font-size: 0.95rem;
-        letter-spacing: 0.16em;
-        text-transform: uppercase;
-        color: var(--muted);
-      }
-      .clima-set {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 8px;
-        background: var(--tile);
-        border: 1px solid var(--line);
-        border-radius: 999px;
-        padding: 8px 10px;
-        max-width: 22rem;
-        width: 100%;
-        margin: 0 auto;
-      }
-      .clima-set button {
-        width: 56px;
-        height: 56px;
-        min-width: 56px;
-        min-height: 56px;
-        border-radius: 50%;
-        border: 0;
-        background: var(--bg);
-        font-size: 1.7rem;
-        font-weight: 300;
-        line-height: 1;
-      }
-      .clima-target {
-        text-align: center;
-        font-variant-numeric: tabular-nums;
-        font-size: 2.1rem;
-        font-weight: 500;
-        letter-spacing: -0.05em;
-        line-height: 1;
-      }
-      .clima-target-k {
-        margin-top: 0.2rem;
+      .clima-k {
+        margin: 0.45rem 0 0;
         font-size: 0.78rem;
-        letter-spacing: 0.14em;
+        letter-spacing: 0.16em;
         text-transform: uppercase;
         color: var(--muted);
       }
@@ -433,29 +415,60 @@
         grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: 8px;
       }
+      html[data-orientation="landscape"] .clima-modes {
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+      }
       .clima-mode {
-        min-height: 76px;
-        border-radius: 20px;
-        padding: 10px 6px 8px;
+        min-height: 64px;
+        border-radius: 22px;
+        padding: 8px 6px 6px;
         display: flex;
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        gap: 6px;
+        gap: 5px;
         font-size: 0.78rem;
         letter-spacing: 0.01em;
         line-height: 1.15;
         text-align: center;
-        background: var(--tile);
+        color: var(--muted);
+        background: color-mix(in srgb, var(--tile) 72%, transparent);
         border: 1px solid transparent;
       }
       .clima-mode svg { display: block; }
-      .clima-mode.on { color: var(--on); border-color: var(--on); }
-      .clima-mode[data-hvac="heat"].on { color: var(--heat); border-color: rgba(212, 160, 106, 0.45); }
-      .clima-mode[data-hvac="cool"].on { color: var(--cool); border-color: rgba(106, 168, 188, 0.45); }
-      .clima-mode[data-hvac="dry"].on { color: var(--dry); border-color: rgba(122, 158, 196, 0.45); }
+      .clima-mode.on {
+        color: var(--ink);
+        background: var(--tile);
+        box-shadow: 0 10px 28px rgba(20, 28, 36, 0.1);
+      }
+      .clima-mode[data-hvac="off"].on { color: var(--muted); }
+      .clima-mode[data-hvac="heat"].on {
+        color: var(--heat);
+        background: color-mix(in srgb, var(--heat) 28%, var(--tile));
+      }
+      .clima-mode[data-hvac="cool"].on {
+        color: var(--cool);
+        background: color-mix(in srgb, var(--cool) 28%, var(--tile));
+      }
+      .clima-mode[data-hvac="dry"].on {
+        color: var(--dry);
+        background: color-mix(in srgb, var(--dry) 24%, var(--tile));
+      }
       .clima-mode[data-hvac="fan_only"].on { color: var(--fan); }
-      .clima-chips { display: grid; gap: 6px; }
+      html[data-mode="light"] .clima-mode[data-hvac="heat"].on {
+        color: #8a5a20;
+        background: color-mix(in srgb, var(--heat) 46%, var(--tile));
+      }
+      html[data-mode="light"] .clima-mode[data-hvac="cool"].on {
+        color: #2a6a88;
+        background: color-mix(in srgb, var(--cool) 46%, var(--tile));
+      }
+      html[data-mode="light"] .clima-mode[data-hvac="dry"].on {
+        color: #3a5a78;
+        background: color-mix(in srgb, var(--dry) 42%, var(--tile));
+      }
+      html[data-orientation="landscape"] .clima-mode { min-height: 56px; }
+      .clima-chips { display: grid; gap: 6px; flex: 0 0 auto; min-height: 0; overflow: auto; }
       .clima-chips > span {
         font-size: 0.72rem;
         letter-spacing: 0.14em;
@@ -464,14 +477,19 @@
       }
       .clima-chips div { display: flex; flex-wrap: wrap; gap: 8px; }
       .clima-chip {
-        min-height: 48px;
+        min-height: 44px;
         border-radius: 999px;
         padding: 0 16px;
-        font-size: 0.92rem;
-        background: var(--tile);
+        font-size: 0.88rem;
+        background: transparent;
         border: 1px solid var(--line);
+        color: var(--muted);
       }
-      .clima-chip.on { color: var(--on); border-color: var(--on); }
+      .clima-chip.on {
+        color: var(--ink);
+        background: var(--tile);
+        border-color: color-mix(in srgb, var(--ink) 35%, transparent);
+      }
       .sheet-clock {
         font-variant-numeric: tabular-nums;
         font-weight: 300;
@@ -740,6 +758,7 @@
           transition: none;
         }
         .tile:active { transform: none; }
+        .clima-nudge:active { transform: none; }
       }
       .wx-now {
         position: relative;
@@ -1006,6 +1025,9 @@
       let lastBeep = 0;
       let floor3dSel = null;
       let floorIdleTimer = 0;
+      let homeIdleTimer = 0;
+      let tempCommitTimer = 0;
+      const HOME_IDLE_MS = 60000;
       let venueWall = null;
       const doorbellEl = document.getElementById("doorbell");
       const doorbellImg = document.getElementById("doorbell-img");
@@ -1660,6 +1682,27 @@
         clearTimeout(sheetTimer);
         sheetTimer = setTimeout(closeSheet, 30000);
       }
+      function homeBusy() {
+        if (doorbellEl && !doorbellEl.classList.contains("hidden")) return true;
+        const rec = timerRec();
+        return Boolean(rec && rec.ringing);
+      }
+      function goHome() {
+        if (homeBusy()) {
+          armHomeIdle();
+          return;
+        }
+        closeSheet();
+        if (pageIx !== 0) {
+          pageIx = 0;
+          const first = pagesEl.children[0];
+          if (first) first.scrollIntoView({ inline: "start", block: "nearest" });
+        }
+      }
+      function armHomeIdle() {
+        clearTimeout(homeIdleTimer);
+        homeIdleTimer = setTimeout(goHome, HOME_IDLE_MS);
+      }
       function closeSheet() {
         sheet = null;
         clearTimeout(sheetTimer);
@@ -1880,18 +1923,19 @@
           const mode = (e && (e.hvac_mode || e.state)) || "";
           const cur = e ? Number(e.current_temperature) : NaN;
           const target = e ? Number(e.temperature) : NaN;
+          const nowWord = formatTemp(cur);
           sheetEl.dataset.hvac = mode || "off";
           sheetTitle.textContent = e && e.name ? e.name : "Κλιματιστικό";
           sheetSub.textContent = HVAC[mode] || entityWord(e) || "";
           sheetBody.innerHTML =
-            '<div class="clima"><div class="clima-hero"><div class="clima-now">' +
-            esc(formatTemp(cur) || "—") +
-            '</div><p class="clima-now-k">τώρα</p></div><div class="clima-set">' +
-            '<button type="button" data-temp-step="-0.5" aria-label="Χαμηλότερα">−</button>' +
-            '<div><div class="clima-target">' +
+            '<div class="clima"><div class="clima-dial">' +
+            '<button type="button" class="clima-nudge" data-temp-step="-0.5" aria-label="Χαμηλότερα">−</button>' +
+            '<div class="clima-face"><div class="clima-target">' +
             esc(formatTemp(target) || "—") +
-            '</div><p class="clima-target-k">στόχος</p></div>' +
-            '<button type="button" data-temp-step="0.5" aria-label="Υψηλότερα">+</button>' +
+            '</div><p class="clima-k">στόχος' +
+            (nowWord && nowWord !== "—" ? " · τώρα " + esc(nowWord) : "") +
+            "</p></div>" +
+            '<button type="button" class="clima-nudge" data-temp-step="0.5" aria-label="Υψηλότερα">+</button>' +
             '</div><div class="clima-modes">' +
             modes
               .map((m) => {
@@ -1902,7 +1946,7 @@
                   '" data-hvac="' +
                   esc(m) +
                   '">' +
-                  ico(iconForHvac(m)) +
+                  ico(iconForHvac(m), 26) +
                   "<span>" +
                   esc(label) +
                   "</span></button>"
@@ -2395,6 +2439,7 @@
         }
         localStorage.setItem(KEY, body.screen_id);
         await load(false);
+        armHomeIdle();
       }
 
       document.getElementById("pair").addEventListener("click", pair);
@@ -2428,8 +2473,12 @@
           const hi = ent ? Number(ent.max_temp) : NaN;
           const clamped = Math.min(isFinite(hi) ? hi : 32, Math.max(isFinite(lo) ? lo : 16, next));
           const temp = Math.round(clamped * 2) / 2;
-          setOverlay(sheet.ref, { temperature: temp });
-          cmd("climate.set_temperature", sheet.ref, { temperature: temp });
+          const eid = sheet.ref;
+          setOverlay(eid, { temperature: temp });
+          clearTimeout(tempCommitTimer);
+          tempCommitTimer = setTimeout(() => {
+            cmd("climate.set_temperature", eid, { temperature: temp });
+          }, 400);
           return;
         }
         const hvacBtn = e.target.closest && e.target.closest("[data-hvac]");
@@ -2510,6 +2559,7 @@
         const w = pagesEl.clientWidth || 1;
         pageIx = Math.round(pagesEl.scrollLeft / w);
       });
+      document.addEventListener("pointerdown", armHomeIdle, { passive: true });
 
       (async () => {
         try {
@@ -2519,6 +2569,7 @@
         if (localStorage.getItem(KEY)) {
           gate.classList.add("hidden");
           await load(true).catch(() => {});
+          armHomeIdle();
         }
         setInterval(() => {
           if (localStorage.getItem(KEY)) load(true).catch(() => {});
