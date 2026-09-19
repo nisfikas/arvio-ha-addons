@@ -48,7 +48,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.45"
+AGENT_VERSION = "0.1.46"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -3689,7 +3689,7 @@ def call_service(
         ha_context_id = ha_call_service(domain, service, data)
         if media:
             states = _overlay_feed(_read_states_rest(entity_ids), entity_ids, sent_at)
-            if start:
+            if start and domain == "music_assistant":
                 states = _kick_idle_queue(entity_ids, data, states, sent_at)
             confirmed = True
         else:
@@ -4391,6 +4391,8 @@ MEDIA_ART_FETCH_MAX_BYTES = 5 * 1024 * 1024
 MEDIA_ART_CACHE_SIZE = 50
 MEDIA_BROWSE_MAX_ITEMS = 200
 MEDIA_SEARCH_LIMIT = 10
+# Albums/artists/radio are extra Spotify round trips; the Home box is for song titles.
+MA_SEARCH_DEFAULT_TYPES = ("track", "playlist")
 MEDIA_POSITION_ONLY_KEYS = frozenset({"media_position", "media_position_updated_at"})
 
 # Services the agent executes for cloud / relay commands (spec §9.1 allowlist + §15.5 music).
@@ -6644,18 +6646,20 @@ def ma_item_to_browse(it, default_type: str, *, expand_playlists: bool = True) -
     }
 
 
-def ma_search_items(response, cap: int = MEDIA_BROWSE_MAX_ITEMS, media_type: str | None = None) -> list:
+def ma_search_items(response, cap: int = MEDIA_BROWSE_MAX_ITEMS, media_type: str | None = None, types=None) -> list:
     """music_assistant.search response → items (media_content_id = MA uri, media_content_type = MA media_type). Pure.
 
     Flatten order is tracks → playlists → albums → artists → radio so a title query
-    surfaces songs before the artist rows MA returns in parallel. `media_type` keeps
-    only that bucket (HA still serialises every key).
+    surfaces songs before the artist rows MA returns in parallel. `media_type` / `types`
+    keep only those buckets (HA still serialises every key).
     """
     response = response if isinstance(response, dict) else {}
     keys = MA_SEARCH_KEYS
     if media_type:
-        want = str(media_type)
-        keys = tuple((k, t) for k, t in MA_SEARCH_KEYS if t == want)
+        types = [media_type]
+    if types:
+        want = {str(t) for t in types}
+        keys = tuple((k, t) for k, t in MA_SEARCH_KEYS if t in want)
     items: list = []
     for key, default_type in keys:
         for it in response.get(key) or []:
@@ -6687,9 +6691,10 @@ def ma_library_items(response, default_type: str, cap: int = MEDIA_BROWSE_MAX_IT
 
 def media_search(payload: dict, entity_id: str = "") -> dict:
     """arvio.media_search {entity_id, query, media_type?, media_content_id?, media_content_type?} (§15.5):
-    player has SEARCH_MEDIA → HA WS media_player/search_media (media_type → `media_filter_classes`,
+    Music Assistant in the house → `music_assistant.search` (return_response; default
+    media_type track+playlist so Spotify is not asked for albums/artists/radio);
+    else player has SEARCH_MEDIA → HA WS media_player/search_media (media_type → `media_filter_classes`,
     media_content_id/type = the browse node to search within, passed through unchanged);
-    else Music Assistant `music_assistant.search` (return_response, `media_type: [media_type]`);
     else {items: [], reason: "search_unavailable"}."""
     payload = payload if isinstance(payload, dict) else {}
     eid = str(payload.get("entity_id") or entity_id or "")
@@ -6699,10 +6704,16 @@ def media_search(payload: dict, entity_id: str = "") -> dict:
     if not query:
         raise ValueError("query required")
     media_type = str(payload.get("media_type") or "").strip() or None
+    base = {"ok": True, "entity_id": eid, "query": query}
+    entry_id = MA_INFO.get("entry_id") or music_assistant_entry_id()
+    if entry_id:
+        types = [media_type] if media_type else list(MA_SEARCH_DEFAULT_TYPES)
+        data: dict = {"config_entry_id": entry_id, "name": query, "limit": MEDIA_SEARCH_LIMIT, "media_type": types}
+        _ctx, response = ha_call_service_response("music_assistant", "search", data)
+        return {**base, "source": "music_assistant", "items": ma_search_items(response, types=types)}
     st_obj = ha(f"/states/{eid}")
     attrs = st_obj.get("attributes") if isinstance(st_obj, dict) and isinstance(st_obj.get("attributes"), dict) else {}
     sf = _int_or_none(attrs.get("supported_features")) or 0
-    base = {"ok": True, "entity_id": eid, "query": query}
     if sf & MEDIA_FEATURE["SEARCH_MEDIA"]:
         extra: dict = {"entity_id": eid, "search_query": query}
         if media_type:
@@ -6719,13 +6730,6 @@ def media_search(payload: dict, entity_id: str = "") -> dict:
         found = found if isinstance(found, list) else []
         items = [browse_item(n) for n in found[:MEDIA_BROWSE_MAX_ITEMS] if isinstance(n, dict)]
         return {**base, "source": "ha", "items": items}
-    entry_id = MA_INFO.get("entry_id") or music_assistant_entry_id()
-    if entry_id:
-        data: dict = {"config_entry_id": entry_id, "name": query, "limit": MEDIA_SEARCH_LIMIT}
-        if media_type:
-            data["media_type"] = [media_type]
-        _ctx, response = ha_call_service_response("music_assistant", "search", data)
-        return {**base, "source": "music_assistant", "items": ma_search_items(response, media_type=media_type)}
     return {**base, "source": None, "items": [], "reason": "search_unavailable"}
 
 

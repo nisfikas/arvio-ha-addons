@@ -189,8 +189,8 @@ HA WS `media_player/browse_media` (τεκμηριωμένο, στο **query chan
 ### 6.4 `arvio.media_search {entity_id, query, media_type?, media_content_id?, media_content_type?}` → `{ ok, entity_id, query, source, items[], reason? }`
 
 Δρομολόγηση με τη σειρά:
-1. Ο player έχει `SEARCH_MEDIA` (4194304) → HA WS `media_player/search_media {entity_id, search_query, media_filter_classes?, media_content_id?, media_content_type?}` (τεκμηριωμένο, query channel)· το `media_type` του payload γίνεται **`media_filter_classes: [media_type]`** (φίλτρο κλάσης, π.χ. `album`), ενώ τα προαιρετικά `media_content_id`/`media_content_type` είναι ο κόμβος browse **μέσα στον οποίο** ψάχνει η integration και περνούν αμετάβλητα (κενό `media_content_id` δεν στέλνεται)· `source: "ha"`, items όπως στο browse (από το `result[]`).
-2. Αλλιώς, αν `ma_available` → WS `call_service` με `return_response: true` (query channel) για `music_assistant.search {config_entry_id: ma_config_entry_id, name: query, limit: 10, media_type?: [media_type]}` (REST fallback `POST /api/services/music_assistant/search?return_response` → `service_response`)· `source: "music_assistant"`. Αντιστοίχιση **tracks → playlists → albums → artists → radio** (τίτλος τραγουδιού πρώτα· `media_type` κρατά μόνο εκείνο το bucket) → items με `media_content_id` = MA `uri`, `media_content_type` = `media_class` = MA `media_type` (`track|playlist|album|artist|radio`), `can_play: true`, `can_expand` για artist/album/playlist, `thumbnail` από το `image` με τον ίδιο https κανόνα, συν `artist` (ονόματα με «·») και `album`.
+1. Αν `ma_available` → WS `call_service` με `return_response: true` (query channel) για `music_assistant.search {config_entry_id: ma_config_entry_id, name: query, limit: 10, media_type: [media_type] ή track+playlist}` (REST fallback `POST /api/services/music_assistant/search?return_response` → `service_response`)· `source: "music_assistant"`. Χωρίς `media_type` **μόνο tracks και playlists** (albums/artists/radio είναι έξτρα γύροι Spotify). Αντιστοίχιση **tracks → playlists → albums → artists → radio** (τίτλος τραγουδιού πρώτα· `media_type` κρατά μόνο εκείνο το bucket) → items με `media_content_id` = MA `uri`, `media_content_type` = `media_class` = MA `media_type` (`track|playlist|album|artist|radio`), `can_play: true`, `can_expand` για artist/album/playlist, `thumbnail` από το `image` με τον ίδιο https κανόνα, συν `artist` (ονόματα με «·») και `album`.
+2. Αλλιώς, ο player έχει `SEARCH_MEDIA` (4194304) → HA WS `media_player/search_media {entity_id, search_query, media_filter_classes?, media_content_id?, media_content_type?}` (τεκμηριωμένο, query channel)· το `media_type` του payload γίνεται **`media_filter_classes: [media_type]`** (φίλτρο κλάσης, π.χ. `album`), ενώ τα προαιρετικά `media_content_id`/`media_content_type` είναι ο κόμβος browse **μέσα στον οποίο** ψάχνει η integration και περνούν αμετάβλητα (κενό `media_content_id` δεν στέλνεται)· `source: "ha"`, items όπως στο browse (από το `result[]`).
 3. Αλλιώς `{ items: [], reason: "search_unavailable", source: null }`.
 
 ### 6.5 Υπηρεσίες (relay: `MEDIA_ACTIONS` · LAN: μόνο `MEDIA_PLAYER_ACTIONS` + `MUSIC_ASSISTANT_ACTIONS`)
@@ -225,7 +225,7 @@ HA WS `media_player/browse_media` (τεκμηριωμένο, στο **query chan
 2. Στο Mac, από το repo:
 
 ```bash
-docker build -f addons/arvio_agent/Dockerfile.standalone -t arvio-agent:0.1.45 addons/arvio_agent
+docker build -f addons/arvio_agent/Dockerfile.standalone -t arvio-agent:0.1.46 addons/arvio_agent
 ```
 
 3. Στο NAS, νέο stack / compose από `addons/arvio_agent/compose.nas.example.yml`. Βάλε το token και το `ARVIO_HA_URL` (π.χ. `http://192.168.68.77:8123` ή `http://homeassistant:8123` αν είναι στο ίδιο δίκτυο). **Serial** μοναδικό: `nas-home-1` (όχι `rpi-lab-1`).
