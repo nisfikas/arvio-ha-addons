@@ -23,6 +23,8 @@ from pathlib import Path
 from types import MappingProxyType
 from urllib.parse import parse_qs, quote, urlparse
 
+import occupancy
+
 # ARVIO_DATA_DIR lets the unit tests (and lab runs outside the add-on) use a
 # scratch directory instead of the Supervisor-mounted /data.
 DATA = Path(os.environ.get("ARVIO_DATA_DIR") or "/data")
@@ -34,6 +36,8 @@ STATE = DATA / "hub.json"
 LAB = DATA / "lab_store.json"
 SCREENS = DATA / "screens.json"
 FLOOR_PLANS = DATA / "floor_plans.json"
+OCCUPANCY_PROFILE = DATA / "occupancy_profile.json"
+OCCUPANCY_STATE = DATA / "occupancy_state.json"
 WALLPAPERS = DATA / "wallpapers"
 APP = Path("/app")
 
@@ -42,7 +46,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.43"
+AGENT_VERSION = "0.1.44"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -2246,6 +2250,175 @@ def place_program_check(payload: dict | None = None) -> dict:
     return {"ok": True, "program_id": program_id, "scenes": scenes, "automations": automations, "missing": missing}
 
 
+OCCUPANCY_LOCK = threading.Lock()
+_OCCUPANCY_TRACKERS: dict[str, dict] = {}
+
+
+def load_occupancy_profile() -> dict | None:
+    if not OCCUPANCY_PROFILE.exists():
+        return None
+    try:
+        return occupancy.parse_profile(json.loads(OCCUPANCY_PROFILE.read_text(encoding="utf-8")))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def load_occupancy_state() -> dict:
+    if not OCCUPANCY_STATE.exists():
+        return {"phase": "unknown", "since_ms": 0}
+    try:
+        raw = json.loads(OCCUPANCY_STATE.read_text(encoding="utf-8"))
+        return raw if isinstance(raw, dict) else {"phase": "unknown", "since_ms": 0}
+    except (OSError, json.JSONDecodeError):
+        return {"phase": "unknown", "since_ms": 0}
+
+
+def save_occupancy_state(snap: dict) -> None:
+    OCCUPANCY_STATE.write_text(json.dumps(snap), encoding="utf-8")
+
+
+def occupancy_publish(snap: dict, *, emit_event: bool) -> dict:
+    pub = occupancy.publish_state(snap)
+    occupied_body = {
+        "state": pub["occupied_state"],
+        "attributes": {
+            "device_class": "occupancy",
+            "friendly_name": "Arvio home occupied",
+            "phase": pub["phase"],
+            "confidence": snap.get("confidence"),
+            "issues": list(snap.get("issues") or []),
+        },
+    }
+    conf_body = {
+        "state": pub["confidence_pct"],
+        "attributes": {
+            "friendly_name": "Arvio home occupancy confidence",
+            "unit_of_measurement": "%",
+            "phase": pub["phase"],
+        },
+    }
+    ha(f"/states/{occupancy.HOME_OCCUPIED}", "POST", occupied_body, timeout=8)
+    ha(f"/states/{occupancy.HOME_CONFIDENCE}", "POST", conf_body, timeout=8)
+    event = snap.get("event") if emit_event else None
+    if event == "home_entered":
+        ha(f"/events/{occupancy.HOME_ENTERED}", "POST", {"phase": pub["phase"]}, timeout=8)
+    elif event == "home_left":
+        ha(f"/events/{occupancy.HOME_LEFT}", "POST", {"phase": pub["phase"]}, timeout=8)
+    return pub
+
+
+def occupancy_collect_trackers(profile: dict) -> list[dict]:
+    wanted = set(occupancy.bound_trackers(profile))
+    for member in profile.get("members") or []:
+        if member.get("stable_mac"):
+            continue
+        for eid in member.get("tracker_entity_ids") or []:
+            wanted.add(eid)
+    out: list[dict] = []
+    with OCCUPANCY_LOCK:
+        cached = dict(_OCCUPANCY_TRACKERS)
+    missing = [eid for eid in wanted if eid not in cached]
+    if missing:
+        states = ha("/states") or []
+        if isinstance(states, list):
+            with OCCUPANCY_LOCK:
+                for row in states:
+                    parsed = occupancy.tracker_from_ha(row) if isinstance(row, dict) else None
+                    if parsed and parsed["entity_id"] in wanted:
+                        _OCCUPANCY_TRACKERS[parsed["entity_id"]] = parsed
+                cached = dict(_OCCUPANCY_TRACKERS)
+    for eid in wanted:
+        if eid in cached:
+            out.append(cached[eid])
+    return out
+
+
+def occupancy_refresh(*, force: bool = False, restore: bool = False) -> dict:
+    profile = load_occupancy_profile()
+    if not profile:
+        return {"ok": True, "skipped": "no_profile"}
+    now_ms = int(time.time() * 1000)
+    prev = load_occupancy_state()
+    trackers = occupancy_collect_trackers(profile)
+    snap = occupancy.fuse_home_occupancy(profile, trackers, prev, now_ms)
+    changed = (
+        snap.get("phase") != prev.get("phase")
+        or snap.get("occupied") != prev.get("occupied")
+        or snap.get("event")
+        or abs(float(snap.get("confidence") or 0) - float(prev.get("confidence") or 0)) >= 0.01
+    )
+    if force or restore or changed:
+        occupancy_publish(snap, emit_event=bool(snap.get("event")) and not restore)
+        save_occupancy_state(snap)
+    return {"ok": True, **occupancy.publish_state(snap), "issues": snap.get("issues") or []}
+
+
+def occupancy_restore() -> dict:
+    return occupancy_refresh(force=True, restore=True)
+
+
+def occupancy_note_state(eid: str, new_state: dict | None) -> None:
+    if not isinstance(new_state, dict):
+        return
+    parsed = occupancy.tracker_from_ha({**new_state, "entity_id": eid or new_state.get("entity_id")})
+    if not parsed:
+        return
+    profile = load_occupancy_profile()
+    if not profile:
+        return
+    watched = set(occupancy.bound_trackers(profile))
+    for member in profile.get("members") or []:
+        watched.update(member.get("tracker_entity_ids") or [])
+    if parsed["entity_id"] not in watched:
+        return
+    with OCCUPANCY_LOCK:
+        _OCCUPANCY_TRACKERS[parsed["entity_id"]] = parsed
+    occupancy_refresh()
+
+
+def occupancy_apply(payload: dict | None = None) -> dict:
+    profile = occupancy.parse_profile(payload)
+    OCCUPANCY_PROFILE.write_text(json.dumps(profile), encoding="utf-8")
+    with OCCUPANCY_LOCK:
+        _OCCUPANCY_TRACKERS.clear()
+    out = occupancy_refresh(force=True)
+    return {"ok": True, "entity_id": occupancy.HOME_OCCUPIED, **out}
+
+
+def occupancy_remove(payload: dict | None = None) -> dict:
+    for path in (OCCUPANCY_PROFILE, OCCUPANCY_STATE):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+    with OCCUPANCY_LOCK:
+        _OCCUPANCY_TRACKERS.clear()
+    empty = {"phase": "unknown", "occupied": None, "confidence": 0.15, "since_ms": int(time.time() * 1000), "issues": []}
+    occupancy_publish(empty, emit_event=False)
+    return {"ok": True}
+
+
+def occupancy_sources(payload: dict | None = None) -> dict:
+    states = ha("/states") or []
+    sources = []
+    if isinstance(states, list):
+        for row in states:
+            item = occupancy.sanitize_source(row) if isinstance(row, dict) else None
+            if item:
+                sources.append(item)
+    sources.sort(key=lambda r: r["entity_id"])
+    return {"ok": True, "sources": sources}
+
+
+def occupancy_tick_loop() -> None:
+    while True:
+        time.sleep(15)
+        try:
+            occupancy_refresh()
+        except Exception as e:
+            print(f"occupancy tick: {e}", flush=True)
+
+
 def _resolve_automation_entity(sid: str, entity_id: str = "") -> str:
     """Scenario id → automation entity_id. Config id must be a HA yaml/UI id;
     an explicit automation entity_id is verified via /states (`attributes.id == sid`)
@@ -3273,6 +3446,12 @@ def execute_action(
         return place_program_remove(payload)
     if action == "arvio.place_program_check":
         return place_program_check(payload)
+    if action == "arvio.occupancy_apply":
+        return occupancy_apply(payload)
+    if action == "arvio.occupancy_remove":
+        return occupancy_remove(payload)
+    if action == "arvio.occupancy_sources":
+        return occupancy_sources(payload)
     if action == "arvio.set_scenario_enabled":
         return set_scenario_enabled(payload, entity_id)
     if action == "arvio.trigger_scenario":
@@ -3720,6 +3899,9 @@ AGENT_SERVICE_ALLOWLIST = frozenset(
         "arvio.place_program_apply",
         "arvio.place_program_remove",
         "arvio.place_program_check",
+        "arvio.occupancy_apply",
+        "arvio.occupancy_remove",
+        "arvio.occupancy_sources",
         "arvio.set_scenario_enabled",
         "arvio.trigger_scenario",
         "arvio.list_screens",
@@ -4450,9 +4632,10 @@ def entity_model_from_state(
         return None
     device_class = attrs.get("device_class") or reg.get("original_device_class")
     device_class = str(device_class) if device_class else None
-    if domain == "sensor" and device_class not in HOME_SENSOR_DEVICE_CLASSES:
+    arvio_occ = eid in (occupancy.HOME_OCCUPIED, occupancy.HOME_CONFIDENCE)
+    if domain == "sensor" and device_class not in HOME_SENSOR_DEVICE_CLASSES and not arvio_occ:
         return None
-    if domain == "binary_sensor" and not doorbell_call and device_class not in HOME_BINARY_SENSOR_DEVICE_CLASSES:
+    if domain == "binary_sensor" and not doorbell_call and device_class not in HOME_BINARY_SENSOR_DEVICE_CLASSES and not arvio_occ:
         return None
     if domain == "media_player" and not media_player_exposed(device_class):
         return None
@@ -6230,10 +6413,14 @@ def handle_ha_event(event: dict) -> None:
     if not isinstance(event, dict):
         return
     etype = str(event.get("event_type") or "")
+    if etype == "homeassistant_started":
+        occupancy_restore()
+        return
     if etype == "state_changed":
         data = event.get("data") if isinstance(event.get("data"), dict) else {}
         eid = str(data.get("entity_id") or "")
         new_state = data.get("new_state")
+        occupancy_note_state(eid, new_state if isinstance(new_state, dict) else None)
         regs = registry_snapshot()
         watched = doorbell_watched_call_ids()
         if regs["loaded_at"]:
@@ -6266,10 +6453,11 @@ def ha_events_loop() -> None:
         ws = None
         try:
             ws = HaWs(timeout=20.0)
-            for etype in ("state_changed",) + REGISTRY_EVENT_TYPES:
+            for etype in ("state_changed", "homeassistant_started") + REGISTRY_EVENT_TYPES:
                 # subscribe_events is documented; the *_registry_updated event names are
                 # frontend-internal but stable. TODO confirm.
                 ws.command("subscribe_events", {"event_type": etype})
+            occupancy_restore()
             ws.settimeout(60.0)
             backoff.reset()
             STATE_FEED_LIVE = True
@@ -7297,6 +7485,7 @@ if __name__ == "__main__":
     threading.Thread(target=ha_events_loop, daemon=True).start()
     threading.Thread(target=push_flush_loop, daemon=True).start()
     threading.Thread(target=heartbeat_loop, daemon=True).start()
+    threading.Thread(target=occupancy_tick_loop, daemon=True).start()
     print(
         f"arvio-agent :{PORT} mode={mode} hub={hub_id} ha={core_origin() or 'supervisor'} relay={RELAY_URL or 'off'} token={'yes' if TOKEN else 'NO'}",
         flush=True,

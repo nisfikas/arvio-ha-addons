@@ -5,7 +5,7 @@ FROM python:3.12-alpine
 RUN pip3 install --no-cache-dir websocket-client==1.8.0 pillow==11.1.0
 
 WORKDIR /app
-COPY agent.py ui.html partner.html home.html remote.html panel.html /app/
+COPY agent.py occupancy.py ui.html partner.html home.html remote.html panel.html /app/
 ENV ARVIO_DATA_DIR=/data
 EXPOSE 8099
 CMD ["python3", "/app/agent.py"]
