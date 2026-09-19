@@ -65,7 +65,8 @@ class LanPathTest(unittest.TestCase):
             for action in ("lock.unlock", "lock.lock", "alarm_control_panel.alarm_disarm",
                            "alarm_control_panel.alarm_arm_away", "arvio.batch", "arvio.model",
                            "arvio.upsert_scenario", "arvio.zigbee_permit", "backup.create", "agent.update",
-                           "light.toggle", "arvio.put_screen", "arvio.put_floor_plan", "arvio.delete_screen"):
+                           "light.toggle", "arvio.put_screen", "arvio.put_floor_plan", "arvio.delete_screen",
+                           "arvio.put_venue", "arvio.delete_venue", "arvio.venue_end_session"):
                 status, body = self.post("/v1/hubs/hub_lan/commands", {"action": action, "entity_id": "lock.a",
                                                                        "payload": {"confirm_dangerous": True}})
                 self.assertEqual(status, 403, action)
@@ -161,7 +162,7 @@ class LanPathTest(unittest.TestCase):
         agent.save_hub({"hub_id": "hub_lan", "snapshot_version": 7})
         with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/health", timeout=5) as r:
             body = json.loads(r.read().decode())
-        self.assertEqual(body["agent_version"], "0.1.44")
+        self.assertEqual(body["agent_version"], "0.1.45")
         self.assertIn("ma_available", body)
         self.assertEqual(body["snapshot_version"], 7)
 

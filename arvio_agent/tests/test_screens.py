@@ -81,6 +81,80 @@ class ScreenStoreTest(unittest.TestCase):
         self.assertTrue(tiles[1]["bold"])
         self.assertNotIn("bold", tiles[2])
 
+    def test_keeps_clock_and_weather_align(self):
+        agent.put_wall_screen(
+            self._row(
+                pages=[
+                    {
+                        "id": "pg_aaaaaaaa",
+                        "tiles": [
+                            {"kind": "clock", "align": "center", "size": "l"},
+                            {"kind": "weather", "align": "right"},
+                            {"kind": "allOff", "align": "center"},
+                            {"kind": "clock", "align": "left"},
+                        ],
+                    }
+                ]
+            )
+        )
+        tiles = agent.list_wall_screens()["screens"][0]["pages"][0]["tiles"]
+        self.assertEqual(tiles[0]["align"], "center")
+        self.assertEqual(tiles[1]["align"], "right")
+        self.assertNotIn("align", tiles[2])
+        self.assertNotIn("align", tiles[3])
+
+    def test_refuses_invalid_tile_align(self):
+        with self.assertRaises(ValueError) as cm:
+            agent.put_wall_screen(
+                self._row(
+                    pages=[
+                        {
+                            "id": "pg_aaaaaaaa",
+                            "tiles": [{"kind": "clock", "align": "middle"}],
+                        }
+                    ]
+                )
+            )
+        self.assertIn("invalid_align", str(cm.exception))
+
+    def test_keeps_room_lights(self):
+        agent.put_wall_screen(
+            self._row(
+                pages=[
+                    {
+                        "id": "pg_aaaaaaaa",
+                        "tiles": [
+                            {
+                                "kind": "room",
+                                "ref": "kitchen",
+                                "lights": ["light.main", "light.main", "light.strip"],
+                            },
+                            {"kind": "room", "ref": "hall"},
+                            {"kind": "room", "ref": "empty", "lights": []},
+                        ],
+                    }
+                ]
+            )
+        )
+        tiles = agent.list_wall_screens()["screens"][0]["pages"][0]["tiles"]
+        self.assertEqual(tiles[0]["lights"], ["light.main", "light.strip"])
+        self.assertNotIn("lights", tiles[1])
+        self.assertEqual(tiles[2]["lights"], [])
+
+    def test_refuses_room_switch_as_light(self):
+        with self.assertRaises(ValueError) as cm:
+            agent.put_wall_screen(
+                self._row(
+                    pages=[
+                        {
+                            "id": "pg_aaaaaaaa",
+                            "tiles": [{"kind": "room", "ref": "kitchen", "lights": ["switch.fan"]}],
+                        }
+                    ]
+                )
+            )
+        self.assertIn("invalid_tile_lights", str(cm.exception))
+
     def test_keeps_theme(self):
         agent.put_wall_screen(self._row(theme={"preset": "galini", "mode": "light", "icons": "filled"}))
         listed = agent.list_wall_screens()["screens"][0]
@@ -181,6 +255,10 @@ class ScreenStoreTest(unittest.TestCase):
         self.assertEqual(cm.exception.code, "lan_forbidden")
         agent.check_command_safety({"action": "arvio.put_screen"}, via="relay")
         agent.check_command_safety({"action": "arvio.put_floor_plan"}, via="relay")
+        with self.assertRaises(agent.CommandRejected) as cm:
+            agent.check_command_safety({"action": "arvio.put_venue"}, via="lan")
+        self.assertEqual(cm.exception.code, "lan_forbidden")
+        agent.check_command_safety({"action": "arvio.put_venue"}, via="relay")
 
     def test_execute_put_via_relay(self):
         out = agent.execute_action("arvio.put_screen", "", self._row())
@@ -264,6 +342,7 @@ class ScreenLanHttpTest(unittest.TestCase):
 
     def setUp(self):
         agent.DOORBELL_LATCH.clear()
+        agent.WEATHER_FORECAST_CACHE.update(at=0.0, eid="", daily=None, hourly=None)
         if agent.SCREENS.exists():
             agent.SCREENS.unlink()
         if agent.FLOOR_PLANS.exists():
@@ -293,11 +372,15 @@ class ScreenLanHttpTest(unittest.TestCase):
         self.assertIn("Κωδικός", html)
         self.assertIn("Κάποιος στο κουδούνι", html)
         self.assertIn("data-hvac", html)
+        self.assertIn("data-clima", html)
         self.assertIn("data-temp-step", html)
         self.assertIn("clima-mode", html)
         self.assertIn("THEMES", html)
         self.assertIn("galini", html)
         self.assertIn("floor3d__svg", html)
+        self.assertIn("function setOverlay", html)
+        self.assertIn("54cqh", html)
+        self.assertIn("tile--clock[data-size=\"l\"] .face", html)
         self.assertNotIn("three.js", html)
         self.assertNotIn("unpkg.com", html)
 
@@ -339,6 +422,12 @@ class ScreenLanHttpTest(unittest.TestCase):
             "temperature": 21,
             "hvac_mode": "heat",
             "hvac_modes": ["off", "heat", "cool"],
+            "preset_mode": "none",
+            "preset_modes": ["none", "eco", "sleep"],
+            "fan_mode": "auto",
+            "fan_modes": ["auto", "low", "high"],
+            "swing_mode": "off",
+            "swing_modes": ["off", "vertical"],
             "min_temp": 16,
             "max_temp": 30,
         }
@@ -355,6 +444,150 @@ class ScreenLanHttpTest(unittest.TestCase):
         self.assertEqual(row["current_temperature"], 24.5)
         self.assertEqual(row["temperature"], 21)
         self.assertEqual(row["hvac_modes"], ["off", "heat", "cool"])
+        self.assertEqual(row["preset_modes"], ["none", "eco", "sleep"])
+        self.assertEqual(row["fan_modes"], ["auto", "low", "high"])
+        self.assertEqual(row["swing_modes"], ["off", "vertical"])
+
+    def test_panel_snapshot_includes_cover_position(self):
+        cover = {
+            "entity_id": "cover.rola",
+            "state": "open",
+            "name": "Ρολό",
+            "domain": "cover",
+            "current_position": 80,
+            "device_class": "shutter",
+        }
+        with mock.patch.object(agent, "hub_id", "hub_lan"), mock.patch.object(
+            agent, "entities", return_value=[cover]
+        ), mock.patch.object(
+            agent, "registries_for_commands", return_value={"entity_regs": {}, "devices": {}, "areas": {}}
+        ), mock.patch.object(agent, "ha", return_value=[]):
+            status, raw = self.request("GET", "/api/screens")
+        self.assertEqual(status, 200)
+        body = json.loads(raw.decode())
+        row = body["entities"][0]
+        self.assertEqual(row["current_position"], 80)
+        self.assertEqual(row["device_class"], "shutter")
+
+    def test_panel_cover_has_animated_shade(self):
+        html = (ROOT / "panel.html").read_text(encoding="utf-8")
+        self.assertIn("cv-shade", html)
+        self.assertIn('data-cover="curtain"', html)
+        self.assertIn("--cover-fill", html)
+        self.assertIn("cover.stop_cover", html)
+
+    def test_panel_snapshot_includes_locks_and_openings(self):
+        lock = {
+            "entity_id": "lock.front",
+            "state": "locked",
+            "name": "Πόρτα",
+            "domain": "lock",
+        }
+        states = [
+            {
+                "entity_id": "binary_sensor.door",
+                "state": "on",
+                "attributes": {"friendly_name": "Είσοδος", "device_class": "door"},
+            },
+            {
+                "entity_id": "binary_sensor.motion",
+                "state": "on",
+                "attributes": {"friendly_name": "Κίνηση", "device_class": "motion"},
+            },
+            {
+                "entity_id": "camera.gate",
+                "state": "idle",
+                "attributes": {"friendly_name": "Αυλή"},
+            },
+        ]
+        with mock.patch.object(agent, "hub_id", "hub_lan"), mock.patch.object(
+            agent, "entities", return_value=[lock]
+        ), mock.patch.object(
+            agent, "registries_for_commands", return_value={"entity_regs": {}, "devices": {}, "areas": {}}
+        ), mock.patch.object(agent, "ha", return_value=states):
+            status, raw = self.request("GET", "/api/screens")
+        self.assertEqual(status, 200)
+        body = json.loads(raw.decode())
+        by_id = {e["entity_id"]: e for e in body["entities"]}
+        self.assertEqual(by_id["lock.front"]["state"], "locked")
+        self.assertEqual(by_id["binary_sensor.door"]["device_class"], "door")
+        self.assertEqual(by_id["camera.gate"]["name"], "Αυλή")
+        self.assertNotIn("binary_sensor.motion", by_id)
+
+    def test_panel_snapshot_includes_hourly_weather(self):
+        states = [
+            {
+                "entity_id": "weather.home",
+                "state": "sunny",
+                "attributes": {"temperature": 24, "humidity": 48},
+            }
+        ]
+        daily = {
+            "weather.home": {
+                "forecast": [
+                    {
+                        "datetime": "2026-09-19T00:00:00+00:00",
+                        "condition": "sunny",
+                        "temperature": 28,
+                        "templow": 18,
+                    }
+                ]
+            }
+        }
+        hourly = {
+            "weather.home": {
+                "forecast": [
+                    {
+                        "datetime": "2026-09-19T12:00:00+00:00",
+                        "condition": "sunny",
+                        "temperature": 24,
+                        "precipitation": 0.4,
+                    }
+                ]
+            }
+        }
+
+        def forecasts(domain, service, data):
+            self.assertEqual((domain, service), ("weather", "get_forecasts"))
+            if data.get("type") == "daily":
+                return None, daily
+            return None, hourly
+
+        with mock.patch.object(agent, "hub_id", "hub_lan"), mock.patch.object(
+            agent, "entities", return_value=[]
+        ), mock.patch.object(
+            agent, "registries_for_commands", return_value={"entity_regs": {}, "devices": {}, "areas": {}}
+        ), mock.patch.object(agent, "ha", return_value=states), mock.patch.object(
+            agent, "ha_call_service_response", side_effect=forecasts
+        ):
+            status, raw = self.request("GET", "/api/screens")
+        self.assertEqual(status, 200)
+        body = json.loads(raw.decode())
+        w = body["weather"]
+        self.assertEqual(w["temperature"], 24)
+        self.assertEqual(w["humidity"], 48)
+        self.assertEqual(w["hourly"][0]["precipitation"], 0.4)
+        self.assertEqual(w["forecast"][0]["templow"], 18)
+
+    def test_panel_weather_sheet_has_hours_and_week(self):
+        html = (ROOT / "panel.html").read_text(encoding="utf-8")
+        self.assertIn("Ώρες", html)
+        self.assertIn("Εβδομάδα", html)
+        self.assertIn("wx-hours", html)
+        self.assertIn("centerWxNow", html)
+        self.assertIn("wx-sky", html)
+        self.assertIn("function wxScene", html)
+        self.assertIn("colon-blink", html)
+        self.assertIn('dataset.align', html)
+        self.assertIn("Ο καιρός χρειάζεται τη θέση του σπιτιού στο Home Assistant", html)
+
+    def test_panel_security_is_status_and_room_has_lamps(self):
+        html = (ROOT / "panel.html").read_text(encoding="utf-8")
+        self.assertIn('openSheet({ kind: "security" })', html)
+        self.assertIn("lamp-glow", html)
+        self.assertIn("lightsForRoom", html)
+        self.assertNotIn("lock.unlock", html)
+        self.assertNotIn("alarm_disarm", html)
 
     def test_wallpaper_http(self):
         b64 = base64.b64encode(JPEG).decode()

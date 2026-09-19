@@ -93,7 +93,13 @@
         justify-content: space-between;
         text-align: left;
         position: relative;
+        overflow: hidden;
+        isolation: isolate;
+        transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1), color 0.28s ease, box-shadow 0.28s ease;
       }
+      .tile:active { transform: scale(0.975); }
+      .tile[data-align="center"] { text-align: center; align-items: center; }
+      .tile[data-align="right"] { text-align: right; align-items: flex-end; }
       .tile-ico {
         position: absolute;
         top: 12px;
@@ -176,7 +182,115 @@
       .tile.bold .face, .sheet-clock.bold, .face.bold { font-weight: 700; }
       .tile[data-size="m"] .face { font-size: clamp(3.4rem, 14vw, 6rem); }
       .tile[data-size="l"] .face { font-size: clamp(5rem, 22vw, 10rem); }
-      .tile--clock .kicker, .tile--weather .kicker { font-size: 1.05rem; }
+      .tile--clock, .tile--weather { container-type: size; }
+      .tile--clock .face, .tile--weather .face {
+        line-height: 0.88;
+        font-size: clamp(2.8rem, 38cqh, 9rem);
+      }
+      .tile--clock[data-size="m"] .face, .tile--weather[data-size="m"] .face {
+        font-size: clamp(3.8rem, 28vw, 12rem);
+        font-size: clamp(3.8rem, 46cqh, 12rem);
+      }
+      .tile--clock[data-size="l"] .face, .tile--weather[data-size="l"] .face {
+        font-size: clamp(6.2rem, 28vw, 14rem);
+        font-size: clamp(6.2rem, 54cqh, 16rem);
+      }
+      .tile--clock .kicker, .tile--weather .kicker { font-size: clamp(1.05rem, 7cqh, 1.5rem); }
+      .tile--clock .state { font-size: clamp(1.05rem, 8cqh, 1.65rem); }
+      .tile--clock .kicker, .tile--clock .face, .tile--clock .state,
+      .tile--weather .kicker, .tile--weather .face { position: relative; z-index: 1; }
+      .colon { animation: colon-blink 1s steps(1) infinite; }
+      .wx-sky {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        z-index: 0;
+        overflow: hidden;
+      }
+      .wx-glow, .wx-orb, .wx-cloud, .wx-fall { position: absolute; }
+      .wx-glow { inset: 0; }
+      .wx-orb {
+        top: 12%;
+        right: 10%;
+        width: min(34%, 5.4rem);
+        aspect-ratio: 1;
+        border-radius: 50%;
+      }
+      .wx-orb::after {
+        content: "";
+        position: absolute;
+        inset: -75%;
+        background: repeating-conic-gradient(from 0deg, color-mix(in srgb, var(--on) 32%, transparent) 0 7deg, transparent 7deg 32deg);
+        mask: radial-gradient(circle, transparent 30%, #000 32%);
+        -webkit-mask: radial-gradient(circle, transparent 30%, #000 32%);
+        animation: wx-spin 38s linear infinite;
+      }
+      .wx-cloud {
+        height: 22%;
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--ink) 16%, var(--tile));
+        animation: wx-drift 14s ease-in-out infinite;
+      }
+      .wx-cloud.a { width: 44%; bottom: 24%; left: 4%; }
+      .wx-cloud.b { width: 30%; height: 16%; bottom: 40%; left: 40%; opacity: 0.72; animation-delay: -5s; }
+      .wx-fall { inset: 0; opacity: 0; }
+      [data-wx="sun"] .wx-glow {
+        background: radial-gradient(80% 70% at 82% 18%, color-mix(in srgb, var(--on) 42%, transparent), transparent 58%);
+      }
+      [data-wx="sun"] .wx-orb, [data-wx="partly"] .wx-orb {
+        background: radial-gradient(circle at 38% 36%, #fff8ea, var(--on) 58%);
+        box-shadow: 0 0 42px color-mix(in srgb, var(--on) 52%, transparent);
+        animation: wx-pulse 5s ease-in-out infinite;
+      }
+      [data-wx="sun"] .wx-cloud { display: none; }
+      [data-wx="sun"] .wx-fall { display: none; }
+      [data-wx="partly"] .wx-glow {
+        background: radial-gradient(70% 60% at 78% 16%, color-mix(in srgb, var(--on) 28%, transparent), transparent 55%);
+      }
+      [data-wx="partly"] .wx-orb { width: min(26%, 4.2rem); top: 10%; right: 16%; }
+      [data-wx="night"] .wx-glow {
+        background:
+          radial-gradient(1.5px 1.5px at 18% 22%, var(--ink), transparent),
+          radial-gradient(1.2px 1.2px at 42% 18%, var(--ink), transparent),
+          radial-gradient(1.4px 1.4px at 70% 28%, var(--ink), transparent),
+          radial-gradient(1px 1px at 28% 48%, var(--ink), transparent),
+          radial-gradient(90% 70% at 82% 12%, color-mix(in srgb, var(--ink) 12%, transparent), transparent 55%);
+        animation: wx-twinkle 3.8s ease-in-out infinite;
+      }
+      [data-wx="night"] .wx-orb {
+        background: radial-gradient(circle at 35% 35%, #f4f0e6 40%, #c8c2b4 100%);
+        box-shadow: 0 0 28px color-mix(in srgb, var(--ink) 18%, transparent);
+      }
+      [data-wx="night"] .wx-orb::after, [data-wx="cloud"] .wx-orb, [data-wx="fog"] .wx-orb,
+      [data-wx="rain"] .wx-orb, [data-wx="pour"] .wx-orb, [data-wx="snow"] .wx-orb,
+      [data-wx="storm"] .wx-orb, [data-wx="wind"] .wx-orb { display: none; }
+      [data-wx="night"] .wx-cloud { opacity: 0.22; }
+      [data-wx="fog"] .wx-cloud { filter: blur(10px); opacity: 0.55; height: 42%; }
+      [data-wx="wind"] .wx-cloud { animation-duration: 6s; }
+      [data-wx="rain"] .wx-fall, [data-wx="pour"] .wx-fall, [data-wx="storm"] .wx-fall {
+        opacity: 0.4;
+        background: repeating-linear-gradient(-18deg, transparent 0 10px, color-mix(in srgb, var(--ink) 22%, transparent) 10px 11px);
+        background-size: 16px 28px;
+        animation: wx-fall 0.55s linear infinite;
+      }
+      [data-wx="pour"] .wx-fall { opacity: 0.55; animation-duration: 0.38s; }
+      [data-wx="snow"] .wx-fall {
+        opacity: 0.55;
+        background-image: radial-gradient(circle, color-mix(in srgb, var(--ink) 70%, transparent) 1.1px, transparent 1.3px);
+        background-size: 16px 16px;
+        animation: wx-fall 2.6s linear infinite;
+      }
+      [data-wx="storm"] .wx-glow { animation: wx-flash 4.2s ease-in-out infinite; }
+      @keyframes colon-blink { 50% { opacity: 0.18; } }
+      @keyframes wx-spin { to { transform: rotate(360deg); } }
+      @keyframes wx-pulse { 50% { transform: scale(1.06); } }
+      @keyframes wx-drift { 50% { transform: translateX(10%); } }
+      @keyframes wx-fall { to { background-position: 16px 28px; } }
+      @keyframes wx-twinkle { 50% { opacity: 0.62; } }
+      @keyframes wx-flash {
+        0%, 86%, 94%, 100% { opacity: 0.2; background: transparent; }
+        88%, 91% { opacity: 1; background: color-mix(in srgb, var(--ink) 30%, transparent); }
+      }
       .name {
         font-size: clamp(1.15rem, 3.6vw, 1.75rem);
         font-weight: 600;
@@ -195,6 +309,11 @@
         padding: 16px;
         padding-bottom: max(16px, env(safe-area-inset-bottom));
         gap: 16px;
+      }
+      #sheet:not(.hidden) { animation: sheet-in 0.4s cubic-bezier(0.22, 1, 0.36, 1); }
+      @keyframes sheet-in {
+        from { opacity: 0; transform: translateY(14px); }
+        to { opacity: 1; transform: none; }
       }
       #sheet-top {
         display: flex;
@@ -224,7 +343,7 @@
       #sheet[data-kind="climate"] {
         padding-top: 12px;
       }
-      #sheet[data-kind="climate"] #sheet-body { overflow: hidden; }
+      #sheet[data-kind="climate"] #sheet-body { overflow: auto; }
       #sheet[data-hvac="heat"] {
         background: radial-gradient(120% 90% at 50% -8%, rgba(212, 160, 106, 0.34), transparent 64%), var(--bg);
       }
@@ -336,12 +455,29 @@
       .clima-mode[data-hvac="cool"].on { color: var(--cool); border-color: rgba(106, 168, 188, 0.45); }
       .clima-mode[data-hvac="dry"].on { color: var(--dry); border-color: rgba(122, 158, 196, 0.45); }
       .clima-mode[data-hvac="fan_only"].on { color: var(--fan); }
+      .clima-chips { display: grid; gap: 6px; }
+      .clima-chips > span {
+        font-size: 0.72rem;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .clima-chips div { display: flex; flex-wrap: wrap; gap: 8px; }
+      .clima-chip {
+        min-height: 48px;
+        border-radius: 999px;
+        padding: 0 16px;
+        font-size: 0.92rem;
+        background: var(--tile);
+        border: 1px solid var(--line);
+      }
+      .clima-chip.on { color: var(--on); border-color: var(--on); }
       .sheet-clock {
         font-variant-numeric: tabular-nums;
         font-weight: 300;
         letter-spacing: -0.07em;
-        font-size: clamp(5rem, 24vw, 10rem);
-        line-height: 0.9;
+        font-size: clamp(6.2rem, 28vw, 14rem);
+        line-height: 0.88;
       }
       .sheet-date { font-size: 1.25rem; color: var(--muted); }
       .presets, .devices { display: grid; gap: 12px; }
@@ -371,17 +507,319 @@
         font-size: 2rem;
       }
       .device.on { color: var(--on); }
-      .wx-now { display: flex; flex-direction: column; gap: 0.4rem; }
-      .wx-days { display: grid; gap: 8px; }
-      .wx-day {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        min-height: 56px;
-        font-size: 1.15rem;
+      .room-all {
+        align-self: flex-start;
+        min-height: 0;
+        padding: 0;
+        background: transparent;
+        border: 0;
+        font-size: 0.78rem;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
         color: var(--muted);
       }
-      .wx-day b { color: var(--ink); font-weight: 500; }
+      .lamps {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 22px 10px;
+        padding: 12px 0 8px;
+      }
+      html[data-orientation="landscape"] .lamps { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .lamp {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 14px;
+        min-height: 0;
+        padding: 8px 6px 0;
+        background: transparent;
+        border: 0;
+      }
+      #sheet[data-kind="room"] #sheet-body { justify-content: flex-start; }
+      .lamp-glow {
+        width: clamp(5.2rem, 24vw, 8.6rem);
+        height: clamp(5.2rem, 24vw, 8.6rem);
+        border-radius: 50%;
+        background: radial-gradient(circle at 50% 42%, color-mix(in srgb, var(--ink) 12%, transparent), transparent 70%);
+        border: 1px solid var(--line);
+        box-shadow: inset 0 1px 0 color-mix(in srgb, var(--ink) 8%, transparent);
+        transition: background 0.4s ease, box-shadow 0.4s ease, border-color 0.4s ease;
+      }
+      .lamp.on .lamp-glow {
+        background: radial-gradient(circle at 50% 36%, #fff8ea 0%, var(--on) 36%, color-mix(in srgb, var(--on) 22%, transparent) 68%, transparent 100%);
+        border-color: color-mix(in srgb, var(--on) 40%, transparent);
+        box-shadow: 0 0 42px color-mix(in srgb, var(--on) 42%, transparent);
+        animation: lamp-breathe 3.6s ease-in-out infinite;
+      }
+      @keyframes lamp-breathe {
+        50% { box-shadow: 0 0 58px color-mix(in srgb, var(--on) 58%, transparent); }
+      }
+      .lamp-name {
+        font-size: 0.98rem;
+        font-weight: 500;
+        letter-spacing: -0.02em;
+        color: var(--muted);
+        text-align: center;
+        line-height: 1.2;
+      }
+      .lamp.on .lamp-name { color: var(--ink); }
+      .room-rest {
+        display: grid;
+        gap: 8px;
+        margin-top: 8px;
+        padding-top: 14px;
+        border-top: 1px solid var(--line);
+      }
+      .room-rest .device {
+        min-height: 56px;
+        border-radius: 20px;
+        font-size: 1.05rem;
+      }
+      .cv-window {
+        position: relative;
+        overflow: hidden;
+        border-radius: 16px;
+        background: color-mix(in srgb, var(--ink) 7%, var(--tile));
+        box-shadow: inset 0 0 0 1px var(--line);
+      }
+      .cv-glass {
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(
+          180deg,
+          color-mix(in srgb, var(--ink) 4%, transparent),
+          color-mix(in srgb, var(--cool) 16%, transparent) 42%,
+          color-mix(in srgb, var(--ink) 6%, transparent)
+        );
+      }
+      .cv-shade {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 0;
+        height: var(--cover-fill, 100%);
+        overflow: hidden;
+        background-color: color-mix(in srgb, var(--tile) 88%, var(--ink));
+        box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--ink) 28%, transparent), 0 10px 18px rgba(0, 0, 0, 0.18);
+        transition: height 0.75s cubic-bezier(0.22, 1, 0.36, 1);
+      }
+      .cv-shade::after {
+        content: "";
+        position: absolute;
+        left: 12%;
+        right: 12%;
+        bottom: 0;
+        height: 3px;
+        border-radius: 2px 2px 0 0;
+        background: color-mix(in srgb, var(--ink) 42%, transparent);
+      }
+      [data-cover="blind"] .cv-shade {
+        background-image: repeating-linear-gradient(
+          180deg,
+          color-mix(in srgb, var(--ink) 5%, transparent) 0 7px,
+          color-mix(in srgb, var(--ink) 26%, transparent) 7px 8px
+        );
+      }
+      [data-cover="curtain"] .cv-shade {
+        background-image: repeating-linear-gradient(
+          90deg,
+          color-mix(in srgb, var(--ink) 4%, transparent) 0 11px,
+          color-mix(in srgb, var(--ink) 16%, transparent) 11px 13px
+        );
+      }
+      [data-cover="awning"] .cv-shade {
+        background-image: repeating-linear-gradient(
+          180deg,
+          color-mix(in srgb, var(--ink) 4%, transparent) 0 14px,
+          color-mix(in srgb, var(--on) 14%, transparent) 14px 16px
+        );
+      }
+      [data-cover="awning"] .cv-shade::after {
+        height: 6px;
+        left: 6%;
+        right: 6%;
+        border-radius: 3px;
+        background: color-mix(in srgb, var(--ink) 50%, var(--on));
+      }
+      [data-cover="garage"] .cv-shade {
+        background-image:
+          linear-gradient(180deg, color-mix(in srgb, var(--ink) 5%, transparent), color-mix(in srgb, var(--ink) 14%, transparent)),
+          repeating-linear-gradient(180deg, transparent 0 28%, color-mix(in srgb, var(--ink) 22%, transparent) 28% 32%);
+      }
+      .tile--cover {
+        justify-content: flex-end;
+        gap: 4px;
+      }
+      .tile--cover .cv-window {
+        position: absolute;
+        inset: 14px 14px 62px;
+        border-radius: 20px;
+      }
+      .tile--cover .name, .tile--cover .state { position: relative; z-index: 1; }
+      .covers {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+      }
+      html[data-orientation="landscape"] .covers { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .cv-card {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        padding: 12px;
+        border-radius: 24px;
+        min-height: 0;
+        text-align: left;
+      }
+      .cv-card .cv-window { height: 112px; flex: none; }
+      .cv-name { font-weight: 600; letter-spacing: -0.02em; }
+      .cv-state { color: var(--muted); font-size: 0.95rem; }
+      .cv {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        gap: 16px;
+      }
+      .cv-hero { flex: 1; min-height: 0; display: flex; }
+      .cv-hero .cv-window {
+        flex: 1;
+        min-height: 180px;
+        border-radius: 24px;
+      }
+      .cv-btns {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 8px;
+      }
+      .cv-btns button {
+        min-height: 64px;
+        border-radius: 20px;
+        font-size: 1.05rem;
+      }
+      .cv-btns button.on { color: var(--on); border-color: var(--on); }
+      @media (prefers-reduced-motion: reduce) {
+        .cv-shade { transition: none; }
+      }
+      .sec {
+        display: grid;
+        gap: 0;
+      }
+      .sec-row {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 16px 2px;
+        border-bottom: 1px solid var(--line);
+      }
+      .sec-k {
+        font-size: 1.05rem;
+        font-weight: 500;
+        letter-spacing: -0.02em;
+        color: var(--ink);
+      }
+      .sec-v {
+        font-size: 1.05rem;
+        color: var(--muted);
+        text-align: right;
+      }
+      .sec-row.open .sec-v, .sec-row.unlocked .sec-v { color: var(--on); }
+      .sec-row.alert .sec-v { color: #e55551; }
+      .sec-note {
+        margin-top: 18px;
+        font-size: 0.82rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .lamp-glow { transition: none; animation: none; }
+        .tile, #sheet:not(.hidden), .wx-orb, .wx-orb::after, .wx-cloud, .wx-fall, .wx-glow, .colon {
+          animation: none;
+          transition: none;
+        }
+        .tile:active { transform: none; }
+      }
+      .wx-now {
+        position: relative;
+        overflow: hidden;
+        isolation: isolate;
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        min-height: 7.2rem;
+        padding: 18px 16px;
+        border-radius: 24px;
+      }
+      .wx-now > :not(.wx-sky) { position: relative; z-index: 1; }
+      .wx-temp {
+        font-variant-numeric: tabular-nums;
+        font-weight: 600;
+        letter-spacing: -0.04em;
+        line-height: 1;
+        font-size: clamp(3.2rem, 12vw, 4.6rem);
+      }
+      .wx-label {
+        margin: 0;
+        font-size: 0.72rem;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+      .wx-hours {
+        display: flex;
+        flex-wrap: nowrap;
+        gap: 2px;
+        overflow-x: auto;
+        margin: 0 -4px;
+        padding: 0 4px 4px;
+        scrollbar-width: none;
+        -webkit-overflow-scrolling: touch;
+      }
+      .wx-hours::-webkit-scrollbar { display: none; }
+      .wx-hour {
+        flex: 0 0 56px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+      }
+      .wx-hour time {
+        font-size: 0.78rem;
+        color: var(--muted);
+        font-variant-numeric: tabular-nums;
+      }
+      .wx-hour-temp {
+        font-size: 1.05rem;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+      }
+      .wx-hour-mm {
+        min-height: 1.2em;
+        font-size: 0.72rem;
+        color: var(--muted);
+        font-variant-numeric: tabular-nums;
+      }
+      .wx-days { display: flex; flex-direction: column; }
+      .wx-day {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 24px auto;
+        align-items: center;
+        gap: 12px;
+        min-height: 48px;
+        font-size: 1.15rem;
+      }
+      .wx-day-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .wx-day-temps {
+        display: flex;
+        align-items: baseline;
+        justify-content: flex-end;
+        gap: 10px;
+        font-variant-numeric: tabular-nums;
+      }
+      .wx-day-low { color: var(--muted); }
+      .wx-day-temps b { color: var(--ink); font-weight: 600; }
       #doorbell {
         position: absolute;
         inset: 0;
@@ -443,6 +881,7 @@
     </aside>
     <script>
       const KEY = "arvio.panel.screen_id";
+      let miss = 0;
       const TIMER_KEY = "arvio.panel.timer";
       const WX = {
         "clear-night": "Καθαρός",
@@ -468,6 +907,21 @@
         auto: "Αυτόματο",
         dry: "Αφύγρανση",
         fan_only: "Ανεμιστήρας",
+        none: "Κανονικό",
+        eco: "Eco",
+        away: "Απουσία",
+        home: "Σπίτι",
+        sleep: "Ύπνος",
+        comfort: "Άνεση",
+        boost: "Boost",
+        low: "Χαμηλό",
+        medium: "Μεσαίο",
+        middle: "Μεσαίο",
+        high: "Υψηλό",
+        quiet: "Ήσυχο",
+        vertical: "Κάθετο",
+        horizontal: "Οριζόντιο",
+        both: "Και τα δύο",
       };
       const THEMES = {
         grafitis: {
@@ -522,6 +976,13 @@
         music: '<path d="M9 18V6l11-2v12"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/>',
         scene: '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3Z"/>',
         shield: '<path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3Z"/>',
+        sun: '<circle cx="12" cy="12" r="4"/><path d="M12 3v2"/><path d="M12 19v2"/><path d="M5 12H3"/><path d="M21 12h-2"/><path d="M6.2 6.2 4.8 4.8"/><path d="M19.2 19.2 17.8 17.8"/><path d="M6.2 17.8 4.8 19.2"/><path d="M19.2 4.8 17.8 6.2"/>',
+        moon: '<path d="M15 4.5A7.5 7.5 0 1 0 19.5 15 6 6 0 0 1 15 4.5Z"/>',
+        cloud: '<path d="M7 18h10a4 4 0 0 0 .4-8 5.5 5.5 0 0 0-10.6-1.2A3.5 3.5 0 0 0 7 18Z"/>',
+        bolt: '<path d="M13 3 6 13h6l-1 8 7-10h-6l1-8Z"/>',
+        curtain: '<path d="M3 3h18"/><path d="M6 3v18"/><path d="M18 3v18"/><path d="M6 8c2 1 4 3 4 6s-2 5-4 7"/><path d="M18 8c-2 1-4 3-4 6s2 5 4 7"/>',
+        garage: '<path d="M3 21V9l9-5 9 5v12"/><path d="M7 21v-8h10v8"/><path d="M7 16.5h10"/>',
+        awning: '<path d="M3 8l9-4 9 4"/><path d="M3 8v3c3 2 6 2 9 0s6-2 9 0V8"/><path d="M5 21h14"/>',
       };
       const ROOM_DOMAINS = { light: 1, switch: 1, cover: 1, climate: 1, media_player: 1 };
       const gate = document.getElementById("gate");
@@ -534,6 +995,7 @@
       const sheetBody = document.getElementById("sheet-body");
       let hubId = null;
       let snap = { screens: [], entities: [], areas: [], weather: null, timezone: "Europe/Athens" };
+      let overlay = {};
       let screen = null;
       let pageIx = 0;
       let sheet = null;
@@ -544,6 +1006,7 @@
       let lastBeep = 0;
       let floor3dSel = null;
       let floorIdleTimer = 0;
+      let venueWall = null;
       const doorbellEl = document.getElementById("doorbell");
       const doorbellImg = document.getElementById("doorbell-img");
       const doorbellOpen = document.getElementById("doorbell-open");
@@ -557,9 +1020,41 @@
           .replace(/>/g, "&gt;")
           .replace(/"/g, "&quot;");
       }
-      function ico(name) {
+      function modeWord(m) {
+        return HVAC[m] || String(m || "").replace(/_/g, " ");
+      }
+      function chipRow(label, modes, current, kind) {
+        if (!Array.isArray(modes) || !modes.length) return "";
         return (
-          '<svg class="glyph" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-join="round">' +
+          '<div class="clima-chips"><span>' +
+          esc(label) +
+          "</span><div>" +
+          modes
+            .map((m) => {
+              return (
+                '<button type="button" class="clima-chip' +
+                (m === current ? " on" : "") +
+                '" data-clima="' +
+                esc(kind) +
+                '" data-val="' +
+                esc(m) +
+                '">' +
+                esc(modeWord(m)) +
+                "</button>"
+              );
+            })
+            .join("") +
+          "</div></div>"
+        );
+      }
+      function ico(name, size) {
+        const s = size || 22;
+        return (
+          '<svg class="glyph" viewBox="0 0 24 24" width="' +
+          s +
+          '" height="' +
+          s +
+          '" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">' +
           (ICONS[name] || ICONS.climate) +
           "</svg>"
         );
@@ -578,9 +1073,78 @@
         if (d === "climate") return iconForHvac((e && (e.hvac_mode || e.state)) || "");
         if (d === "light") return "bulb";
         if (d === "switch") return "switch";
-        if (d === "cover") return "blind";
+        if (d === "cover") return coverGlyph(e);
         if (d === "media_player") return "music";
         return "climate";
+      }
+      function coverKind(e) {
+        const c = String((e && e.device_class) || "").toLowerCase();
+        if (c === "curtain") return "curtain";
+        if (c === "awning") return "awning";
+        if (c === "garage" || c === "garage_door" || c === "gate" || c === "door") return "garage";
+        return "blind";
+      }
+      function coverGlyph(e) {
+        const k = coverKind(e);
+        if (k === "curtain") return "curtain";
+        if (k === "awning") return "awning";
+        if (k === "garage") return "garage";
+        return "blind";
+      }
+      function coverPos(e) {
+        if (!e) return 0;
+        const n = Number(e.current_position);
+        if (isFinite(n)) return Math.max(0, Math.min(100, n));
+        if (e.state === "open" || e.state === "opening") return 100;
+        return 0;
+      }
+      function coverFill(e) {
+        return 100 - coverPos(e);
+      }
+      function coverWord(e) {
+        if (!e) return "";
+        if (e.state === "opening") return "Ανοίγει";
+        if (e.state === "closing") return "Κλείνει";
+        const n = Number(e.current_position);
+        if (isFinite(n) && (e.state === "open" ? n < 100 : e.state !== "closed")) {
+          return Math.round(n) + " % ανοιχτό";
+        }
+        if (e.state === "open") return "Ανοιχτό";
+        if (e.state === "closed") return "Κλειστό";
+        return e.state || "";
+      }
+      function coverWindow() {
+        return '<span class="cv-window" aria-hidden="true"><span class="cv-glass"></span><span class="cv-shade"></span></span>';
+      }
+      function coverCard(e) {
+        return (
+          '<button type="button" class="cv-card" data-eid="' +
+          esc(e.entity_id) +
+          '" data-cover="' +
+          coverKind(e) +
+          '" style="--cover-fill:' +
+          coverFill(e) +
+          '%">' +
+          coverWindow() +
+          '<span class="cv-name">' +
+          esc(e.name) +
+          '</span><span class="cv-state">' +
+          esc(coverWord(e)) +
+          "</span></button>"
+        );
+      }
+      function coverCommand(e, act) {
+        if (!e) return;
+        if (act === "stop") {
+          cmd("cover.stop_cover", e.entity_id);
+          return;
+        }
+        const closing = act === "close";
+        setOverlay(e.entity_id, {
+          state: closing ? "closing" : "opening",
+          current_position: closing ? 0 : 100,
+        });
+        cmd(closing ? "cover.close_cover" : "cover.open_cover", e.entity_id);
       }
       function tileGlyph(name) {
         return '<span class="tile-ico">' + ico(name) + "</span>";
@@ -612,18 +1176,146 @@
       function tz() {
         return snap.timezone || "Europe/Athens";
       }
+      function viewEntity(e) {
+        if (!e) return e;
+        const o = overlay[e.entity_id];
+        if (!o || Date.now() - o.at > 10000) return e;
+        const out = Object.assign({}, e);
+        for (const k in o) if (k !== "at") out[k] = o[k];
+        return out;
+      }
       function byId(id) {
-        return snap.entities.find((e) => e.entity_id === id) || null;
+        return viewEntity(snap.entities.find((e) => e.entity_id === id) || null);
       }
       function areaName(id) {
         const a = snap.areas.find((x) => x.area_id === id);
         return a ? a.name : id;
       }
       function lightsIn(areaId) {
-        return snap.entities.filter((e) => e.domain === "light" && (!areaId || e.area_id === areaId));
+        return snap.entities.filter((e) => e.domain === "light" && (!areaId || e.area_id === areaId)).map(viewEntity);
+      }
+      function lightsForRoom(areaId, allow) {
+        const all = lightsIn(areaId);
+        if (!Array.isArray(allow)) return all;
+        const set = new Set(allow);
+        return all.filter((e) => set.has(e.entity_id));
+      }
+      function roomTileFor(areaId) {
+        for (const page of (screen && screen.pages) || []) {
+          for (const t of page.tiles || []) {
+            if (t.kind === "room" && t.ref === areaId) return t;
+          }
+        }
+        return { kind: "room", ref: areaId };
+      }
+      function roomSheet(areaId, lights) {
+        const out = { kind: "room", ref: areaId };
+        if (Array.isArray(lights)) out.lights = lights;
+        else {
+          const t = roomTileFor(areaId);
+          if (Array.isArray(t.lights)) out.lights = t.lights;
+        }
+        return out;
       }
       function devicesIn(areaId) {
-        return snap.entities.filter((e) => ROOM_DOMAINS[e.domain] && e.area_id === areaId);
+        return snap.entities.filter((e) => ROOM_DOMAINS[e.domain] && e.area_id === areaId).map(viewEntity);
+      }
+      function openingOpen(e) {
+        return e && (e.state === "on" || e.state === "open");
+      }
+      function securityOpenings() {
+        return snap.entities
+          .filter((e) => {
+            if (e.domain !== "binary_sensor") return false;
+            const dc = e.device_class;
+            return dc === "door" || dc === "window" || dc === "opening" || dc === "garage_door";
+          })
+          .map(viewEntity);
+      }
+      function alarmWord(s) {
+        if (s === "disarmed") return "Αφοπλισμένο";
+        if (s === "armed_home") return "Σπίτι";
+        if (s === "armed_away") return "Απουσία";
+        if (s === "armed_night") return "Νύχτα";
+        if (s === "armed_vacation") return "Διακοπές";
+        if (s === "arming" || s === "pending") return "Οπλίζει";
+        if (s === "triggered") return "Συναγερμός";
+        return s || "";
+      }
+      function lockWord(s) {
+        if (s === "locked") return "Κλειδωμένο";
+        if (s === "unlocked") return "Ξεκλείδωτο";
+        if (s === "locking") return "Κλειδώνει";
+        if (s === "unlocking") return "Ξεκλειδώνει";
+        if (s === "jammed") return "Μπλοκαρισμένο";
+        return s || "";
+      }
+      function securityAlarms() {
+        return snap.entities.filter((e) => e.domain === "alarm_control_panel").map(viewEntity);
+      }
+      function securityLocks() {
+        return snap.entities.filter((e) => e.domain === "lock").map(viewEntity);
+      }
+      function securityCameras() {
+        return snap.entities.filter((e) => e.domain === "camera").map(viewEntity);
+      }
+      function securityWord() {
+        const alarms = securityAlarms();
+        const locks = securityLocks();
+        const open = securityOpenings().filter(openingOpen);
+        if (alarms.some((a) => a.state === "triggered")) return "Συναγερμός";
+        if (open.length) return open.length === 1 ? "1 ανοιχτό" : open.length + " ανοιχτά";
+        if (locks.some((l) => l.state === "unlocked" || l.state === "jammed")) return "Ξεκλείδωτο";
+        const armed = alarms.find((a) => a.state && a.state !== "disarmed" && a.state !== "unavailable");
+        if (armed) return alarmWord(armed.state);
+        if (locks.length && locks.every((l) => l.state === "locked")) return "Κλειδωμένο";
+        if (alarms.length && alarms.every((a) => a.state === "disarmed")) return "Αφοπλισμένο";
+        return "Όλα ήσυχα";
+      }
+      function securityAlert() {
+        const alarms = securityAlarms();
+        const locks = securityLocks();
+        if (alarms.some((a) => a.state === "triggered")) return true;
+        if (securityOpenings().some(openingOpen)) return true;
+        if (locks.some((l) => l.state === "unlocked" || l.state === "jammed")) return true;
+        return false;
+      }
+      function secRow(name, word, cls) {
+        return (
+          '<div class="sec-row' +
+          (cls ? " " + cls : "") +
+          '"><span class="sec-k">' +
+          esc(name) +
+          '</span><span class="sec-v">' +
+          esc(word) +
+          "</span></div>"
+        );
+      }
+      function setOverlay(id, fields) {
+        const prev = overlay[id] && Date.now() - overlay[id].at < 10000 ? overlay[id] : {};
+        overlay[id] = Object.assign({}, prev, fields, { at: Date.now() });
+        render();
+        if (sheet) renderSheet();
+      }
+      function pruneOverlay() {
+        const now = Date.now();
+        for (const id of Object.keys(overlay)) {
+          const o = overlay[id];
+          if (!o || now - o.at > 10000) {
+            delete overlay[id];
+            continue;
+          }
+          const live = (snap.entities || []).find((e) => e.entity_id === id);
+          if (!live) continue;
+          let done = true;
+          for (const k in o) {
+            if (k === "at") continue;
+            if (typeof o[k] === "number" || typeof live[k] === "number") {
+              if (Number(o[k]) !== Number(live[k])) done = false;
+            } else if (live[k] !== o[k]) done = false;
+          }
+          if (done) delete overlay[id];
+        }
       }
       function tileSize(t) {
         if (t.size === "l" || t.size === "m" || t.size === "s") return t.size;
@@ -654,9 +1346,109 @@
           return "";
         }
       }
-      function formatTemp(n) {
-        if (typeof n !== "number" || !isFinite(n)) return "";
-        return new Intl.NumberFormat("el-GR", { maximumFractionDigits: 1 }).format(n) + "°";
+      function formatTemp(n, digits) {
+        const v = typeof n === "number" ? n : n == null || n === "" ? NaN : Number(n);
+        if (!isFinite(v)) return "—";
+        return new Intl.NumberFormat("el-GR", { maximumFractionDigits: digits === 0 ? 0 : 1 }).format(v) + "°";
+      }
+      function formatMm(n) {
+        if (typeof n !== "number" || !isFinite(n) || n <= 0) return "";
+        return new Intl.NumberFormat("el-GR", { maximumFractionDigits: 1 }).format(n) + " mm";
+      }
+      function wxIcon(condition) {
+        const c = String(condition || "").toLowerCase();
+        if (c === "clear-night") return "moon";
+        if (c === "cloudy" || c === "fog" || c === "partlycloudy") return "cloud";
+        if (c === "hail" || c === "snowy" || c === "snowy-rainy") return "snowflake";
+        if (c === "lightning" || c === "lightning-rainy") return "bolt";
+        if (c === "pouring" || c === "rainy") return "drop";
+        if (c === "windy" || c === "windy-variant") return "wind";
+        if (c === "sunny") return "sun";
+        return "cloud";
+      }
+      function wxScene(condition) {
+        const c = String(condition || "").toLowerCase();
+        if (c === "sunny") return "sun";
+        if (c === "clear-night") return "night";
+        if (c === "partlycloudy") return "partly";
+        if (c === "fog") return "fog";
+        if (c === "pouring") return "pour";
+        if (c === "rainy" || c === "snowy-rainy") return "rain";
+        if (c === "snowy" || c === "hail") return "snow";
+        if (c === "lightning" || c === "lightning-rainy") return "storm";
+        if (c === "windy" || c === "windy-variant") return "wind";
+        return "cloud";
+      }
+      function wxSky(condition) {
+        return (
+          '<span class="wx-sky" data-wx="' +
+          wxScene(condition) +
+          '" aria-hidden="true"><span class="wx-glow"></span><span class="wx-orb"></span><span class="wx-cloud a"></span><span class="wx-cloud b"></span><span class="wx-fall"></span></span>'
+        );
+      }
+      function clockFaceHtml(face, live) {
+        if (!live) return esc(face);
+        const i = String(face).lastIndexOf(":");
+        if (i < 1) return esc(face);
+        return (
+          '<span class="h">' +
+          esc(face.slice(0, i)) +
+          '</span><span class="colon">:</span><span class="m">' +
+          esc(face.slice(i + 1)) +
+          "</span>"
+        );
+      }
+      function hourKey(iso) {
+        try {
+          return new Intl.DateTimeFormat("en-CA", {
+            timeZone: tz(),
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            hourCycle: "h23",
+          }).format(new Date(iso));
+        } catch (e) {
+          return "";
+        }
+      }
+      function dayKey(iso) {
+        try {
+          return new Intl.DateTimeFormat("en-CA", { timeZone: tz(), year: "numeric", month: "2-digit", day: "2-digit" }).format(
+            new Date(iso),
+          );
+        } catch (e) {
+          return "";
+        }
+      }
+      function hourLabel(iso) {
+        if (iso && hourKey(iso) === hourKey(new Date().toISOString())) return "Τώρα";
+        try {
+          return new Intl.DateTimeFormat("el-GR", {
+            hour: "2-digit",
+            minute: "2-digit",
+            hourCycle: "h23",
+            timeZone: tz(),
+          }).format(new Date(iso));
+        } catch (e) {
+          return "—";
+        }
+      }
+      function dayLabel(iso) {
+        if (iso && dayKey(iso) === dayKey(new Date().toISOString())) return "Σήμερα";
+        try {
+          return new Intl.DateTimeFormat("el-GR", { weekday: "long", timeZone: tz() }).format(new Date(iso));
+        } catch (e) {
+          return "—";
+        }
+      }
+      function centerWxNow() {
+        const root = sheetBody.querySelector(".wx-hours");
+        if (!root) return;
+        const now = [...root.querySelectorAll("time")].find((el) => el.textContent === "Τώρα");
+        const col = now && now.parentElement;
+        if (!col) return;
+        root.scrollLeft = Math.max(0, col.offsetLeft - root.clientWidth / 2 + col.offsetWidth / 2);
       }
       function weatherWord() {
         const w = snap.weather;
@@ -669,8 +1461,18 @@
         if (!w || w.temperature == null) return "";
         return formatTemp(Number(w.temperature));
       }
+      function weatherHumidity() {
+        const n = snap.weather && snap.weather.humidity;
+        if (typeof n !== "number" || !isFinite(n)) return "";
+        return "Υγρασία " + Math.round(n) + " %";
+      }
       function entityWord(e) {
         if (!e) return "";
+        if (e.domain === "lock") return lockWord(e.state);
+        if (e.domain === "alarm_control_panel") return alarmWord(e.state);
+        if (e.domain === "cover") return coverWord(e);
+        if (e.domain === "binary_sensor") return openingOpen(e) ? "ανοιχτό" : "κλειστό";
+        if (e.domain === "camera") return "κάμερα";
         const s = e.state;
         if (s === "on") return "αναμμένο";
         if (s === "off") return "σβηστό";
@@ -689,9 +1491,11 @@
           const e = byId(t.ref);
           if (!e) return false;
           if (e.domain === "climate") return e.state && e.state !== "off" && e.state !== "unavailable";
+          if (e.domain === "cover") return e.state === "open" || e.state === "opening";
           return e.state === "on" || e.state === "open" || e.state === "playing";
         }
-        if (t.kind === "room") return lightsIn(t.ref).some((e) => e.state === "on");
+        if (t.kind === "room") return lightsForRoom(t.ref, t.lights).some((e) => e.state === "on");
+        if (t.kind === "security") return securityAlert();
         return false;
       }
       function timerRec() {
@@ -743,22 +1547,36 @@
         if (!hubId) return;
         const body = { action, entity_id: entityId || "" };
         if (payload) body.payload = payload;
-        await fetch("/v1/hubs/" + encodeURIComponent(hubId) + "/commands", {
+        fetch("/v1/hubs/" + encodeURIComponent(hubId) + "/commands", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
-        });
+        }).catch(() => {});
       }
-      async function toggleEntity(e) {
+      function toggleEntity(e) {
         if (!e) return;
         if (e.domain === "light" || e.domain === "switch") {
-          await cmd(e.state === "on" ? e.domain + ".turn_off" : e.domain + ".turn_on", e.entity_id);
+          const next = e.state === "on" ? "off" : "on";
+          setOverlay(e.entity_id, { state: next });
+          cmd(e.domain + (next === "on" ? ".turn_on" : ".turn_off"), e.entity_id);
         } else if (e.domain === "cover") {
-          await cmd(e.state === "open" || e.state === "opening" ? "cover.close_cover" : "cover.open_cover", e.entity_id);
+          coverCommand(
+            e,
+            e.state === "opening" || e.state === "closing" ? "stop" : e.state === "open" ? "close" : "open",
+          );
         } else if (e.domain === "climate") {
-          await cmd(e.state === "off" ? "climate.turn_on" : "climate.turn_off", e.entity_id);
+          if (e.state === "off") {
+            const mode = e.hvac_mode && e.hvac_mode !== "off" ? e.hvac_mode : "heat";
+            setOverlay(e.entity_id, { state: mode, hvac_mode: mode });
+            cmd("climate.turn_on", e.entity_id);
+          } else {
+            setOverlay(e.entity_id, { state: "off", hvac_mode: "off" });
+            cmd("climate.turn_off", e.entity_id);
+          }
         } else if (e.domain === "media_player") {
-          await cmd(e.state === "playing" ? "media_player.media_pause" : "media_player.media_play", e.entity_id);
+          const next = e.state === "playing" ? "paused" : "playing";
+          setOverlay(e.entity_id, { state: next });
+          cmd(next === "playing" ? "media_player.media_play" : "media_player.media_pause", e.entity_id);
         }
       }
       function planForFloor(floorId) {
@@ -810,7 +1628,11 @@
           openSheet({ kind: "climate", ref: eid });
           return;
         }
-        if (e.area_id) openSheet({ kind: "room", ref: e.area_id });
+        if (e.domain === "cover") {
+          openSheet({ kind: "cover", ref: eid });
+          return;
+        }
+        if (e.area_id) openSheet(roomSheet(e.area_id));
       }
       async function tapPin(eid) {
         armFloorIdle();
@@ -825,8 +1647,13 @@
           render();
           return;
         }
+        if (e.domain === "cover") {
+          openSheet({ kind: "cover", ref: eid });
+          render();
+          return;
+        }
         await toggleEntity(e);
-        await load(true);
+        render();
       }
 
       function armSheet() {
@@ -859,13 +1686,14 @@
           const remain = timerRemain();
           const rec = timerRec();
           const ringing = rec && rec.ringing;
+          const face = ringing ? "Τέλος" : remain ? formatCountdown(remain) : clockText();
           sheetTitle.textContent = "Ρολόι";
           sheetSub.textContent = ringing ? "Τέλος" : remain ? "Χρονόμετρο " + formatCountdown(remain) : dateText();
           sheetBody.innerHTML =
             '<div class="sheet-clock' +
             (sheet.bold ? " bold" : "") +
             '" data-clock="1">' +
-            esc(clockText()) +
+            clockFaceHtml(face, !ringing) +
             '</div><p class="sheet-date" data-date="1">' +
             esc(dateText()) +
             "</p>" +
@@ -882,55 +1710,111 @@
                   "</div>");
         } else if (sheet.kind === "weather") {
           const w = snap.weather;
-          const days = (w && w.forecast) || [];
           sheetTitle.textContent = "Καιρός";
-          sheetSub.textContent = weatherWord();
+          if (!w) {
+            sheetSub.textContent = "";
+            sheetBody.innerHTML = "<p>Ο καιρός χρειάζεται τη θέση του σπιτιού στο Home Assistant</p>";
+          } else {
+            const humidity = weatherHumidity();
+            const hours = w.hourly || [];
+            const days = w.forecast || [];
+            sheetSub.textContent = humidity ? weatherWord() + " · " + humidity : weatherWord();
+            sheetBody.innerHTML =
+              '<div class="wx-now">' +
+              wxSky(w.condition) +
+              ico(wxIcon(w.condition), 48) +
+              '<span class="wx-temp' +
+              (sheet.bold ? " bold" : "") +
+              '">' +
+              esc(weatherTemp() || "—") +
+              "</span></div>" +
+              (hours.length
+                ? '<section><p class="wx-label">Ώρες</p><div class="wx-hours">' +
+                  hours
+                    .map((h) => {
+                      const mm = formatMm(Number(h.precipitation));
+                      return (
+                        '<div class="wx-hour"><time>' +
+                        esc(hourLabel(h.datetime)) +
+                        "</time>" +
+                        ico(wxIcon(h.condition)) +
+                        '<span class="wx-hour-temp">' +
+                        esc(formatTemp(h.temperature, 0)) +
+                        "</span>" +
+                        (mm
+                          ? '<span class="wx-hour-mm">' + esc(mm) + "</span>"
+                          : '<span class="wx-hour-mm" aria-hidden="true"></span>') +
+                        "</div>"
+                      );
+                    })
+                    .join("") +
+                  "</div></section>"
+                : "") +
+              (days.length
+                ? '<section><p class="wx-label">Εβδομάδα</p><div class="wx-days">' +
+                  days
+                    .slice(0, 7)
+                    .map((d) => {
+                      return (
+                        '<div class="wx-day"><span class="wx-day-name">' +
+                        esc(dayLabel(d.datetime)) +
+                        "</span>" +
+                        ico(wxIcon(d.condition)) +
+                        '<span class="wx-day-temps"><span class="wx-day-low">' +
+                        esc(formatTemp(d.templow, 0)) +
+                        "</span><b>" +
+                        esc(formatTemp(d.temperature, 0)) +
+                        "</b></span></div>"
+                      );
+                    })
+                    .join("") +
+                  "</div></section>"
+                : "");
+            centerWxNow();
+          }
+        } else if (sheet.kind === "room") {
+          const lights = lightsForRoom(sheet.ref, sheet.lights);
+          const anyOn = lights.some((e) => e.state === "on");
+          const rest = devicesIn(sheet.ref).filter((e) => e.domain !== "light");
+          sheetTitle.textContent = areaName(sheet.ref);
+          sheetSub.textContent = lights.length
+            ? anyOn
+              ? lights.filter((e) => e.state === "on").length + " αναμμένα"
+              : "σβηστά"
+            : rest.length
+              ? ""
+              : "κενό";
+          const covers = rest.filter((e) => e.domain === "cover");
+          const other = rest.filter((e) => e.domain !== "cover");
           sheetBody.innerHTML =
-            '<div class="wx-now"><div class="face' +
-            (sheet.bold ? " bold" : "") +
-            '" style="font-size:clamp(4rem,18vw,8rem)">' +
-            esc(weatherTemp() || "—") +
-            "</div><p class=\"kicker\">" +
-            esc(weatherWord()) +
-            "</p></div>" +
-            (days.length
-              ? '<div class="wx-days">' +
-                days
-                  .slice(0, 7)
-                  .map((d) => {
-                    const name = d.datetime
-                      ? new Intl.DateTimeFormat("el-GR", { weekday: "short", timeZone: tz() }).format(new Date(d.datetime))
-                      : "";
-                    const hi = formatTemp(Number(d.temperature));
-                    const lo = formatTemp(Number(d.templow));
+            (lights.length
+              ? '<button type="button" class="room-all" data-alloff="1">' +
+                (anyOn ? "Σβήσε όλα" : "Άναψε όλα") +
+                "</button><div class=\"lamps\">" +
+                lights
+                  .map((e) => {
                     return (
-                      '<div class="wx-day"><span>' +
-                      esc(name) +
-                      "</span><b>" +
-                      esc(lo && hi ? lo + " / " + hi : hi) +
-                      "</b></div>"
+                      '<button type="button" class="lamp' +
+                      (e.state === "on" ? " on" : "") +
+                      '" data-eid="' +
+                      esc(e.entity_id) +
+                      '"><span class="lamp-glow" aria-hidden="true"></span><span class="lamp-name">' +
+                      esc(e.name) +
+                      "</span></button>"
                     );
                   })
                   .join("") +
                 "</div>"
-              : "");
-        } else if (sheet.kind === "room") {
-          const lights = lightsIn(sheet.ref);
-          const anyOn = lights.some((e) => e.state === "on");
-          const list = devicesIn(sheet.ref);
-          sheetTitle.textContent = areaName(sheet.ref);
-          sheetSub.textContent = anyOn ? lights.filter((e) => e.state === "on").length + " αναμμένα" : "σβηστά";
-          sheetBody.innerHTML =
-            (lights.length
-              ? '<button type="button" class="chip" data-alloff="1">' +
-                (anyOn ? "Σβήσε όλα" : "Άναψε όλα") +
-                "</button>"
               : "") +
-            '<div class="devices">' +
-            (list.length
-              ? list
+            (covers.length ? '<div class="covers">' + covers.map(coverCard).join("") + "</div>" : "") +
+            (other.length
+              ? '<div class="room-rest">' +
+                other
                   .map((e) => {
-                    const on = e.state === "on" || e.state === "open" || e.state === "playing";
+                    const on =
+                      e.state === "on" ||
+                      e.state === "playing" ||
+                      (e.domain === "climate" && e.state && e.state !== "off");
                     return (
                       '<button type="button" class="device' +
                       (on ? " on" : "") +
@@ -943,9 +1827,53 @@
                       "</span></button>"
                     );
                   })
-                  .join("")
-              : "<p>Δεν υπάρχουν συσκευές σε αυτό το δωμάτιο.</p>") +
-            "</div>";
+                  .join("") +
+                "</div>"
+              : lights.length || covers.length
+                ? ""
+                : "<p>Δεν υπάρχουν συσκευές σε αυτό το δωμάτιο.</p>");
+        } else if (sheet.kind === "security") {
+          const alarms = securityAlarms();
+          const locks = securityLocks();
+          const openings = securityOpenings().slice().sort((a, b) => Number(openingOpen(b)) - Number(openingOpen(a)));
+          const cameras = securityCameras();
+          sheetTitle.textContent = securityWord();
+          sheetSub.textContent = "Μόνο προβολή";
+          const rows =
+            alarms.map((e) => secRow(e.name, alarmWord(e.state), e.state === "triggered" ? "alert" : "")).join("") +
+            locks
+              .map((e) =>
+                secRow(e.name, lockWord(e.state), e.state === "unlocked" || e.state === "jammed" ? "unlocked" : ""),
+              )
+              .join("") +
+            openings
+              .map((e) => secRow(e.name, openingOpen(e) ? "ανοιχτό" : "κλειστό", openingOpen(e) ? "open" : ""))
+              .join("") +
+            cameras.map((e) => secRow(e.name, "κάμερα", "")).join("");
+          sheetBody.innerHTML =
+            (rows ? '<div class="sec">' + rows + "</div>" : "<p>Δεν υπάρχουν αισθητήρες ασφαλείας σε αυτό το σπίτι.</p>") +
+            '<p class="sec-note">Ξεκλείδωμα από το κινητό</p>';
+        } else if (sheet.kind === "cover") {
+          const e = byId(sheet.ref);
+          const kind = coverKind(e);
+          const garage = kind === "garage";
+          const moving = e && (e.state === "opening" || e.state === "closing");
+          sheetTitle.textContent = e && e.name ? e.name : "Κάλυμμα";
+          sheetSub.textContent = coverWord(e);
+          sheetBody.innerHTML =
+            '<div class="cv" data-cover="' +
+            kind +
+            '" style="--cover-fill:' +
+            coverFill(e) +
+            '%"><div class="cv-hero">' +
+            coverWindow() +
+            '</div><div class="cv-btns"><button type="button" data-cover-act="open">' +
+            (garage ? "Άνοιγμα πόρτας" : "Άνοιγμα") +
+            '</button><button type="button"' +
+            (moving ? ' class="on"' : "") +
+            ' data-cover-act="stop">Στοπ</button><button type="button" data-cover-act="close">' +
+            (garage ? "Κλείσιμο πόρτας" : "Κλείσιμο") +
+            "</button></div></div>";
         } else if (sheet.kind === "climate") {
           const e = byId(sheet.ref);
           const modes = (e && Array.isArray(e.hvac_modes) && e.hvac_modes.length ? e.hvac_modes : ["off", "heat", "cool"]);
@@ -981,7 +1909,11 @@
                 );
               })
               .join("") +
-            "</div></div>";
+            "</div>" +
+            chipRow("Πρόγραμμα", e && e.preset_modes, e && e.preset_mode, "preset") +
+            chipRow("Ανεμιστήρας", e && e.fan_modes, e && e.fan_mode, "fan") +
+            chipRow("Περσίδες", e && e.swing_modes, e && e.swing_mode, "swing") +
+            "</div>";
         }
       }
 
@@ -995,7 +1927,11 @@
           return;
         }
         if (t.kind === "room") {
-          openSheet({ kind: "room", ref: t.ref });
+          openSheet(roomSheet(t.ref, t.lights));
+          return;
+        }
+        if (t.kind === "security") {
+          openSheet({ kind: "security" });
           return;
         }
         if (t.kind === "entity" && t.ref) {
@@ -1004,34 +1940,44 @@
             openSheet({ kind: "climate", ref: t.ref });
             return;
           }
-          await toggleEntity(e);
+          if (e.domain === "cover") {
+            openSheet({ kind: "cover", ref: t.ref });
+            return;
+          }
+          toggleEntity(e);
+          return;
         } else if (t.kind === "allOff") {
-          for (const e of lightsIn(t.ref)) await cmd("light.turn_off", e.entity_id);
+          for (const e of lightsIn(t.ref)) {
+            setOverlay(e.entity_id, { state: "off" });
+            cmd("light.turn_off", e.entity_id);
+          }
+          return;
         } else if (t.kind === "scene" && t.ref) {
-          if (t.ref.startsWith("scene.")) await cmd("scene.turn_on", t.ref);
-          else if (t.ref.startsWith("script.arvio_")) await cmd("script.turn_on", t.ref);
+          if (t.ref.startsWith("scene.")) cmd("scene.turn_on", t.ref);
+          else if (t.ref.startsWith("script.arvio_")) cmd("script.turn_on", t.ref);
           else if (t.ref.startsWith("scenario:")) {
-            await cmd("arvio.trigger_scenario", "", { scenario_id: t.ref.slice("scenario:".length) });
+            cmd("arvio.trigger_scenario", "", { scenario_id: t.ref.slice("scenario:".length) });
           }
         }
-        await load(true);
       }
 
       function tileInner(t) {
         if (t.kind === "clock") {
           const remain = timerRemain();
           const rec = timerRec();
-          const face = rec && rec.ringing ? "Τέλος" : remain ? formatCountdown(remain) : clockText();
+          const ringing = rec && rec.ringing;
+          const face = ringing ? "Τέλος" : remain ? formatCountdown(remain) : clockText();
           return (
             '<span class="face" data-clock="1">' +
-            esc(face) +
+            clockFaceHtml(face, !ringing) +
             "</span><span class=\"state\" data-clock-sub=\"1\">" +
-            esc(remain && !(rec && rec.ringing) ? "χρονόμετρο" : dateText()) +
+            esc(remain && !ringing ? "χρονόμετρο" : dateText()) +
             "</span>"
           );
         }
         if (t.kind === "weather") {
           return (
+            wxSky(snap.weather && snap.weather.condition) +
             '<span class="kicker">' +
             esc(weatherWord()) +
             '</span><span class="face">' +
@@ -1040,7 +1986,7 @@
           );
         }
         if (t.kind === "room") {
-          const on = lightsIn(t.ref).filter((e) => e.state === "on").length;
+          const on = lightsForRoom(t.ref, t.lights).filter((e) => e.state === "on").length;
           return (
             tileGlyph("bulb") +
             '<span class="name">' +
@@ -1052,6 +1998,16 @@
         }
         if (t.kind === "entity") {
           const e = byId(t.ref);
+          if (e && e.domain === "cover") {
+            return (
+              coverWindow() +
+              '<span class="name">' +
+              esc(e.name) +
+              '</span><span class="state">' +
+              esc(coverWord(e)) +
+              "</span>"
+            );
+          }
           const climateTemp = e && e.domain === "climate" ? formatTemp(Number(e.current_temperature)) : "";
           return (
             tileGlyph(glyphForEntity(e)) +
@@ -1070,7 +2026,12 @@
           return tileGlyph("power") + '<span class="kicker"></span><span class="name">Σβήσε όλα</span>';
         }
         if (t.kind === "security") {
-          return tileGlyph("shield") + '<span class="kicker"></span><span class="name">Ασφάλεια</span>';
+          return (
+            tileGlyph("shield") +
+            '<span class="kicker">Ασφάλεια</span><span class="name">' +
+            esc(securityWord()) +
+            "</span>"
+          );
         }
         if (t.kind === "floor3d") {
           const plan = planForFloor(t.ref);
@@ -1131,6 +2092,37 @@
               : "")
           );
         }
+        if (t.kind === "session_countdown") {
+          return (
+            '<span class="kicker">Κράτηση</span><span class="face" data-session-count="1">' +
+            esc((venueWall && venueWall.countdown) || "—") +
+            "</span>"
+          );
+        }
+        if (t.kind === "occupancy") {
+          var occ = venueWall && venueWall.occupancy != null ? String(venueWall.occupancy) : "—";
+          var max = venueWall && venueWall.occupancy_max ? "/" + venueWall.occupancy_max : "";
+          return '<span class="kicker">Άτομα</span><span class="face" data-occupancy="1">' + esc(occ + max) + "</span>";
+        }
+        if (t.kind === "session_now") {
+          var phase = venueWall && venueWall.phase ? venueWall.phase : "idle";
+          var pkg = venueWall && venueWall.package_name ? venueWall.package_name : "Επόμενη";
+          if (phase === "idle" && venueWall && venueWall.next_starts_at) {
+            var nx = new Date(venueWall.next_starts_at);
+            var nlabel = venueWall.next_package_name || "Κράτηση";
+            if (!Number.isNaN(nx.getTime())) {
+              nlabel += " " + new Intl.DateTimeFormat("el-GR", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: tz() }).format(nx);
+            }
+            pkg = nlabel;
+          }
+          return (
+            '<span class="kicker">' +
+            esc(phase) +
+            '</span><span class="name" data-session-now="1">' +
+            esc(pkg) +
+            "</span>"
+          );
+        }
         return '<span class="name">' + esc(t.kind) + "</span>";
       }
 
@@ -1174,6 +2166,15 @@
             b.type = "button";
             b.className = "tile tile--" + t.kind + (size !== "s" ? " wide" : "") + (tileOn(t) ? " on" : "") + (t.bold ? " bold" : "");
             b.dataset.size = size;
+            if (t.align === "center" || t.align === "right") b.dataset.align = t.align;
+            if (t.kind === "entity") {
+              const ent = byId(t.ref);
+              if (ent && ent.domain === "cover") {
+                b.classList.add("tile--cover");
+                b.dataset.cover = coverKind(ent);
+                b.style.setProperty("--cover-fill", coverFill(ent) + "%");
+              }
+            }
             b.innerHTML = tileInner(t);
             b.addEventListener("click", () => tap(t));
             el.appendChild(b);
@@ -1199,7 +2200,19 @@
         const ringing = rec && rec.ringing;
         const face = ringing ? "Τέλος" : remain ? formatCountdown(remain) : clockText();
         document.querySelectorAll("[data-clock]").forEach((el) => {
-          el.textContent = face;
+          if (ringing || !el.querySelector(".colon")) {
+            el.innerHTML = clockFaceHtml(face, !ringing);
+            return;
+          }
+          const i = String(face).lastIndexOf(":");
+          if (i < 1) {
+            el.innerHTML = clockFaceHtml(face, !ringing);
+            return;
+          }
+          const h = el.querySelector(".h");
+          const m = el.querySelector(".m");
+          if (h) h.textContent = face.slice(0, i);
+          if (m) m.textContent = face.slice(i + 1);
         });
         document.querySelectorAll("[data-clock-sub]").forEach((el) => {
           el.textContent = remain && !ringing ? "χρονόμετρο" : dateText();
@@ -1210,6 +2223,33 @@
         if (sheet && sheet.kind === "clock") {
           sheetSub.textContent = ringing ? "Τέλος" : remain ? "Χρονόμετρο " + formatCountdown(remain) : dateText();
         }
+        var sessionFace = (venueWall && venueWall.countdown) || "—";
+        if (venueWall && venueWall.ends_at) {
+          var left = Date.parse(venueWall.ends_at) - Date.now();
+          if (Number.isFinite(left) && left > 0) sessionFace = formatCountdown(left);
+          else if (Number.isFinite(left)) sessionFace = "—";
+        }
+        document.querySelectorAll("[data-session-count]").forEach((el) => {
+          el.textContent = sessionFace;
+        });
+        var occFace = venueWall && venueWall.occupancy != null ? String(venueWall.occupancy) : "—";
+        if (venueWall && venueWall.occupancy_max) occFace += "/" + venueWall.occupancy_max;
+        document.querySelectorAll("[data-occupancy]").forEach((el) => {
+          el.textContent = occFace;
+        });
+        document.querySelectorAll("[data-session-now]").forEach((el) => {
+          var phase = venueWall && venueWall.phase ? venueWall.phase : "idle";
+          var pkg = (venueWall && venueWall.package_name) || "Επόμενη";
+          if (phase === "idle" && venueWall && venueWall.next_starts_at) {
+            var nx = new Date(venueWall.next_starts_at);
+            var nlabel = (venueWall.next_package_name || "Κράτηση");
+            if (!Number.isNaN(nx.getTime())) {
+              nlabel += " " + new Intl.DateTimeFormat("el-GR", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: tz() }).format(nx);
+            }
+            pkg = nlabel;
+          }
+          el.textContent = pkg;
+        });
       }
 
       function applyWallpaper(s) {
@@ -1281,12 +2321,8 @@
 
       async function load(keepPage) {
         const sid = localStorage.getItem(KEY);
-        const r = await fetch("/api/screens" + (sid ? "?screen_id=" + encodeURIComponent(sid) : ""));
-        snap = await r.json();
-        hubId = snap.hub_id || hubId;
-        screen = (snap.screens || []).find((s) => s.screen_id === sid) || null;
-        if (!screen) {
-          localStorage.removeItem(KEY);
+        if (!sid) {
+          screen = null;
           gate.classList.remove("hidden");
           board.classList.add("hidden");
           applyTheme(null);
@@ -1295,14 +2331,49 @@
           closeSheet();
           return;
         }
+        let next;
+        try {
+          const r = await fetch("/api/screens?screen_id=" + encodeURIComponent(sid));
+          if (!r.ok) return;
+          next = await r.json();
+        } catch (e) {
+          return;
+        }
+        if (!next || !Array.isArray(next.screens)) return;
+        const found = next.screens.find((s) => s.screen_id === sid) || null;
+        if (!found) {
+          if (next.screens.length === 0) return;
+          miss += 1;
+          if (miss < 3) return;
+          localStorage.removeItem(KEY);
+          miss = 0;
+          screen = null;
+          gate.classList.remove("hidden");
+          board.classList.add("hidden");
+          applyTheme(null);
+          applyWallpaper(null);
+          hideDoorbell();
+          closeSheet();
+          return;
+        }
+        miss = 0;
+        snap = next;
+        pruneOverlay();
+        hubId = snap.hub_id || hubId;
+        screen = found;
         if (!keepPage) pageIx = 0;
         gate.classList.add("hidden");
         board.classList.remove("hidden");
         applyTheme(screen);
         applyWallpaper(screen);
+        try {
+          const wr = await fetch("/api/venue/wall");
+          if (wr.ok) venueWall = await wr.json();
+        } catch (e) {}
         render();
         if (sheet) renderSheet();
         syncDoorbell();
+        paintTime();
       }
 
       async function pair() {
@@ -1337,11 +2408,16 @@
         if (min) startTimer(Number(min));
         if (e.target.getAttribute && e.target.getAttribute("data-cancel")) clearTimer();
         if (e.target.getAttribute && e.target.getAttribute("data-ack")) ackTimer();
-        if (e.target.getAttribute && e.target.getAttribute("data-alloff") && sheet && sheet.kind === "room") {
-          const lights = lightsIn(sheet.ref);
+        const allOffBtn = e.target.closest && e.target.closest("[data-alloff]");
+        if (allOffBtn && sheet && sheet.kind === "room") {
+          const lights = lightsForRoom(sheet.ref, sheet.lights);
           const anyOn = lights.some((x) => x.state === "on");
-          for (const ent of lights) await cmd(anyOn ? "light.turn_off" : "light.turn_on", ent.entity_id);
-          await load(true);
+          const next = anyOn ? "off" : "on";
+          for (const ent of lights) {
+            setOverlay(ent.entity_id, { state: next });
+            cmd(anyOn ? "light.turn_off" : "light.turn_on", ent.entity_id);
+          }
+          return;
         }
         const stepBtn = e.target.closest && e.target.closest("[data-temp-step]");
         if (stepBtn && sheet && sheet.kind === "climate") {
@@ -1351,25 +2427,59 @@
           const lo = ent ? Number(ent.min_temp) : NaN;
           const hi = ent ? Number(ent.max_temp) : NaN;
           const clamped = Math.min(isFinite(hi) ? hi : 32, Math.max(isFinite(lo) ? lo : 16, next));
-          await cmd("climate.set_temperature", sheet.ref, { temperature: Math.round(clamped * 2) / 2 });
-          await load(true);
+          const temp = Math.round(clamped * 2) / 2;
+          setOverlay(sheet.ref, { temperature: temp });
+          cmd("climate.set_temperature", sheet.ref, { temperature: temp });
           return;
         }
         const hvacBtn = e.target.closest && e.target.closest("[data-hvac]");
         if (hvacBtn && sheet && sheet.kind === "climate") {
-          await cmd("climate.set_hvac_mode", sheet.ref, { hvac_mode: hvacBtn.getAttribute("data-hvac") });
-          await load(true);
+          const mode = hvacBtn.getAttribute("data-hvac");
+          setOverlay(sheet.ref, { hvac_mode: mode, state: mode });
+          cmd("climate.set_hvac_mode", sheet.ref, { hvac_mode: mode });
+          return;
+        }
+        const climaBtn = e.target.closest && e.target.closest("[data-clima]");
+        if (climaBtn && sheet && sheet.kind === "climate") {
+          const kind = climaBtn.getAttribute("data-clima");
+          const val = climaBtn.getAttribute("data-val");
+          if (kind === "preset") {
+            setOverlay(sheet.ref, { preset_mode: val });
+            cmd("climate.set_preset_mode", sheet.ref, { preset_mode: val });
+          } else if (kind === "fan") {
+            setOverlay(sheet.ref, { fan_mode: val });
+            cmd("climate.set_fan_mode", sheet.ref, { fan_mode: val });
+          } else if (kind === "swing") {
+            setOverlay(sheet.ref, { swing_mode: val });
+            cmd("climate.set_swing_mode", sheet.ref, { swing_mode: val });
+          }
+          return;
+        }
+        const coverBtn = e.target.closest && e.target.closest("[data-cover-act]");
+        if (coverBtn && sheet && sheet.kind === "cover") {
+          coverCommand(byId(sheet.ref), coverBtn.getAttribute("data-cover-act"));
           return;
         }
         const eid = e.target.closest && e.target.closest("[data-eid]");
         if (eid) {
           const ent = byId(eid.getAttribute("data-eid"));
           if (ent && ent.domain === "climate") {
-            openSheet({ kind: "climate", ref: ent.entity_id, parent: { kind: "room", ref: sheet && sheet.ref } });
+            openSheet({
+              kind: "climate",
+              ref: ent.entity_id,
+              parent: sheet && sheet.kind === "room" ? roomSheet(sheet.ref, sheet.lights) : undefined,
+            });
             return;
           }
-          await toggleEntity(ent);
-          await load(true);
+          if (ent && ent.domain === "cover") {
+            openSheet({
+              kind: "cover",
+              ref: ent.entity_id,
+              parent: sheet && sheet.kind === "room" ? roomSheet(sheet.ref, sheet.lights) : undefined,
+            });
+            return;
+          }
+          toggleEntity(ent);
         }
       });
       document.getElementById("doorbell-dismiss").addEventListener("click", () => {
@@ -1406,9 +2516,12 @@
           const h = await fetch("/health").then((r) => r.json());
           hubId = h.hub_id;
         } catch (e) {}
-        if (localStorage.getItem(KEY)) await load(true);
+        if (localStorage.getItem(KEY)) {
+          gate.classList.add("hidden");
+          await load(true).catch(() => {});
+        }
         setInterval(() => {
-          if (screen) load(true).catch(() => {});
+          if (localStorage.getItem(KEY)) load(true).catch(() => {});
         }, 4000);
         setInterval(paintTime, 1000);
       })();

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import html as html_lib
 import io
 import json
@@ -38,6 +39,7 @@ SCREENS = DATA / "screens.json"
 FLOOR_PLANS = DATA / "floor_plans.json"
 OCCUPANCY_PROFILE = DATA / "occupancy_profile.json"
 OCCUPANCY_STATE = DATA / "occupancy_state.json"
+VENUE = DATA / "venue.json"
 WALLPAPERS = DATA / "wallpapers"
 APP = Path("/app")
 
@@ -46,7 +48,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.44"
+AGENT_VERSION = "0.1.45"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -200,9 +202,22 @@ def sha(s: str) -> str:
 
 
 SCREEN_TILE_KINDS = frozenset(
-    {"room", "entity", "scene", "allOff", "security", "clock", "weather", "floor3d"}
+    {
+        "room",
+        "entity",
+        "scene",
+        "allOff",
+        "security",
+        "clock",
+        "weather",
+        "floor3d",
+        "session_countdown",
+        "occupancy",
+        "session_now",
+    }
 )
 SCREEN_SECURITY_DOMAINS = frozenset({"lock", "alarm_control_panel"})
+SCREEN_LIGHT_ID_RE = re.compile(r"^light\.[A-Za-z0-9_]+$")
 SCREEN_ORIENTATIONS = frozenset({"landscape", "portrait", "square"})
 SCREEN_THEME_PRESETS = frozenset(
     {"grafitis", "penteli", "drys", "lino", "beton", "aigaio", "elia", "vasaltis", "galini"}
@@ -596,6 +611,472 @@ def doorbell_unlock(screen_id: str) -> dict:
     raise ValueError("doorbell_unlock_unavailable")
 
 
+VENUE_PIN_FAIL_MAX = 5
+VENUE_PIN_FAIL_WINDOW_S = 15 * 60
+VENUE_PIN_LOCK_S = 5 * 60
+VENUE_PIN_RE = re.compile(r"^\d{6}$")
+LOCK_ENTITY_RE = re.compile(r"^lock\.[A-Za-z0-9_]+$")
+
+
+def load_venue() -> dict:
+    try:
+        raw = json.loads(VENUE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"snapshot": None, "runtime": {}}
+    if not isinstance(raw, dict):
+        return {"snapshot": None, "runtime": {}}
+    snap = raw.get("snapshot")
+    runtime = raw.get("runtime") if isinstance(raw.get("runtime"), dict) else {}
+    return {"snapshot": snap if isinstance(snap, dict) else None, "runtime": runtime}
+
+
+def save_venue(doc: dict) -> None:
+    tmp = VENUE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(VENUE)
+
+
+def _venue_hash_pin(pin: str, site_id: str, booking_id: str) -> str:
+    return hashlib.sha256(f"arvio.venue.pin|{site_id}|{booking_id}|{pin}".encode("utf-8")).hexdigest()
+
+
+def _parse_venue_snapshot(payload: dict) -> dict:
+    site_id = str(payload.get("site_id") or "")
+    hub_id = str(payload.get("hub_id") or "")
+    zone = payload.get("zone")
+    bookings = payload.get("bookings")
+    if not site_id.startswith("site_") or not hub_id.startswith("hub_"):
+        raise ValueError("invalid_venue")
+    if not isinstance(zone, dict):
+        raise ValueError("invalid_zone")
+    entry = zone.get("entry_lock_entity_ids")
+    if not isinstance(entry, list) or not entry:
+        raise ValueError("invalid_locks")
+    for eid in entry:
+        if not isinstance(eid, str) or not LOCK_ENTITY_RE.fullmatch(eid):
+            raise ValueError("invalid_locks")
+    egress = zone.get("egress_lock_entity_ids")
+    if egress is None:
+        egress = list(entry)
+    if not isinstance(egress, list):
+        raise ValueError("invalid_locks")
+    clean_books = []
+    if not isinstance(bookings, list):
+        raise ValueError("invalid_bookings")
+    for b in bookings:
+        if not isinstance(b, dict):
+            raise ValueError("invalid_booking")
+        pin_hash = str(b.get("pin_hash") or "")
+        if not re.fullmatch(r"[a-f0-9]{64}", pin_hash):
+            raise ValueError("invalid_pin_hash")
+        window = b.get("window") if isinstance(b.get("window"), dict) else {}
+        clean_books.append(
+            {
+                "booking_id": str(b.get("booking_id") or ""),
+                "zone_id": str(b.get("zone_id") or ""),
+                "starts_at": str(b.get("starts_at") or ""),
+                "ends_at": str(b.get("ends_at") or ""),
+                "party_size": int(b.get("party_size") or 1),
+                "pin_hash": pin_hash,
+                "package_name": str(b.get("package_name") or "Κράτηση")[:80],
+                "window": {
+                    "opens_at": str(window.get("opens_at") or b.get("starts_at") or ""),
+                    "closes_at": str(window.get("closes_at") or b.get("ends_at") or ""),
+                },
+            }
+        )
+    return {
+        "site_id": site_id,
+        "hub_id": hub_id,
+        "operating_mode": "venue",
+        "time_zone": str(payload.get("time_zone") or "Europe/Athens"),
+        "zone": zone,
+        "bookings": clean_books,
+        "generated_at": str(payload.get("generated_at") or now_iso()),
+    }
+
+
+def put_venue(payload: dict | None, entity_id: str = "") -> dict:
+    payload = payload if isinstance(payload, dict) else {}
+    snap = _parse_venue_snapshot(payload)
+    prev = load_venue()
+    save_venue({"snapshot": snap, "runtime": prev.get("runtime") or {}})
+    return {"ok": True, "site_id": snap["site_id"], "bookings": len(snap["bookings"])}
+
+
+def delete_venue(payload: dict | None = None, entity_id: str = "") -> dict:
+    try:
+        VENUE.unlink()
+    except FileNotFoundError:
+        pass
+    return {"ok": True}
+
+
+def _venue_phase(booking: dict, zone: dict, now_ts: float, first_entry: bool = False) -> str:
+    starts = parse_iso_ts(booking.get("starts_at"))
+    ends = parse_iso_ts(booking.get("ends_at"))
+    window = booking.get("window") if isinstance(booking.get("window"), dict) else {}
+    opens = parse_iso_ts(window.get("opens_at")) or starts
+    closes = parse_iso_ts(window.get("closes_at")) or ends
+    if starts is None or ends is None:
+        return "idle"
+    prep_lead = float(zone.get("prep_lead_min") or 10) * 60
+    if now_ts >= (closes or ends):
+        return "idle"
+    if now_ts >= ends:
+        return "ending"
+    if first_entry or now_ts >= starts:
+        return "active"
+    if now_ts >= (opens or starts):
+        return "armed"
+    if now_ts >= starts - prep_lead:
+        return "prep"
+    return "idle"
+
+
+def _format_countdown(ms: float) -> str:
+    total_sec = max(0, int((ms + 999) // 1000))
+    if total_sec < 2 * 3600:
+        mins = max(0, int((ms + 59_999) // 60_000))
+        return f"{mins}′"
+    h = total_sec // 3600
+    m = (total_sec % 3600) // 60
+    s = total_sec % 60
+    return f"{h}:{m:02d}:{s:02d}"
+
+
+def venue_wall(now_ts: float | None = None) -> dict:
+    """Panel / Console: phase, countdown, occupancy. Never PIN, never visitor."""
+    now_ts = time.time() if now_ts is None else now_ts
+    doc = load_venue()
+    snap = doc.get("snapshot")
+    if not isinstance(snap, dict):
+        return {"ok": True, "phase": "idle", "countdown": "", "occupancy": None, "occupancy_max": 0, "package_name": None, "ends_at": None, "next_starts_at": None, "next_package_name": None}
+    zone = snap.get("zone") if isinstance(snap.get("zone"), dict) else {}
+    policy = zone.get("policy") if isinstance(zone.get("policy"), dict) else {}
+    runtime = doc.get("runtime") if isinstance(doc.get("runtime"), dict) else {}
+    first_map = runtime.get("first_entry_at") if isinstance(runtime.get("first_entry_at"), dict) else {}
+    live = None
+    live_phase = "idle"
+    for b in snap.get("bookings") or []:
+        if not isinstance(b, dict):
+            continue
+        first_entry = bool(first_map.get(str(b.get("booking_id") or "")))
+        phase = _venue_phase(b, zone, now_ts, first_entry)
+        if phase != "idle":
+            live, live_phase = b, phase
+            break
+    countdown = ""
+    package_name = None
+    occupancy_max = int(policy.get("zone_capacity") or 0)
+    ends_at = None
+    if live:
+        ends = parse_iso_ts(live.get("ends_at")) or now_ts
+        countdown = _format_countdown((ends - now_ts) * 1000)
+        # Defensive: a parsed zone always has zone_capacity >= 1, but a
+        # hand-crafted snapshot without it must not show "5/0".
+        party = int(live.get("party_size") or 0)
+        occupancy_max = min(party, occupancy_max) if occupancy_max else party
+        ends_at = live.get("ends_at")
+        if live_phase in ("active", "ending", "armed"):
+            package_name = live.get("package_name")
+    occ = _read_occupancy(zone)
+    next_starts_at = None
+    next_package_name = None
+    if live_phase == "idle":
+        future = None
+        for b in snap.get("bookings") or []:
+            if not isinstance(b, dict):
+                continue
+            starts = parse_iso_ts(b.get("starts_at"))
+            if starts is None or starts < now_ts:
+                continue
+            if future is None or starts < parse_iso_ts(future.get("starts_at") or ""):
+                future = b
+        if future:
+            next_starts_at = future.get("starts_at")
+            next_package_name = future.get("package_name")
+    return {
+        "ok": True,
+        "phase": live_phase,
+        "countdown": countdown,
+        "occupancy": occ,
+        "occupancy_max": occupancy_max,
+        "package_name": package_name,
+        "ends_at": ends_at,
+        "next_starts_at": next_starts_at,
+        "next_package_name": next_package_name,
+    }
+
+
+def _read_occupancy(zone: dict) -> int | None:
+    src = zone.get("occupancy") if isinstance(zone.get("occupancy"), dict) else None
+    if not src:
+        return None
+    kind = src.get("kind")
+    try:
+        if kind in ("sensor", "counter"):
+            st = ha(f"/states/{src.get('entity_id')}")
+            return int(float((st or {}).get("state")))
+        if kind == "camera_attribute":
+            st = ha(f"/states/{src.get('entity_id')}")
+            attrs = (st or {}).get("attributes") if isinstance((st or {}).get("attributes"), dict) else {}
+            attr = str(src.get("attribute") or "person_count")
+            return int(float(attrs.get(attr)))
+    except Exception:
+        return None
+    return None
+
+
+def _entry_locks(zone: dict) -> list[str]:
+    entry = [e for e in (zone.get("entry_lock_entity_ids") or []) if isinstance(e, str)]
+    egress = set(e for e in (zone.get("egress_lock_entity_ids") or entry) if isinstance(e, str))
+    # A lock that is both entry and egress is never locked at session end.
+    return [e for e in entry if LOCK_ENTITY_RE.fullmatch(e)]
+
+
+def _may_lock_entry(zone: dict) -> list[str]:
+    entry = [e for e in (zone.get("entry_lock_entity_ids") or []) if isinstance(e, str)]
+    egress = set(e for e in (zone.get("egress_lock_entity_ids") or []) if isinstance(e, str))
+    if not egress:
+        egress = set(entry)
+    return [e for e in entry if e not in egress and LOCK_ENTITY_RE.fullmatch(e)]
+
+
+def _recipe_media_players(recipe: dict) -> list[str]:
+    start = recipe.get("on_start") if isinstance(recipe.get("on_start"), dict) else {}
+    media = start.get("media") if isinstance(start.get("media"), dict) else {}
+    players = media.get("player_entity_ids") if isinstance(media.get("player_entity_ids"), list) else []
+    return [p for p in players if isinstance(p, str) and p.startswith("media_player.")]
+
+
+def _run_recipe_step(step, stop_players: list[str] | None = None) -> None:
+    if not isinstance(step, dict):
+        return
+    scene_id = step.get("scene_id")
+    if isinstance(scene_id, str) and scene_id.startswith("scene."):
+        try:
+            call_service("scene", "turn_on", {"entity_id": scene_id})
+        except Exception:
+            pass
+    media = step.get("media")
+    if media == "stop":
+        for player in stop_players or []:
+            try:
+                call_service("media_player", "media_stop", {"entity_id": player})
+            except Exception:
+                pass
+        return
+    if isinstance(media, dict):
+        players = media.get("player_entity_ids") if isinstance(media.get("player_entity_ids"), list) else []
+        media_id = str(media.get("media_id") or "")
+        enqueue = "replace"
+        volume = media.get("volume")
+        for player in players:
+            if not isinstance(player, str) or not player.startswith("media_player."):
+                continue
+            try:
+                if isinstance(volume, (int, float)):
+                    call_service("media_player", "volume_set", {"entity_id": player, "volume_level": float(volume)})
+                action = "music_assistant.play_media" if media_id.startswith("library://") else "media_player.play_media"
+                domain, service = action.split(".", 1)
+                data = {
+                    "entity_id": player,
+                    "media_id": media_id,
+                    "media_type": str(media.get("media_type") or "playlist"),
+                    "enqueue": enqueue,
+                }
+                call_service(domain, service, data)
+            except Exception:
+                pass
+
+
+def venue_end_session(payload: dict | None = None, entity_id: str = "", now_ts: float | None = None) -> dict:
+    payload = payload if isinstance(payload, dict) else {}
+    now_ts = time.time() if now_ts is None else now_ts
+    doc = load_venue()
+    snap = doc.get("snapshot")
+    if not isinstance(snap, dict):
+        raise ValueError("not_found")
+    zone = snap.get("zone") if isinstance(snap.get("zone"), dict) else {}
+    # A relay command with an arbitrary booking_id must not be able to end
+    # an idle session (no live booking) — that would stop music and lock
+    # the entry door mid-session of whoever holds the zone. The cloud only
+    # sends this when a booking is actually active/ending.
+    bid = str(payload.get("booking_id") or "")
+    live = None
+    for b in snap.get("bookings") or []:
+        if not isinstance(b, dict):
+            continue
+        if bid and str(b.get("booking_id") or "") != bid:
+            continue
+        if _venue_phase(b, zone, now_ts) in ("active", "ending", "armed", "prep"):
+            live = b
+            break
+    if not live:
+        raise ValueError("not_active")
+    recipe = zone.get("recipe") if isinstance(zone.get("recipe"), dict) else {}
+    _run_recipe_step(recipe.get("on_end"), stop_players=_recipe_media_players(recipe))
+    for eid in _may_lock_entry(zone):
+        try:
+            call_service("lock", "lock", {"entity_id": eid})
+        except Exception:
+            pass
+    runtime = doc.get("runtime") if isinstance(doc.get("runtime"), dict) else {}
+    ended = list(runtime.get("ended") or [])
+    if bid and bid not in ended:
+        ended.append(bid)
+    runtime["ended"] = ended
+    save_venue({"snapshot": snap, "runtime": runtime})
+    return {"ok": True}
+
+
+def venue_pin_unlock(pin: str, now_ts: float | None = None) -> dict:
+    """LAN keypad path: hash compare, then local lock.unlock of *entry* locks only."""
+    now_ts = time.time() if now_ts is None else now_ts
+    if not isinstance(pin, str) or not VENUE_PIN_RE.fullmatch(pin):
+        raise ValueError("invalid_pin")
+    doc = load_venue()
+    snap = doc.get("snapshot")
+    if not isinstance(snap, dict):
+        raise ValueError("not_found")
+    runtime = doc.get("runtime") if isinstance(doc.get("runtime"), dict) else {}
+    locked_until = parse_iso_ts(runtime.get("locked_until"))
+    if locked_until and now_ts < locked_until:
+        raise ValueError("pin_locked")
+    zone = snap.get("zone") if isinstance(snap.get("zone"), dict) else {}
+    policy = zone.get("policy") if isinstance(zone.get("policy"), dict) else {}
+    occ = _read_occupancy(zone)
+    if occ is not None and policy.get("on_zone_exceed") == "deny_entry":
+        cap = int(policy.get("zone_capacity") or 0)
+        if cap and occ > cap:
+            raise ValueError("deny_entry")
+    site_id = str(snap.get("site_id") or "")
+    match = None
+    for b in snap.get("bookings") or []:
+        if not isinstance(b, dict):
+            continue
+        window = b.get("window") if isinstance(b.get("window"), dict) else {}
+        opens = parse_iso_ts(window.get("opens_at"))
+        closes = parse_iso_ts(window.get("closes_at"))
+        if opens is None or closes is None or now_ts < opens or now_ts >= closes:
+            continue
+        expected = str(b.get("pin_hash") or "")
+        got = _venue_hash_pin(pin, site_id, str(b.get("booking_id") or ""))
+        if expected and hmac.compare_digest(got, expected):
+            match = b
+            break
+    if not match:
+        window_start = parse_iso_ts(runtime.get("window_start")) or now_ts
+        in_window = now_ts - window_start < VENUE_PIN_FAIL_WINDOW_S
+        count = (int(runtime.get("fail_count") or 0) + 1) if in_window else 1
+        start = window_start if in_window else now_ts
+        runtime["fail_count"] = count
+        runtime["window_start"] = datetime.fromtimestamp(start, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+        if count >= VENUE_PIN_FAIL_MAX:
+            runtime["locked_until"] = (
+                datetime.fromtimestamp(now_ts + VENUE_PIN_LOCK_S, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+            )
+        save_venue({"snapshot": snap, "runtime": runtime})
+        raise ValueError("pin_mismatch")
+    runtime["fail_count"] = 0
+    runtime["locked_until"] = None
+    first = runtime.get("first_entry_at") if isinstance(runtime.get("first_entry_at"), dict) else {}
+    bid = str(match.get("booking_id") or "")
+    first_entry = not first.get(bid)
+    if first_entry:
+        first[bid] = datetime.fromtimestamp(now_ts, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+        runtime["first_entry_at"] = first
+        recipe = zone.get("recipe") if isinstance(zone.get("recipe"), dict) else {}
+        _run_recipe_step(recipe.get("on_start"))
+    save_venue({"snapshot": snap, "runtime": runtime})
+    unlocked = []
+    for eid in _entry_locks(zone):
+        try:
+            call_service("lock", "unlock", {"entity_id": eid})
+            unlocked.append(eid)
+        except Exception:
+            pass
+    return {"ok": True, "booking_id": bid, "unlocked": unlocked}
+
+
+def _venue_tick(now_ts: float | None = None) -> None:
+    """Background venue scheduler (G1/G2/G3).
+
+    Fires on_start at start time even without a PIN, auto-ends sessions past
+    grace, and warns on party-exceed. All idempotent via runtime flags so a
+    crash/restart never double-fires a recipe.
+    """
+    now_ts = time.time() if now_ts is None else now_ts
+    doc = load_venue()
+    snap = doc.get("snapshot")
+    if not isinstance(snap, dict):
+        return
+    zone = snap.get("zone") if isinstance(snap.get("zone"), dict) else {}
+    policy = zone.get("policy") if isinstance(zone.get("policy"), dict) else {}
+    recipe = zone.get("recipe") if isinstance(zone.get("recipe"), dict) else {}
+    runtime = doc.get("runtime") if isinstance(doc.get("runtime"), dict) else {}
+    started = runtime.get("on_start_fired") if isinstance(runtime.get("on_start_fired"), dict) else {}
+    auto_ended = runtime.get("auto_ended") if isinstance(runtime.get("auto_ended"), dict) else {}
+    party_warned = runtime.get("party_warned_at") if isinstance(runtime.get("party_warned_at"), dict) else {}
+    changed = False
+    for b in snap.get("bookings") or []:
+        if not isinstance(b, dict):
+            continue
+        bid = str(b.get("booking_id") or "")
+        phase = _venue_phase(b, zone, now_ts, first_entry=bool(started.get(bid)))
+        if phase in ("active", "ending") and not started.get(bid):
+            _run_recipe_step(recipe.get("on_start"))
+            started[bid] = datetime.fromtimestamp(now_ts, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+            changed = True
+        if phase == "idle":
+            ends = parse_iso_ts(b.get("ends_at")) or 0
+            grace = float(zone.get("grace_end_min") or 5) * 60
+            if ends and now_ts >= ends + grace and not auto_ended.get(bid):
+                _run_recipe_step(recipe.get("on_end"), stop_players=_recipe_media_players(recipe))
+                for eid in _may_lock_entry(zone):
+                    try:
+                        call_service("lock", "lock", {"entity_id": eid})
+                    except Exception:
+                        pass
+                auto_ended[bid] = datetime.fromtimestamp(now_ts, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+                changed = True
+    # Occupancy party-exceed warn (G3): run on_over_capacity scene once per booking.
+    occ = _read_occupancy(zone)
+    if occ is not None:
+        for b in snap.get("bookings") or []:
+            if not isinstance(b, dict):
+                continue
+            bid = str(b.get("booking_id") or "")
+            phase = _venue_phase(b, zone, now_ts, first_entry=bool(started.get(bid)))
+            if phase not in ("active", "ending", "armed"):
+                continue
+            party = int(b.get("party_size") or 0)
+            if party and occ > party:
+                last = party_warned.get(bid)
+                if not last or now_ts - parse_iso_ts(last) > 60:
+                    _run_recipe_step(recipe.get("on_over_capacity"))
+                    party_warned[bid] = datetime.fromtimestamp(now_ts, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+                    changed = True
+    if changed:
+        runtime["on_start_fired"] = started
+        runtime["auto_ended"] = auto_ended
+        runtime["party_warned_at"] = party_warned
+        save_venue({"snapshot": snap, "runtime": runtime})
+
+
+VENUE_TICK_S = 15.0
+
+
+def venue_loop() -> None:
+    while True:
+        try:
+            _venue_tick()
+        except Exception:
+            pass
+        time.sleep(VENUE_TICK_S)
+
+
 def public_screen(row: dict) -> dict:
     sid = str(row.get("screen_id") or "")
     has = bool(sid) and wallpaper_file(sid).is_file()
@@ -715,7 +1196,7 @@ def _parse_screen_pages(raw) -> list:
             elif span == 2:
                 tile["span"] = 2
             ref = t.get("ref")
-            if kind in ("clock", "weather", "security") and ref:
+            if kind in ("clock", "weather", "security", "session_countdown", "occupancy", "session_now") and ref:
                 raise ValueError("invalid_tile_ref")
             if kind in ("room", "entity", "scene", "floor3d"):
                 if not isinstance(ref, str) or not ref:
@@ -727,6 +1208,27 @@ def _parse_screen_pages(raw) -> list:
                 tile["ref"] = ref
             if kind in ("clock", "weather") and t.get("bold") is True:
                 tile["bold"] = True
+            if kind in ("clock", "weather"):
+                align = t.get("align")
+                if align in ("center", "right"):
+                    tile["align"] = align
+                elif align not in (None, "", "left"):
+                    raise ValueError("invalid_align")
+            if kind == "room" and t.get("lights") is not None:
+                raw_lights = t.get("lights")
+                if not isinstance(raw_lights, list) or len(raw_lights) > 24:
+                    raise ValueError("invalid_tile_lights")
+                ids: list[str] = []
+                seen: set[str] = set()
+                for x in raw_lights:
+                    s = str(x) if x is not None else ""
+                    if not SCREEN_LIGHT_ID_RE.fullmatch(s):
+                        raise ValueError("invalid_tile_lights")
+                    if s in seen:
+                        continue
+                    seen.add(s)
+                    ids.append(s)
+                tile["lights"] = ids
             tiles.append(tile)
         pages.append({"id": pid, "tiles": tiles})
     return pages
@@ -865,8 +1367,6 @@ def panel_snapshot(screen_id: str | None = None) -> dict:
             if not eid:
                 continue
             domain = str(e.get("domain") or eid.split(".", 1)[0])
-            if domain in SCREEN_SECURITY_DOMAINS:
-                continue
             item = {
                 "entity_id": eid,
                 "state": e.get("state"),
@@ -882,11 +1382,48 @@ def panel_snapshot(screen_id: str | None = None) -> dict:
                 item["hvac_modes"] = modes if isinstance(modes, list) else []
                 item["min_temp"] = e.get("min_temp")
                 item["max_temp"] = e.get("max_temp")
+                item["fan_mode"] = e.get("fan_mode")
+                item["fan_modes"] = e.get("fan_modes") if isinstance(e.get("fan_modes"), list) else []
+                item["preset_mode"] = e.get("preset_mode")
+                item["preset_modes"] = e.get("preset_modes") if isinstance(e.get("preset_modes"), list) else []
+                item["swing_mode"] = e.get("swing_mode")
+                item["swing_modes"] = e.get("swing_modes") if isinstance(e.get("swing_modes"), list) else []
+            if domain == "cover":
+                item["current_position"] = e.get("current_position")
+                if e.get("device_class"):
+                    item["device_class"] = e.get("device_class")
             entities_out.append(item)
         states = ha("/states") or []
         if not isinstance(states, list):
             states = []
-        weather = weather_block(states)
+        daily, hourly = weather_forecasts(states)
+        weather = weather_block(states, daily, hourly)
+        seen_ids = {str(x.get("entity_id") or "") for x in entities_out}
+        for st in states:
+            if not isinstance(st, dict):
+                continue
+            eid = str(st.get("entity_id") or "")
+            if not eid or eid in seen_ids:
+                continue
+            domain = eid.split(".", 1)[0]
+            attrs = st.get("attributes") if isinstance(st.get("attributes"), dict) else {}
+            if domain == "binary_sensor":
+                dc = str(attrs.get("device_class") or "")
+                if dc not in HOME_BINARY_SENSOR_DEVICE_CLASSES:
+                    continue
+            elif domain != "camera":
+                continue
+            entities_out.append(
+                {
+                    "entity_id": eid,
+                    "state": st.get("state"),
+                    "name": attrs.get("friendly_name") or eid,
+                    "domain": domain,
+                    "area_id": effective_area_id(entity_regs.get(eid), devices),
+                    "device_class": attrs.get("device_class"),
+                }
+            )
+            seen_ids.add(eid)
     except Exception:
         states = []
         weather = None
@@ -2972,6 +3509,8 @@ def entities() -> list:
             "current_position": attrs.get("current_position"),
             "unit_of_measurement": attrs.get("unit_of_measurement"),
         }
+        if domain == "cover":
+            item["device_class"] = attrs.get("device_class")
         if domain == "media_player":
             state_s = str(e.get("state")) if e.get("state") is not None else None
             item.update(typed_attrs("media_player", state_s, attrs))
@@ -3484,6 +4023,12 @@ def execute_action(
         return put_floor_plan(payload, entity_id)
     if action == "arvio.delete_screen":
         return delete_wall_screen(payload, entity_id)
+    if action == "arvio.put_venue":
+        return put_venue(payload, entity_id)
+    if action == "arvio.delete_venue":
+        return delete_venue(payload, entity_id)
+    if action == "arvio.venue_end_session":
+        return venue_end_session(payload, entity_id)
     if action == "backup.create":
         name = str(payload.get("name") or "") or None
         out = create_full_backup(name)
@@ -3908,6 +4453,9 @@ AGENT_SERVICE_ALLOWLIST = frozenset(
         "arvio.put_screen",
         "arvio.put_floor_plan",
         "arvio.delete_screen",
+        "arvio.put_venue",
+        "arvio.delete_venue",
+        "arvio.venue_end_session",
         "backup.create",
         "agent.update",
     }
@@ -4776,6 +5324,45 @@ def clamp_paging(offset, limit) -> tuple[int, int]:
 
 WEATHER_DAILY_MAX = 7
 WEATHER_HOURLY_MAX = 24
+WEATHER_FORECAST_TTL_S = 60.0
+WEATHER_FORECAST_CACHE = {"at": 0.0, "eid": "", "daily": None, "hourly": None}
+
+
+def weather_forecasts(states: list) -> tuple:
+    """Daily + hourly `weather.get_forecasts`. Cached so the 4s panel poll does not hammer HA."""
+    weather_id = next(
+        (
+            str(st.get("entity_id"))
+            for st in (states or [])
+            if isinstance(st, dict) and str(st.get("entity_id") or "").startswith("weather.")
+        ),
+        None,
+    )
+    if not weather_id:
+        return None, None
+    now = time.time()
+    cache = WEATHER_FORECAST_CACHE
+    if cache["eid"] == weather_id and now - cache["at"] < WEATHER_FORECAST_TTL_S:
+        return cache["daily"], cache["hourly"]
+    daily = hourly = None
+    try:
+        _ctx, daily = ha_call_service_response(
+            "weather",
+            "get_forecasts",
+            {"entity_id": weather_id, "type": "daily"},
+        )
+    except Exception:
+        daily = None
+    try:
+        _ctx, hourly = ha_call_service_response(
+            "weather",
+            "get_forecasts",
+            {"entity_id": weather_id, "type": "hourly"},
+        )
+    except Exception:
+        hourly = None
+    cache.update(at=now, eid=weather_id, daily=daily, hourly=hourly)
+    return daily, hourly
 
 
 def _forecast_rows(forecasts_response, eid: str, limit: int) -> list:
@@ -5277,29 +5864,7 @@ def fetch_hub_model(payload: dict | None = None) -> dict:
         raise RuntimeError("HA registries unavailable")
     raw = snap.raw
     automations = fetch_arvio_automation_configs(states)
-    daily = None
-    hourly = None
-    weather_id = next(
-        (str(st.get("entity_id")) for st in states if isinstance(st, dict) and str(st.get("entity_id") or "").startswith("weather.")),
-        None,
-    )
-    if weather_id:
-        try:
-            _ctx, daily = ha_call_service_response(
-                "weather",
-                "get_forecasts",
-                {"entity_id": weather_id, "type": "daily"},
-            )
-        except Exception:
-            daily = None
-        try:
-            _ctx, hourly = ha_call_service_response(
-                "weather",
-                "get_forecasts",
-                {"entity_id": weather_id, "type": "hourly"},
-            )
-        except Exception:
-            hourly = None
+    daily, hourly = weather_forecasts(states)
     return build_hub_model(
         states,
         raw.get("floors"),
@@ -7271,6 +7836,8 @@ class H(BaseHTTPRequestHandler):
             qs = parse_qs(urlparse(self.path).query)
             sid = (qs.get("screen_id") or [None])[0]
             return self._j(200, panel_snapshot(sid))
+        if path == "/api/venue/wall":
+            return self._j(200, venue_wall())
         if path.startswith("/health"):
             return self._j(
                 200,
@@ -7371,6 +7938,17 @@ class H(BaseHTTPRequestHandler):
                 except ValueError:
                     return self._j(403, {"ok": False, "error": "doorbell_unlock_unavailable"})
                 return self._j(200, {"ok": True, **(out if isinstance(out, dict) else {})})
+
+            if path == "/api/venue/pin":
+                body = self._read_json()
+                pin = str(body.get("pin") or "")
+                try:
+                    out = venue_pin_unlock(pin)
+                except ValueError as e:
+                    code = str(e)
+                    status = 403 if code in ("pin_locked", "deny_entry", "pin_mismatch") else 400
+                    return self._j(status, {"ok": False, "error": code})
+                return self._j(200, out)
 
             if path.startswith("/api/service/"):
                 # /api/service/{domain}/{service}
@@ -7486,6 +8064,7 @@ if __name__ == "__main__":
     threading.Thread(target=push_flush_loop, daemon=True).start()
     threading.Thread(target=heartbeat_loop, daemon=True).start()
     threading.Thread(target=occupancy_tick_loop, daemon=True).start()
+    threading.Thread(target=venue_loop, daemon=True).start()
     print(
         f"arvio-agent :{PORT} mode={mode} hub={hub_id} ha={core_origin() or 'supervisor'} relay={RELAY_URL or 'off'} token={'yes' if TOKEN else 'NO'}",
         flush=True,
