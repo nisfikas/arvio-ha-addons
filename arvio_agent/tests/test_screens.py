@@ -5,6 +5,7 @@ import base64
 import json
 import shutil
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -22,12 +23,16 @@ class ScreenStoreTest(unittest.TestCase):
         agent.DOORBELL_LATCH.clear()
         if agent.SCREENS.exists():
             agent.SCREENS.unlink()
+        if agent.FLOOR_PLANS.exists():
+            agent.FLOOR_PLANS.unlink()
         if agent.WALLPAPERS.exists():
             shutil.rmtree(agent.WALLPAPERS)
 
     def tearDown(self):
         if agent.SCREENS.exists():
             agent.SCREENS.unlink()
+        if agent.FLOOR_PLANS.exists():
+            agent.FLOOR_PLANS.unlink()
         if agent.WALLPAPERS.exists():
             shutil.rmtree(agent.WALLPAPERS)
 
@@ -56,6 +61,40 @@ class ScreenStoreTest(unittest.TestCase):
         self.assertNotIn("pairing_code_hash", listed[0])
         self.assertTrue(agent.SCREENS.exists())
 
+    def test_keeps_clock_and_weather_bold(self):
+        agent.put_wall_screen(
+            self._row(
+                pages=[
+                    {
+                        "id": "pg_aaaaaaaa",
+                        "tiles": [
+                            {"kind": "clock", "bold": True, "size": "l"},
+                            {"kind": "weather", "bold": True},
+                            {"kind": "allOff", "bold": True},
+                        ],
+                    }
+                ]
+            )
+        )
+        tiles = agent.list_wall_screens()["screens"][0]["pages"][0]["tiles"]
+        self.assertTrue(tiles[0]["bold"])
+        self.assertTrue(tiles[1]["bold"])
+        self.assertNotIn("bold", tiles[2])
+
+    def test_keeps_theme(self):
+        agent.put_wall_screen(self._row(theme={"preset": "galini", "mode": "light", "icons": "filled"}))
+        listed = agent.list_wall_screens()["screens"][0]
+        self.assertEqual(listed["theme"], {"preset": "galini", "mode": "light", "icons": "filled"})
+        agent.put_wall_screen(self._row())
+        self.assertEqual(agent.list_wall_screens()["screens"][0]["theme"], listed["theme"])
+        cleared = agent.put_wall_screen(self._row(theme=None))
+        self.assertNotIn("theme", cleared["screen"])
+
+    def test_refuses_unknown_theme(self):
+        with self.assertRaises(ValueError) as cm:
+            agent.put_wall_screen(self._row(theme={"preset": "neon", "mode": "dark", "icons": "line"}))
+        self.assertIn("invalid_theme", str(cm.exception))
+
     def test_wallpaper_file_not_in_json(self):
         b64 = base64.b64encode(JPEG).decode()
         out = agent.put_wall_screen(
@@ -80,6 +119,40 @@ class ScreenStoreTest(unittest.TestCase):
             )
         self.assertIn("tile_security_forbidden", str(cm.exception))
 
+    def test_floor3d_needs_ref(self):
+        with self.assertRaises(ValueError) as cm:
+            agent.put_wall_screen(
+                self._row(pages=[{"id": "pg_aaaaaaaa", "tiles": [{"kind": "floor3d"}]}])
+            )
+        self.assertIn("invalid_tile_ref", str(cm.exception))
+        tiles = agent.put_wall_screen(
+            self._row(
+                pages=[{"id": "pg_aaaaaaaa", "tiles": [{"kind": "floor3d", "ref": "isogeio", "size": "l"}]}]
+            )
+        )["screen"]["pages"][0]["tiles"]
+        self.assertEqual(tiles[0]["kind"], "floor3d")
+        self.assertEqual(tiles[0]["ref"], "isogeio")
+        self.assertEqual(tiles[0]["size"], "l")
+
+    def test_put_floor_plan_and_screen_ingest(self):
+        plan = {
+            "floor_id": "isogeio",
+            "height_cm": 270,
+            "rooms": [
+                {
+                    "area_id": "living",
+                    "poly_cm": [{"x": 0, "y": 0}, {"x": 400, "y": 0}, {"x": 400, "y": 400}, {"x": 0, "y": 400}],
+                }
+            ],
+            "pins": [{"entity_id": "light.sofa", "x_cm": 200, "y_cm": 200, "slot": "ceiling"}],
+        }
+        self.assertTrue(agent.put_floor_plan(plan)["ok"])
+        stored = agent.load_floor_plans()["plans"]["isogeio"]
+        self.assertEqual(stored["pins"][0]["entity_id"], "light.sofa")
+        agent.FLOOR_PLANS.unlink()
+        agent.put_wall_screen(self._row(floor_plans=[plan]))
+        self.assertEqual(agent.load_floor_plans()["plans"]["isogeio"]["rooms"][0]["area_id"], "living")
+
     def test_pair_is_one_shot(self):
         code = "123456"
         digest = agent.hash_screen_pairing(code, "site_1", "scr_aaaaaaaaaaaaaaaa")
@@ -101,9 +174,13 @@ class ScreenStoreTest(unittest.TestCase):
             agent.check_command_safety({"action": "arvio.put_screen"}, via="lan")
         self.assertEqual(cm.exception.code, "lan_forbidden")
         with self.assertRaises(agent.CommandRejected) as cm:
+            agent.check_command_safety({"action": "arvio.put_floor_plan"}, via="lan")
+        self.assertEqual(cm.exception.code, "lan_forbidden")
+        with self.assertRaises(agent.CommandRejected) as cm:
             agent.check_command_safety({"action": "arvio.delete_screen"}, via="lan")
         self.assertEqual(cm.exception.code, "lan_forbidden")
         agent.check_command_safety({"action": "arvio.put_screen"}, via="relay")
+        agent.check_command_safety({"action": "arvio.put_floor_plan"}, via="relay")
 
     def test_execute_put_via_relay(self):
         out = agent.execute_action("arvio.put_screen", "", self._row())
@@ -152,9 +229,25 @@ class ScreenStoreTest(unittest.TestCase):
         self.assertTrue(screens[0]["doorbell"]["ringing"])
         self.assertEqual(screens[0]["doorbell"]["call_entity_id"], "binary_sensor.8b014b9pajf9590_button_pressed")
         agent.note_doorbell_ring("binary_sensor.other_button_pressed", {"state": "on"})
+        screens = [{"doorbell": dict(listed["doorbell"])}]
+        agent.attach_doorbell_live(screens, [])
+        self.assertTrue(screens[0]["doorbell"]["ringing"])
         self.assertNotIn("binary_sensor.other_button_pressed", agent.DOORBELL_LATCH)
         agent.put_wall_screen(self._row(doorbell=None))
         self.assertNotIn("doorbell", agent.list_wall_screens()["screens"][0])
+
+    def test_doorbell_rising_edge_notifies_cloud(self):
+        watched = {"binary_sensor.vto_button_pressed"}
+        with mock.patch.object(agent, "post_doorbell_ring") as post:
+            agent.note_doorbell_ring("binary_sensor.vto_button_pressed", {"state": "on"}, watched)
+            for _ in range(20):
+                if post.called:
+                    break
+                time.sleep(0.01)
+            post.assert_called_once_with("binary_sensor.vto_button_pressed")
+            agent.note_doorbell_ring("binary_sensor.vto_button_pressed", {"state": "on"}, watched)
+            time.sleep(0.05)
+            post.assert_called_once()
 
 
 class ScreenLanHttpTest(unittest.TestCase):
@@ -173,6 +266,8 @@ class ScreenLanHttpTest(unittest.TestCase):
         agent.DOORBELL_LATCH.clear()
         if agent.SCREENS.exists():
             agent.SCREENS.unlink()
+        if agent.FLOOR_PLANS.exists():
+            agent.FLOOR_PLANS.unlink()
         if agent.WALLPAPERS.exists():
             shutil.rmtree(agent.WALLPAPERS)
 
@@ -197,6 +292,14 @@ class ScreenLanHttpTest(unittest.TestCase):
         self.assertNotIn("fonts.gstatic", html)
         self.assertIn("Κωδικός", html)
         self.assertIn("Κάποιος στο κουδούνι", html)
+        self.assertIn("data-hvac", html)
+        self.assertIn("data-temp-step", html)
+        self.assertIn("clima-mode", html)
+        self.assertIn("THEMES", html)
+        self.assertIn("galini", html)
+        self.assertIn("floor3d__svg", html)
+        self.assertNotIn("three.js", html)
+        self.assertNotIn("unpkg.com", html)
 
     def test_api_screens_omits_hash(self):
         digest = agent.hash_screen_pairing("123456", "site_1", "scr_aaaaaaaaaaaaaaaa")
@@ -225,6 +328,33 @@ class ScreenLanHttpTest(unittest.TestCase):
         dumped = json.dumps(body)
         self.assertNotIn("deadbeef", dumped)
         self.assertNotIn(digest, dumped)
+
+    def test_panel_snapshot_includes_climate_fields(self):
+        climate = {
+            "entity_id": "climate.saloni",
+            "state": "heat",
+            "name": "Κλιματιστικό",
+            "domain": "climate",
+            "current_temperature": 24.5,
+            "temperature": 21,
+            "hvac_mode": "heat",
+            "hvac_modes": ["off", "heat", "cool"],
+            "min_temp": 16,
+            "max_temp": 30,
+        }
+        with mock.patch.object(agent, "hub_id", "hub_lan"), mock.patch.object(
+            agent, "entities", return_value=[climate]
+        ), mock.patch.object(
+            agent, "registries_for_commands", return_value={"entity_regs": {}, "devices": {}, "areas": {}}
+        ), mock.patch.object(agent, "ha", return_value=[]):
+            status, raw = self.request("GET", "/api/screens")
+        self.assertEqual(status, 200)
+        body = json.loads(raw.decode())
+        row = body["entities"][0]
+        self.assertEqual(row["entity_id"], "climate.saloni")
+        self.assertEqual(row["current_temperature"], 24.5)
+        self.assertEqual(row["temperature"], 21)
+        self.assertEqual(row["hvac_modes"], ["off", "heat", "cool"])
 
     def test_wallpaper_http(self):
         b64 = base64.b64encode(JPEG).decode()

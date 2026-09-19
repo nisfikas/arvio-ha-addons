@@ -8,6 +8,7 @@ import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 os.environ.setdefault("ARVIO_DATA_DIR", tempfile.mkdtemp(prefix="arvio-agent-test-"))
+os.environ["ARVIO_AGENT_TEST"] = "1"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 

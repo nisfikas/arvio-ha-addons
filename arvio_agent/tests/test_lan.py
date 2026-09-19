@@ -65,7 +65,7 @@ class LanPathTest(unittest.TestCase):
             for action in ("lock.unlock", "lock.lock", "alarm_control_panel.alarm_disarm",
                            "alarm_control_panel.alarm_arm_away", "arvio.batch", "arvio.model",
                            "arvio.upsert_scenario", "arvio.zigbee_permit", "backup.create", "agent.update",
-                           "light.toggle", "arvio.put_screen", "arvio.delete_screen"):
+                           "light.toggle", "arvio.put_screen", "arvio.put_floor_plan", "arvio.delete_screen"):
                 status, body = self.post("/v1/hubs/hub_lan/commands", {"action": action, "entity_id": "lock.a",
                                                                        "payload": {"confirm_dangerous": True}})
                 self.assertEqual(status, 403, action)
@@ -85,9 +85,35 @@ class LanPathTest(unittest.TestCase):
             self.assertEqual(status, 403)
             status, _ = self.post("/v1/hubs/other/commands", {"action": "light.turn_on", "entity_id": "light.a"})
             self.assertEqual(status, 400)
-        self.assertEqual([c[0] for c in calls], ["light.turn_on", "arvio.list_entities", "arvio.pairing_status",
-                                                 "script.turn_on", "climate.set_temperature"])
+            status, body = self.post(
+                "/v1/hubs/hub_lan/commands",
+                {
+                    "action": "climate.set_temperature",
+                    "entity_id": "climate.a",
+                    "payload": {"temperature": 21.5, "confirm_dangerous": True, "hvac_mode": "heat"},
+                },
+            )
+            self.assertEqual(status, 200)
+            status, body = self.post(
+                "/v1/hubs/hub_lan/commands",
+                {"action": "climate.set_hvac_mode", "entity_id": "climate.a", "payload": {"hvac_mode": "cool"}},
+            )
+            self.assertEqual(status, 200)
+        self.assertEqual(
+            [c[0] for c in calls],
+            [
+                "light.turn_on",
+                "arvio.list_entities",
+                "arvio.pairing_status",
+                "script.turn_on",
+                "climate.set_temperature",
+                "climate.set_temperature",
+                "climate.set_hvac_mode",
+            ],
+        )
         self.assertIsNone(calls[0][3])
+        self.assertEqual(calls[-2][2], {"temperature": 21.5, "hvac_mode": "heat"})
+        self.assertEqual(calls[-1][2], {"hvac_mode": "cool"})
 
     def test_api_service_route(self):
         with mock.patch.object(agent, "call_service", return_value={"ok": True, "state": "on"}) as cs:
@@ -135,7 +161,7 @@ class LanPathTest(unittest.TestCase):
         agent.save_hub({"hub_id": "hub_lan", "snapshot_version": 7})
         with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/health", timeout=5) as r:
             body = json.loads(r.read().decode())
-        self.assertEqual(body["agent_version"], "0.1.38")
+        self.assertEqual(body["agent_version"], "0.1.42")
         self.assertIn("ma_available", body)
         self.assertEqual(body["snapshot_version"], 7)
 

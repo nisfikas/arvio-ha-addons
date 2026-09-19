@@ -50,13 +50,25 @@ class SceneParseTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             agent.parse_scene_payload({**base, "entities": {"lock.door": {"state": "on"}}})
         with self.assertRaises(ValueError):
-            agent.parse_scene_payload({"id": "movie", "name": "A", "entities": {"light.a": "on"}})
+            agent.parse_scene_payload({"id": "bad id", "name": "A", "entities": {"light.a": "on"}})
         with self.assertRaises(ValueError):
             agent.parse_scene_payload({**base, "entities": {"light.a": {"state": "on", "brightness": 0}}})
         with self.assertRaises(ValueError):
             agent.parse_scene_payload({**base, "entities": {"light.a": {"state": "on", "rgb_color": [1, 2, 3], "color_temp_kelvin": 3000}}})
         with self.assertRaises(ValueError):
             agent.parse_scene_payload({**base, "entities": {}})
+        sid, name, *_rest, ents = agent.parse_scene_payload(
+            {
+                "id": "1734567890123",
+                "name": "201 auto open",
+                "entities": {
+                    "light.a": {"state": "on", "brightness": 102},
+                    "media_player.tv": {"state": "off", "source": "HDMI"},
+                },
+            }
+        )
+        self.assertEqual((sid, name), ("1734567890123", "201 auto open"))
+        self.assertEqual(ents["media_player.tv"], {"state": "off", "source": "HDMI"})
 
     def test_relay_only(self):
         for a in ("arvio.upsert_scene", "arvio.delete_scene", "arvio.scene_config"):
@@ -122,7 +134,7 @@ class SceneFlowTest(unittest.TestCase):
             if path == "/states/scene.vrady":
                 return {"attributes": {"id": "arvio_vrady"}}
             if path == "/states/scene.hue":
-                return {"attributes": {"id": "hue_movie"}}
+                return {"attributes": {"id": "not a scene"}}
             return None
 
         with mock.patch.object(agent, "ha_or_raise", side_effect=fake_or_raise), \

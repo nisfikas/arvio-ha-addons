@@ -129,11 +129,11 @@ class FakePillow:
 
 class VersionPinTest(unittest.TestCase):
     def test_three_places_agree(self):
-        self.assertEqual(agent.AGENT_VERSION, "0.1.38")
+        self.assertEqual(agent.AGENT_VERSION, "0.1.42")
         cfg = (ROOT / "config.yaml").read_text(encoding="utf-8")
-        self.assertIn('\nversion: "0.1.38"\n', cfg)
+        self.assertIn('\nversion: "0.1.42"\n', cfg)
         docker = (ROOT / "Dockerfile").read_text(encoding="utf-8")
-        self.assertIn('io.hass.version="0.1.38"', docker)
+        self.assertIn('io.hass.version="0.1.42"', docker)
         self.assertIn("COPY panel.html", docker)
         self.assertRegex(docker, r"pillow", "Pillow must be installed for the art resize path")
         self.assertIn("0.1.21", (ROOT / "DOCS.md").read_text(encoding="utf-8"))
@@ -176,7 +176,7 @@ class MediaModelTest(unittest.TestCase):
         self.assertEqual(a["repeat"], "off")
         self.assertEqual(a["supported_features"], MA_SPEAKER_FEATURES)
         self.assertEqual(a["platform"], "music_assistant")  # entity registry `pl`
-        self.assertEqual(a["art_hash"], hashlib.sha1(("spotify://track/abc" + SPEAKER_PICTURE).encode()).hexdigest())
+        self.assertEqual(a["art_hash"], agent.media_art_hash("spotify://track/abc", SPEAKER_PICTURE, "Blue in Green", "Miles Davis"))
         self.assertNotIn("entity_picture", a)  # never the raw (token-bearing) URL
         caps = sp["capabilities"]
         self.assertTrue(caps["search"]); self.assertTrue(caps["browse"]); self.assertTrue(caps["grouping"])
@@ -199,10 +199,12 @@ class MediaModelTest(unittest.TestCase):
         self.assertFalse(agent.media_player_exposed("projector"))
 
     def test_art_hash_changes_with_content_or_picture(self):
-        h1 = agent.media_art_hash("a", "/api/p?token=1&cache=x")
-        self.assertEqual(agent.media_art_hash("a", "/api/p?token=1&cache=x"), h1)
-        self.assertNotEqual(agent.media_art_hash("b", "/api/p?token=1&cache=x"), h1)
-        self.assertNotEqual(agent.media_art_hash("a", "/api/p?token=1&cache=y"), h1)
+        h1 = agent.media_art_hash("a", "/api/p?token=1&cache=x", "Song", "Artist")
+        self.assertEqual(agent.media_art_hash("a", "/api/p?token=1&cache=x", "Song", "Artist"), h1)
+        self.assertNotEqual(agent.media_art_hash("b", "/api/p?token=1&cache=x", "Song", "Artist"), h1)
+        self.assertNotEqual(agent.media_art_hash("a", "/api/p?token=1&cache=y", "Song", "Artist"), h1)
+        self.assertNotEqual(agent.media_art_hash("a", "/api/p?token=1&cache=x", "Other", "Artist"), h1)
+        self.assertNotEqual(agent.media_art_hash("a", "/api/p?token=1&cache=x", "Song", "Other"), h1)
         self.assertIsNone(agent.media_art_hash("a", None))
         self.assertIsNone(agent.media_art_hash("a", ""))
         self.assertEqual(len(h1), 40)
@@ -353,11 +355,16 @@ class MediaArtTest(unittest.TestCase):
             self.assertEqual(again["data_base64"], out["data_base64"])
             self.assertEqual(self.fetches, [SPEAKER_PICTURE])
             self.assertIn(out["art_hash"], agent.MEDIA_ART_CACHE)
-            # a new track → new hash → refetch
+            # a new track id → new hash → refetch
             self.fake.states["media_player.saloni"]["attributes"]["media_content_id"] = "spotify://track/def"
             new = agent.execute_action("arvio.media_art", "", {"entity_id": "media_player.saloni"})
             self.assertNotEqual(new["art_hash"], out["art_hash"])
             self.assertEqual(len(self.fetches), 2)
+            # same picture URL, new title (MA / Cast) → still refetch
+            self.fake.states["media_player.saloni"]["attributes"]["media_title"] = "Remember the Time"
+            titled = agent.execute_action("arvio.media_art", "", {"entity_id": "media_player.saloni"})
+            self.assertNotEqual(titled["art_hash"], new["art_hash"])
+            self.assertEqual(len(self.fetches), 3)
         self.assertEqual(agent.MEDIA_ART_CACHE.capacity, 50)
 
     def test_media_art_without_pillow(self):
@@ -1115,13 +1122,13 @@ class MediaPushTest(unittest.TestCase):
         self.assertEqual(msg["state"], "playing")
         self.assertEqual(msg["attrs"]["media_title"], "So What")
         self.assertEqual(msg["attrs"]["media_position"], 0.0)
-        self.assertEqual(msg["attrs"]["art_hash"], agent.media_art_hash("spotify://track/abc", SPEAKER_PICTURE))
+        self.assertEqual(msg["attrs"]["art_hash"], agent.media_art_hash("spotify://track/abc", SPEAKER_PICTURE, "So What"))
         self.assertEqual(msg["attrs"]["platform"], "music_assistant")
         self.assertNotIn("entity_picture", msg["attrs"])
         # art change alone (same track id, new cache param) is pushed with the new hash
         art = self.playing(43.5, picture=SPEAKER_PICTURE.replace("cache=abc", "cache=zzz"))
         msg = agent.state_event_message({"entity_id": "media_player.saloni", "old_state": old, "new_state": art}, self.regs)
-        self.assertNotEqual(msg["attrs"]["art_hash"], agent.media_art_hash("spotify://track/abc", SPEAKER_PICTURE))
+        self.assertNotEqual(msg["attrs"]["art_hash"], agent.media_art_hash("spotify://track/abc", SPEAKER_PICTURE, "Blue in Green"))
         # no old_state (first event) → pushed
         self.assertIsNotNone(agent.state_event_message({"entity_id": "media_player.saloni", "new_state": new}, self.regs))
         # other domains are unaffected by the position rule
@@ -1238,15 +1245,20 @@ class ScenarioOwnershipTest(unittest.TestCase):
         for p in self.patches:
             p.stop()
 
-    def test_trigger_requires_arvio_id(self):
-        for sid in ("1699999", "", "arvio_", "other_fevgo"):
+    def test_trigger_requires_valid_config_id(self):
+        for sid in ("", "bad/id", "../x"):
             with self.assertRaises(ValueError, msg=sid):
                 agent.trigger_scenario({"id": sid})
             with self.assertRaises(ValueError, msg=sid):
                 agent.trigger_scenario({"id": sid, "entity_id": "automation.other"})
-            with self.assertRaises(ValueError, msg=sid):
-                agent.set_scenario_enabled({"id": sid, "enabled": False}, "automation.other")
+        # unknown slug: valid charset, no matching entity
+        with self.assertRaises(ValueError):
+            agent.trigger_scenario({"id": "other_fevgo"})
         self.assertEqual(self.calls, [])
+        # HA-native id belongs to automation.other
+        out = agent.trigger_scenario({"id": "1699999"})
+        self.assertEqual(self.calls[-1], ("automation", "trigger", {"entity_id": "automation.other"}))
+        self.assertEqual(out["id"], "1699999")
         # resolved by id via /states
         out = agent.trigger_scenario({"id": "arvio_fevgo"})
         self.assertEqual(self.calls[-1], ("automation", "trigger", {"entity_id": "automation.fevgo"}))
@@ -1269,9 +1281,9 @@ class ScenarioOwnershipTest(unittest.TestCase):
         out = agent.set_scenario_enabled({"id": "arvio_fevgo", "enabled": False}, "automation.fevgo")
         self.assertEqual(self.calls[-1], ("automation", "turn_off", {"entity_id": "automation.fevgo"}))
         self.assertIs(out["enabled"], False)
-        # like delete_scenario
+        # delete still refuses a path-like id
         with self.assertRaises(ValueError):
-            agent.delete_scenario({"id": "1699999"})
+            agent.delete_scenario({"id": "bad/id"})
 
 
 if __name__ == "__main__":

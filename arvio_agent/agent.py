@@ -21,7 +21,7 @@ from http.client import HTTPConnection, HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import MappingProxyType
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 # ARVIO_DATA_DIR lets the unit tests (and lab runs outside the add-on) use a
 # scratch directory instead of the Supervisor-mounted /data.
@@ -33,6 +33,7 @@ except OSError:
 STATE = DATA / "hub.json"
 LAB = DATA / "lab_store.json"
 SCREENS = DATA / "screens.json"
+FLOOR_PLANS = DATA / "floor_plans.json"
 WALLPAPERS = DATA / "wallpapers"
 APP = Path("/app")
 
@@ -41,7 +42,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.39"
+AGENT_VERSION = "0.1.42"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -195,10 +196,15 @@ def sha(s: str) -> str:
 
 
 SCREEN_TILE_KINDS = frozenset(
-    {"room", "entity", "scene", "allOff", "security", "clock", "weather"}
+    {"room", "entity", "scene", "allOff", "security", "clock", "weather", "floor3d"}
 )
 SCREEN_SECURITY_DOMAINS = frozenset({"lock", "alarm_control_panel"})
 SCREEN_ORIENTATIONS = frozenset({"landscape", "portrait", "square"})
+SCREEN_THEME_PRESETS = frozenset(
+    {"grafitis", "penteli", "drys", "lino", "beton", "aigaio", "elia", "vasaltis", "galini"}
+)
+SCREEN_THEME_MODES = frozenset({"light", "dark"})
+SCREEN_ICON_STYLES = frozenset({"line", "filled"})
 CAMERA_STREAM_SUFFIXES = ("_main", "_sub", "_high", "_low")
 DOORBELL_CALL_RE = re.compile(r"^binary_sensor\.[a-z0-9_]+$")
 DOORBELL_UNLOCK_RE = re.compile(r"^(lock|switch)\.[a-z0-9_]+$")
@@ -234,6 +240,115 @@ def save_screens(doc: dict) -> None:
     tmp = SCREENS.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     tmp.replace(SCREENS)
+
+
+FLOOR_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,120}$")
+PIN_ENTITY_RE = re.compile(r"^[a-z][a-z0-9_]+\.[A-Za-z0-9_]+$")
+
+
+def load_floor_plans() -> dict:
+    try:
+        raw = json.loads(FLOOR_PLANS.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"plans": {}}
+    plans = raw.get("plans") if isinstance(raw, dict) else None
+    if not isinstance(plans, dict):
+        plans = {}
+    return {"plans": plans}
+
+
+def save_floor_plans(doc: dict) -> None:
+    payload = {"plans": doc.get("plans") if isinstance(doc, dict) else {}}
+    tmp = FLOOR_PLANS.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(FLOOR_PLANS)
+
+
+def _int_cm(v) -> int:
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        raise ValueError("invalid_cm")
+    return int(v)
+
+
+def _parse_poly_cm(raw) -> list:
+    if not isinstance(raw, list) or not (3 <= len(raw) <= 24):
+        raise ValueError("invalid_polygon")
+    pts = []
+    for p in raw:
+        if isinstance(p, dict):
+            x, y = p.get("x"), p.get("y")
+        elif isinstance(p, (list, tuple)) and len(p) == 2:
+            x, y = p[0], p[1]
+        else:
+            raise ValueError("invalid_polygon")
+        pts.append({"x": _int_cm(x), "y": _int_cm(y)})
+    return pts
+
+
+def parse_floor_plan_hub(payload) -> dict:
+    if not isinstance(payload, dict):
+        raise ValueError("invalid_plan")
+    floor_id = str(payload.get("floor_id") or "").strip()
+    if not FLOOR_ID_RE.fullmatch(floor_id):
+        raise ValueError("invalid_floor")
+    rooms_in = payload.get("rooms")
+    pins_in = payload.get("pins")
+    if not isinstance(rooms_in, list) or len(rooms_in) > 40:
+        raise ValueError("invalid_rooms")
+    if not isinstance(pins_in, list) or len(pins_in) > 80:
+        raise ValueError("invalid_pins")
+    rooms = []
+    seen_rooms: set[str] = set()
+    for r in rooms_in:
+        if not isinstance(r, dict):
+            raise ValueError("invalid_room")
+        area_id = str(r.get("area_id") or "")
+        if not FLOOR_ID_RE.fullmatch(area_id) or area_id in seen_rooms:
+            raise ValueError("invalid_room")
+        seen_rooms.add(area_id)
+        room = {"area_id": area_id, "poly_cm": _parse_poly_cm(r.get("poly_cm"))}
+        if r.get("height_cm") not in (None, ""):
+            room["height_cm"] = _int_cm(r.get("height_cm"))
+        rooms.append(room)
+    pins = []
+    seen_pins: set[str] = set()
+    for p in pins_in:
+        if not isinstance(p, dict):
+            raise ValueError("invalid_pin")
+        eid = str(p.get("entity_id") or "")
+        if not PIN_ENTITY_RE.fullmatch(eid) or eid in seen_pins:
+            raise ValueError("invalid_pin")
+        seen_pins.add(eid)
+        pin = {"entity_id": eid, "x_cm": _int_cm(p.get("x_cm")), "y_cm": _int_cm(p.get("y_cm"))}
+        slot = p.get("slot")
+        if slot in ("ceiling", "wall", "floor"):
+            pin["slot"] = slot
+        pins.append(pin)
+    out = {"floor_id": floor_id, "rooms": rooms, "pins": pins}
+    if payload.get("height_cm") not in (None, ""):
+        out["height_cm"] = _int_cm(payload.get("height_cm"))
+    return out
+
+
+def put_floor_plan(payload: dict | None, entity_id: str = "") -> dict:
+    payload = dict(payload) if isinstance(payload, dict) else {}
+    if entity_id and not payload.get("floor_id"):
+        payload["floor_id"] = entity_id
+    parsed = parse_floor_plan_hub(payload)
+    doc = load_floor_plans()
+    doc["plans"][parsed["floor_id"]] = parsed
+    save_floor_plans(doc)
+    return {"ok": True, "floor_id": parsed["floor_id"]}
+
+
+def ingest_floor_plans(raw) -> None:
+    if not isinstance(raw, list):
+        return
+    for row in raw:
+        try:
+            put_floor_plan(row if isinstance(row, dict) else None)
+        except ValueError:
+            continue
 
 
 def doorbell_call_guesses(camera_entity_id: str) -> list[str]:
@@ -274,6 +389,29 @@ def parse_screen_doorbell(raw) -> dict | None:
             raise ValueError("invalid_doorbell_unlock")
         out["unlock_entity_id"] = unlock
     return out
+
+
+def parse_screen_theme(raw) -> dict | None:
+    if raw in (None, "", False):
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("invalid_theme")
+    preset = raw.get("preset")
+    if preset in (None, ""):
+        preset = "grafitis"
+    if preset not in SCREEN_THEME_PRESETS:
+        raise ValueError("invalid_theme")
+    mode = raw.get("mode")
+    if mode in (None, ""):
+        mode = "dark"
+    if mode not in SCREEN_THEME_MODES:
+        raise ValueError("invalid_theme")
+    icons = raw.get("icons")
+    if icons in (None, ""):
+        icons = "line"
+    if icons not in SCREEN_ICON_STYLES:
+        raise ValueError("invalid_theme")
+    return {"preset": preset, "mode": mode, "icons": icons}
 
 
 def doorbell_watched_call_ids() -> set[str]:
@@ -319,13 +457,42 @@ def doorbell_model_call_ids(states=None, entity_regs=None) -> set[str]:
     return ids
 
 
-def note_doorbell_ring(entity_id: str, new_state) -> None:
+def note_doorbell_ring(entity_id: str, new_state, watched: set[str] | None = None) -> None:
     eid = str(entity_id or "")
-    if not eid.startswith("binary_sensor.") or eid not in doorbell_watched_call_ids():
+    if not eid.startswith("binary_sensor."):
+        return
+    ids = watched if watched is not None else doorbell_watched_call_ids()
+    if eid not in ids:
         return
     state = str((new_state or {}).get("state") or "") if isinstance(new_state, dict) else ""
     if state == "on":
+        prev = DOORBELL_LATCH.get(eid, 0)
+        fresh = prev <= time.monotonic()
         DOORBELL_LATCH[eid] = time.monotonic() + DOORBELL_LATCH_S
+        if fresh:
+            threading.Thread(target=post_doorbell_ring, args=(eid,), daemon=True).start()
+
+
+def post_doorbell_ring(call_entity_id: str) -> None:
+    """Tell the cloud so Home PWAs (iPhone/iPad included) get a Web Push."""
+    if os.environ.get("ARVIO_AGENT_TEST") == "1":
+        return
+    st = load_hub()
+    hid = str(st.get("hub_id") or hub_id or "").strip()
+    pk = str(st.get("enroll_public_key") or "").strip()
+    if not hid or not pk or not CLOUD:
+        return
+    try:
+        req = urllib.request.Request(
+            f"{CLOUD}/v1/hubs/{hid}/doorbell-ring",
+            data=json.dumps({"enroll_public_key": pk, "call_entity_id": call_entity_id}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=8) as r:
+            r.read()
+    except Exception:
+        pass
 
 
 def resolve_doorbell_call(cfg: dict, have: set[str]) -> str | None:
@@ -452,6 +619,12 @@ def public_screen(row: dict) -> dict:
         doorbell = None
     if doorbell:
         out["doorbell"] = doorbell
+    try:
+        theme = parse_screen_theme(row.get("theme"))
+    except ValueError:
+        theme = None
+    if theme:
+        out["theme"] = theme
     return out
 
 
@@ -540,7 +713,7 @@ def _parse_screen_pages(raw) -> list:
             ref = t.get("ref")
             if kind in ("clock", "weather", "security") and ref:
                 raise ValueError("invalid_tile_ref")
-            if kind in ("room", "entity", "scene"):
+            if kind in ("room", "entity", "scene", "floor3d"):
                 if not isinstance(ref, str) or not ref:
                     raise ValueError("invalid_tile_ref")
                 tile["ref"] = ref
@@ -598,8 +771,15 @@ def put_wall_screen(payload: dict | None, entity_id: str = "") -> dict:
             row["doorbell"] = parsed
     elif prev.get("doorbell"):
         row["doorbell"] = prev["doorbell"]
+    if "theme" in payload:
+        parsed_theme = parse_screen_theme(payload.get("theme"))
+        if parsed_theme:
+            row["theme"] = parsed_theme
+    elif prev.get("theme"):
+        row["theme"] = prev["theme"]
     doc["screens"][screen_id] = row
     save_screens(doc)
+    ingest_floor_plans(payload.get("floor_plans"))
     return {"ok": True, "screen_id": screen_id, "screen": public_screen(row)}
 
 
@@ -708,6 +888,7 @@ def panel_snapshot(screen_id: str | None = None) -> dict:
         weather = None
     screens = listed.get("screens") or []
     attach_doorbell_live(screens, states)
+    plans = load_floor_plans().get("plans") or {}
     return {
         "ok": True,
         "hub_id": hub_id,
@@ -716,6 +897,7 @@ def panel_snapshot(screen_id: str | None = None) -> dict:
         "areas": areas_out,
         "weather": weather,
         "timezone": HA_INFO.get("time_zone") or "Europe/Athens",
+        "floor_plans": [p for p in plans.values() if isinstance(p, dict)],
     }
 
 
@@ -785,12 +967,27 @@ def ha_or_raise(path: str, method: str = "GET", body: dict | None = None, timeou
 
 
 ARVIO_SCENARIO_PREFIX = "arvio_"
+# Same charset as packages/domain HA_CONFIG_ID_RE — one URL segment for
+# /api/config/{scene|automation}/config/{id} (HA EditIdBasedConfigView).
+HA_CONFIG_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def _is_ha_config_id(sid: str) -> bool:
+    return bool(HA_CONFIG_ID_RE.fullmatch(sid or ""))
 
 
 def _is_arvio_scenario_id(sid: str) -> bool:
     return sid.startswith(ARVIO_SCENARIO_PREFIX) and len(sid) > len(
         ARVIO_SCENARIO_PREFIX
-    )
+    ) and _is_ha_config_id(sid)
+
+
+def _ha_id_config_path(domain: str, sid: str) -> str:
+    if domain not in ("scene", "automation"):
+        raise ValueError("invalid_id")
+    if not _is_ha_config_id(sid):
+        raise ValueError("invalid_id")
+    return f"/config/{domain}/config/{quote(sid, safe='')}"
 
 
 def list_scene_entities() -> list:
@@ -816,7 +1013,7 @@ def list_scene_entities() -> list:
 
 
 def list_scenarios() -> dict:
-    """List Arvio-managed HA automations + scene picker entities."""
+    """List HA automations with a config id (Arvio + native YAML/UI) + scene picker."""
     states = ha("/states")
     if not isinstance(states, list):
         raise RuntimeError(err or "HA states failed")
@@ -829,9 +1026,9 @@ def list_scenarios() -> dict:
             continue
         attrs = e.get("attributes") if isinstance(e.get("attributes"), dict) else {}
         sid = str(attrs.get("id") or "")
-        if not _is_arvio_scenario_id(sid):
+        if not _is_ha_config_id(sid):
             continue
-        cfg = ha(f"/config/automation/config/{sid}", timeout=15)
+        cfg = ha(_ha_id_config_path("automation", sid), timeout=15)
         enabled = str(e.get("state") or "") != "off"
         item = {
             "id": sid,
@@ -1605,17 +1802,16 @@ def light_group(payload: dict | None = None) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Scenes — real HA scenes through the frontend scene-config API
-# (`homeassistant/components/config/scene.py`, EditSceneConfigView →
-# /api/config/scene/config/{id}; its post_write_hook reloads scenes). Same
-# family as /config/automation/config that scenarios use. Per-entity attributes
-# per light/cover `reproduce_state.py`: brightness 0–255, rgb_color,
-# color_temp_kelvin, current_position. The cloud has already converted % → 0–255.
+# Scenes — HA scene-config API (`EditSceneConfigView` → /api/config/scene/config/{id}).
+# Ids are HA yaml/UI config keys (not only arvio_*). Hue/platform scenes 404 here.
+# Extra domains (media_player, climate, …) round-trip opaquely; lock/alarm refused.
 
-SCENE_ID_RE = re.compile(r"^arvio_[a-z0-9_]{1,60}$")
+SCENE_ID_RE = HA_CONFIG_ID_RE
 SCENE_NAME_MAX = 80
-SCENE_MAX_ENTITIES = 48
+SCENE_MAX_ENTITIES = 80
 SCENE_ICON_RE = re.compile(r"^mdi:[a-z0-9-]{1,64}$")
+SCENE_OPAQUE_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
+SCENE_FORBIDDEN_DOMAINS = {"lock", "alarm_control_panel"}
 SCENE_ATTRS = {
     "light": {"state": ("on", "off"), "brightness": (1, 255), "rgb_color": None, "color_temp_kelvin": (1000, 10000)},
     "switch": {"state": ("on", "off")},
@@ -1633,12 +1829,34 @@ def _scene_int(v, lo: int, hi: int, err: str) -> int:
     return n
 
 
+def _scene_opaque_entity(st) -> dict:
+    row = {"state": st} if isinstance(st, str) else st
+    if not isinstance(row, dict):
+        raise ValueError("invalid_state")
+    state = str(row.get("state") or "").strip()
+    if not state or len(state) > 64:
+        raise ValueError("invalid_state")
+    out: dict = {"state": state}
+    for key, val in row.items():
+        if key == "state" or not SCENE_OPAQUE_KEY_RE.fullmatch(str(key)):
+            continue
+        if isinstance(val, str) and len(val) <= 120:
+            out[key] = val
+        elif isinstance(val, bool):
+            out[key] = val
+        elif isinstance(val, (int, float)) and not isinstance(val, bool):
+            out[key] = val
+        elif isinstance(val, list) and len(val) <= 8 and all(isinstance(x, (int, float, str)) for x in val):
+            out[key] = val
+    return out
+
+
 def parse_scene_payload(payload: dict | None) -> tuple[str, str, str | None, str | None, dict]:
-    """Pure: (id, name, area_id, icon, HA `entities` map). Refuses anything outside
-    light/switch/cover and the attribute allowlist — a scene must never carry a lock."""
+    """Pure: (id, name, area_id, icon, HA `entities` map). Lights/switches/covers
+    are validated; other domains pass through; lock/alarm are refused."""
     payload = payload if isinstance(payload, dict) else {}
     sid = str(payload.get("id") or "").strip()
-    if not SCENE_ID_RE.fullmatch(sid):
+    if not _is_ha_config_id(sid):
         raise ValueError("invalid_id")
     name = str(payload.get("name") or "").strip()
     if not name or len(name) > SCENE_NAME_MAX:
@@ -1655,19 +1873,25 @@ def parse_scene_payload(payload: dict | None) -> tuple[str, str, str | None, str
         if not SCENE_ICON_RE.fullmatch(icon):
             raise ValueError("invalid_icon")
     raw = payload.get("entities")
-    if not isinstance(raw, dict) or not raw:
+    extra_in = payload.get("extra_entities") if isinstance(payload.get("extra_entities"), dict) else {}
+    if not isinstance(raw, dict) or (not raw and not extra_in):
         raise ValueError("entities_required")
-    if len(raw) > SCENE_MAX_ENTITIES:
+    merged = dict(raw) if isinstance(raw, dict) else {}
+    merged.update(extra_in)
+    if len(merged) > SCENE_MAX_ENTITIES:
         raise ValueError("too_many_entities")
     entities: dict = {}
-    for eid, st in raw.items():
+    for eid, st in merged.items():
         eid = str(eid)
         if not ENTITY_ID_RE.fullmatch(eid):
             raise ValueError("invalid_entity_id")
         domain = eid.split(".", 1)[0]
+        if domain in SCENE_FORBIDDEN_DOMAINS:
+            raise ValueError("invalid_entity_id")
         spec = SCENE_ATTRS.get(domain)
         if spec is None:
-            raise ValueError("invalid_entity_id")
+            entities[eid] = _scene_opaque_entity(st)
+            continue
         row = {"state": st} if isinstance(st, str) else st
         if not isinstance(row, dict):
             raise ValueError("invalid_state")
@@ -1689,6 +1913,8 @@ def parse_scene_payload(payload: dict | None) -> tuple[str, str, str | None, str
             if "rgb_color" in out and "color_temp_kelvin" in out:
                 raise ValueError("one_colour")
         entities[eid] = out
+    if not entities:
+        raise ValueError("entities_required")
     return sid, name, area_id, icon, entities
 
 
@@ -1713,7 +1939,7 @@ def upsert_scene(payload: dict | None = None) -> dict:
     body: dict = {"id": sid, "name": name, "entities": entities}
     if icon:
         body["icon"] = icon
-    ha_or_raise(f"/config/scene/config/{sid}", "POST", body, timeout=45)
+    ha_or_raise(_ha_id_config_path("scene", sid), "POST", body, timeout=45)
     created = None
     for _ in range(10):
         created = _scene_entity_for_id(sid)
@@ -1743,22 +1969,22 @@ def _scene_id_from(payload: dict | None, entity_id: str = "") -> str:
         st_obj = ha(f"/states/{entity_id}")
         attrs = st_obj.get("attributes") if isinstance(st_obj, dict) and isinstance(st_obj.get("attributes"), dict) else {}
         sid = str(attrs.get("id") or "")
-    if not SCENE_ID_RE.fullmatch(sid):
-        raise ValueError("scene id must start with arvio_")
+    if not _is_ha_config_id(sid):
+        raise ValueError("invalid_id")
     return sid
 
 
 def delete_scene(payload: dict | None = None, entity_id: str = "") -> dict:
     sid = _scene_id_from(payload, entity_id)
-    ha_or_raise(f"/config/scene/config/{sid}", "DELETE", timeout=45)
+    ha_or_raise(_ha_id_config_path("scene", sid), "DELETE", timeout=45)
     schedule_registry_refresh("scene_delete", delay=0.4)
     return {"ok": True, "id": sid, "deleted": True}
 
 
 def scene_config(payload: dict | None = None, entity_id: str = "") -> dict:
-    """Read one Arvio scene back for editing."""
+    """Read one HA scene config back for editing. 404 → scene_not_found (Hue/platform)."""
     sid = _scene_id_from(payload, entity_id)
-    cfg = ha(f"/config/scene/config/{sid}", timeout=15)
+    cfg = ha(_ha_id_config_path("scene", sid), timeout=15)
     if not isinstance(cfg, dict):
         raise RuntimeError("scene_not_found")
     return {"ok": True, "id": sid, "config": cfg, "entity_id": _scene_entity_for_id(sid)}
@@ -1841,19 +2067,19 @@ def upsert_scenario(payload: dict) -> dict:
     if not isinstance(cfg, dict):
         raise ValueError("config required")
     sid = str(cfg.get("id") or "").strip()
-    if not _is_arvio_scenario_id(sid):
-        raise ValueError("scenario id must start with arvio_")
+    if not _is_ha_config_id(sid):
+        raise ValueError("invalid_id")
     body = dict(cfg)
     body["id"] = sid
     if "mode" not in body:
         body["mode"] = "single"
     ha_or_raise(
-        f"/config/automation/config/{sid}",
+        _ha_id_config_path("automation", sid),
         method="POST",
         body=body,
         timeout=45,
     )
-    verify = ha(f"/config/automation/config/{sid}", timeout=15)
+    verify = ha(_ha_id_config_path("automation", sid), timeout=15)
     if not isinstance(verify, dict):
         raise RuntimeError("upsert verify failed")
     return {"ok": True, "id": sid, "config": verify}
@@ -1861,22 +2087,171 @@ def upsert_scenario(payload: dict) -> dict:
 
 def delete_scenario(payload: dict, entity_id: str = "") -> dict:
     sid = str(payload.get("id") or payload.get("scenario_id") or entity_id or "").strip()
-    if not _is_arvio_scenario_id(sid):
-        raise ValueError("scenario id must start with arvio_")
+    if not _is_ha_config_id(sid):
+        raise ValueError("invalid_id")
     ha_or_raise(
-        f"/config/automation/config/{sid}",
+        _ha_id_config_path("automation", sid),
         method="DELETE",
         timeout=45,
     )
     return {"ok": True, "id": sid, "deleted": True}
 
 
+PLACE_PROGRAM_ID_RE = re.compile(r"^pp_[a-f0-9]{16}$")
+PLACE_PROGRAM_SUFFIX_RE = re.compile(r"^arvio_pp_[a-f0-9]{8}_(arr|vac|lev|t_arr|t_vac|t_lev)$")
+
+
+def _place_program_stem(program_id: str) -> str:
+    if not PLACE_PROGRAM_ID_RE.fullmatch(program_id or ""):
+        raise ValueError("invalid_program_id")
+    return f"arvio_pp_{program_id[3:11]}"
+
+
+def _contains_delay(obj) -> bool:
+    if isinstance(obj, dict):
+        if "delay" in obj:
+            return True
+        return any(_contains_delay(v) for v in obj.values())
+    if isinstance(obj, list):
+        return any(_contains_delay(v) for v in obj)
+    return False
+
+
+def _pp_owned(stem: str, sid: str) -> bool:
+    return bool(PLACE_PROGRAM_SUFFIX_RE.fullmatch(sid)) and sid.startswith(stem + "_")
+
+
+def _ha_trigger_action(cfg: dict) -> tuple:
+    trigger = cfg.get("trigger")
+    if trigger is None:
+        trigger = cfg.get("triggers")
+    action = cfg.get("action")
+    if action is None:
+        action = cfg.get("actions")
+    return trigger, action
+
+
+def place_program_apply(payload: dict | None = None) -> dict:
+    payload = payload if isinstance(payload, dict) else {}
+    program_id = str(payload.get("program_id") or "").strip()
+    stem = _place_program_stem(program_id)
+    scenes = payload.get("scenes")
+    automations = payload.get("automations")
+    if not isinstance(scenes, list) or not isinstance(automations, list) or not scenes or not automations:
+        raise ValueError("artifacts_required")
+    area_raw = payload.get("area_id")
+    area_id = None if area_raw in (None, "") else str(area_raw)
+    parsed_scenes = []
+    parsed_autos = []
+    for sc in scenes:
+        if not isinstance(sc, dict):
+            raise ValueError("invalid_scene")
+        sid, name, _area, icon, entities = parse_scene_payload({**sc, "name": str(sc.get("name") or sc.get("id") or "")})
+        if not _pp_owned(stem, sid):
+            raise ValueError("invalid_id")
+        parsed_scenes.append((sid, name, icon, entities))
+    for auto in automations:
+        if not isinstance(auto, dict):
+            raise ValueError("invalid_automation")
+        if _contains_delay(auto):
+            raise ValueError("delay_forbidden")
+        sid = str(auto.get("id") or "").strip()
+        if not _pp_owned(stem, sid):
+            raise ValueError("invalid_id")
+        trigger, action = _ha_trigger_action(auto)
+        if not isinstance(trigger, list) or not trigger or not isinstance(action, list) or not action:
+            raise ValueError("invalid_automation")
+        if sid.endswith(("_t_vac", "_t_lev")):
+            first = trigger[0] if isinstance(trigger[0], dict) else {}
+            if "for" not in first:
+                raise ValueError("for_required")
+        parsed_autos.append((sid, auto))
+    written_scenes = []
+    written_autos = []
+    for sid, name, icon, entities in parsed_scenes:
+        body = {"id": sid, "name": name, "entities": entities}
+        if icon:
+            body["icon"] = icon
+        ha_or_raise(_ha_id_config_path("scene", sid), "POST", body, timeout=45)
+        written_scenes.append(sid)
+        created = None
+        for _ in range(10):
+            created = _scene_entity_for_id(sid)
+            if created:
+                break
+            time.sleep(0.2)
+        if created and area_id:
+            try:
+                ha_ws_command("config/entity_registry/update", extra={"entity_id": created, "area_id": area_id})
+            except Exception:
+                pass
+    for sid, auto in parsed_autos:
+        body = dict(auto)
+        body["id"] = sid
+        ha_or_raise(_ha_id_config_path("automation", sid), "POST", body, timeout=45)
+        written_autos.append(sid)
+    schedule_registry_refresh("place_program_apply", delay=0.4)
+    return {"ok": True, "program_id": program_id, "scenes": written_scenes, "automations": written_autos}
+
+
+def place_program_remove(payload: dict | None = None) -> dict:
+    payload = payload if isinstance(payload, dict) else {}
+    program_id = str(payload.get("program_id") or "").strip()
+    stem = _place_program_stem(program_id)
+    scene_ids = payload.get("scene_ids") if isinstance(payload.get("scene_ids"), list) else []
+    auto_ids = payload.get("automation_ids") if isinstance(payload.get("automation_ids"), list) else []
+    ids = [str(x) for x in [*scene_ids, *auto_ids] if str(x)]
+    if not ids:
+        ids = [f"{stem}_{s}" for s in ("arr", "vac", "lev", "t_arr", "t_vac", "t_lev")]
+    deleted = []
+    for sid in ids:
+        if not _pp_owned(stem, sid):
+            raise ValueError("invalid_id")
+        domain = "automation" if "_t_" in sid else "scene"
+        try:
+            ha_or_raise(_ha_id_config_path(domain, sid), "DELETE", timeout=45)
+            deleted.append(sid)
+        except Exception:
+            pass
+    schedule_registry_refresh("place_program_remove", delay=0.4)
+    return {"ok": True, "program_id": program_id, "deleted": deleted}
+
+
+def place_program_check(payload: dict | None = None) -> dict:
+    payload = payload if isinstance(payload, dict) else {}
+    program_id = str(payload.get("program_id") or "").strip()
+    stem = _place_program_stem(program_id)
+    scene_ids = [str(x) for x in (payload.get("scene_ids") or []) if str(x)]
+    auto_ids = [str(x) for x in (payload.get("automation_ids") or []) if str(x)]
+    scenes = []
+    automations = []
+    missing = []
+    for sid in scene_ids:
+        if not _pp_owned(stem, sid):
+            raise ValueError("invalid_id")
+        cfg = ha(_ha_id_config_path("scene", sid), timeout=15)
+        if not isinstance(cfg, dict):
+            missing.append(sid)
+            continue
+        scenes.append({"id": sid, "entities": cfg.get("entities") or {}})
+    for sid in auto_ids:
+        if not _pp_owned(stem, sid):
+            raise ValueError("invalid_id")
+        cfg = ha(_ha_id_config_path("automation", sid), timeout=15)
+        if not isinstance(cfg, dict):
+            missing.append(sid)
+            continue
+        trigger, action = _ha_trigger_action(cfg)
+        automations.append({"id": sid, "mode": cfg.get("mode"), "trigger": trigger, "action": action})
+    return {"ok": True, "program_id": program_id, "scenes": scenes, "automations": automations, "missing": missing}
+
+
 def _resolve_automation_entity(sid: str, entity_id: str = "") -> str:
-    """Scenario id → automation entity_id. Only `arvio_*` ids (like delete_scenario); an explicit
-    automation entity_id is verified via /states (`attributes.id == sid`) so a caller cannot
-    trigger / toggle a foreign automation by naming it."""
-    if not _is_arvio_scenario_id(sid):
-        raise ValueError("scenario id must start with arvio_")
+    """Scenario id → automation entity_id. Config id must be a HA yaml/UI id;
+    an explicit automation entity_id is verified via /states (`attributes.id == sid`)
+    so a caller cannot trigger / toggle a foreign automation by naming it."""
+    if not _is_ha_config_id(sid):
+        raise ValueError("invalid_id")
     eid = str(entity_id or "").strip()
     if eid.startswith("automation."):
         st_obj = ha(f"/states/{eid}")
@@ -2892,6 +3267,12 @@ def execute_action(
         return upsert_scenario(payload)
     if action == "arvio.delete_scenario":
         return delete_scenario(payload, entity_id)
+    if action == "arvio.place_program_apply":
+        return place_program_apply(payload)
+    if action == "arvio.place_program_remove":
+        return place_program_remove(payload)
+    if action == "arvio.place_program_check":
+        return place_program_check(payload)
     if action == "arvio.set_scenario_enabled":
         return set_scenario_enabled(payload, entity_id)
     if action == "arvio.trigger_scenario":
@@ -2920,6 +3301,8 @@ def execute_action(
         return list_wall_screens()
     if action == "arvio.put_screen":
         return put_wall_screen(payload, entity_id)
+    if action == "arvio.put_floor_plan":
+        return put_floor_plan(payload, entity_id)
     if action == "arvio.delete_screen":
         return delete_wall_screen(payload, entity_id)
     if action == "backup.create":
@@ -3334,10 +3717,14 @@ AGENT_SERVICE_ALLOWLIST = frozenset(
         "arvio.scene_config",
         "arvio.upsert_scenario",
         "arvio.delete_scenario",
+        "arvio.place_program_apply",
+        "arvio.place_program_remove",
+        "arvio.place_program_check",
         "arvio.set_scenario_enabled",
         "arvio.trigger_scenario",
         "arvio.list_screens",
         "arvio.put_screen",
+        "arvio.put_floor_plan",
         "arvio.delete_screen",
         "backup.create",
         "agent.update",
@@ -3836,11 +4223,23 @@ def media_player_exposed(device_class) -> bool:
     return device_class in (None, "") or str(device_class) in HOME_MEDIA_DEVICE_CLASSES
 
 
-def media_art_hash(media_content_id, entity_picture) -> str | None:
-    """sha1(media_content_id + entity_picture); None without a picture. The app refetches art on change."""
+def media_art_hash(media_content_id, entity_picture, media_title=None, media_artist=None) -> str | None:
+    """sha1 of id + picture + title + artist. None without a picture.
+
+    HA's entity_picture URL often keeps the same path when the track changes (Music Assistant
+    proxy, Cast). Title/artist in the hash forces a refetch so Home does not keep the last cover.
+    """
     if not entity_picture:
         return None
-    return hashlib.sha1((str(media_content_id or "") + str(entity_picture)).encode("utf-8")).hexdigest()
+    blob = "\0".join(
+        [
+            str(media_content_id or ""),
+            str(entity_picture),
+            str(media_title or ""),
+            str(media_artist or ""),
+        ]
+    )
+    return hashlib.sha1(blob.encode("utf-8")).hexdigest()
 
 
 # HA light ColorMode (developers.home-assistant.io/docs/core/entity/light): every mode except
@@ -3975,7 +4374,7 @@ def typed_attrs(
     elif domain == "scene":
         # Scene entities list their members in the `entity_id` attribute (best-effort).
         out["scene_entity_ids"] = _str_list(attrs.get("entity_id"))
-        # Config id — `arvio_*` means Arvio made it and may edit / delete it.
+        # Config id — HA yaml/UI `attributes.id`; Partner edits via scene-config API.
         out["scene_id"] = str(attrs["id"]) if attrs.get("id") not in (None, "") else None
     elif domain == "script":
         out["labels"] = list(labels or [])
@@ -4012,7 +4411,12 @@ def typed_attrs(
         out["repeat"] = str(repeat) if repeat else None
         out["supported_features"] = _int_or_none(attrs.get("supported_features"))
         out["platform"] = str(platform) if platform else None
-        out["art_hash"] = media_art_hash(attrs.get("media_content_id"), attrs.get("entity_picture"))
+        out["art_hash"] = media_art_hash(
+            attrs.get("media_content_id"),
+            attrs.get("entity_picture"),
+            attrs.get("media_title"),
+            attrs.get("media_artist"),
+        )
     elif domain == "camera":
         # Never emit entity_picture — HA puts an access token in the query string.
         out["platform"] = str(platform) if platform else None
@@ -4510,7 +4914,7 @@ def fetch_arvio_automation_configs(states: list) -> dict:
         sid = str(attrs.get("id") or "")
         if not _is_arvio_scenario_id(sid):
             continue
-        cfg = ha(f"/config/automation/config/{sid}", timeout=15)
+        cfg = ha(_ha_id_config_path("automation", sid), timeout=15)
         out[sid] = cfg if isinstance(cfg, dict) else {}
     return out
 
@@ -4851,7 +5255,9 @@ def media_art(payload: dict, entity_id: str = "") -> dict:
         raise RuntimeError(err or "state read failed")
     attrs = st_obj.get("attributes") if isinstance(st_obj.get("attributes"), dict) else {}
     picture = attrs.get("entity_picture")
-    art_hash = media_art_hash(attrs.get("media_content_id"), picture)
+    art_hash = media_art_hash(
+        attrs.get("media_content_id"), picture, attrs.get("media_title"), attrs.get("media_artist")
+    )
     out = {"ok": True, "entity_id": eid, "art_hash": art_hash, "mime": None, "data_base64": None, "reason": None}
     if not art_hash:
         out["reason"] = "no_picture"
@@ -5828,20 +6234,21 @@ def handle_ha_event(event: dict) -> None:
         data = event.get("data") if isinstance(event.get("data"), dict) else {}
         eid = str(data.get("entity_id") or "")
         new_state = data.get("new_state")
+        regs = registry_snapshot()
+        watched = doorbell_watched_call_ids()
+        if regs["loaded_at"]:
+            watched = doorbell_model_call_ids(entity_regs=regs["entity_regs"])
         if isinstance(new_state, dict):
-            note_doorbell_ring(eid, new_state)
+            note_doorbell_ring(eid, new_state, watched)
         if eid.split(".", 1)[0] not in HOME_ENTITY_DOMAINS:
             return
         if isinstance(new_state, dict):
             note_state_change(eid, new_state)  # commands waiting on this entity
-        regs = registry_snapshot()
         if not regs["loaded_at"]:
             # No registry yet → we cannot tell exposed from hidden; refresh_registry_cache
             # pushes {type:"model"} once loaded so clients refetch instead.
             return
-        msg = state_event_message(
-            data, regs, doorbell_model_call_ids(entity_regs=regs["entity_regs"])
-        )
+        msg = state_event_message(data, regs, watched)
         if msg is not None:
             PUSH.offer(msg["entity_id"], msg)
     elif etype in REGISTRY_EVENT_TYPES:
