@@ -114,6 +114,44 @@ class PlaceProgramTest(unittest.TestCase):
                     "scene_ids": ["arvio_old_201"],
                 })
 
+    def test_apply_accepts_simulate_suffixes(self):
+        sim = {
+            "program_id": "pp_aabbccddeeff0011",
+            "scenes": [
+                {"id": f"{STEM}_arr", "name": f"{STEM}_arr", "entities": {"light.a201": {"state": "on"}}},
+                {"id": f"{STEM}_sim0", "name": f"{STEM}_sim0", "entities": {"light.a201": {"state": "on"}}},
+            ],
+            "automations": [
+                {
+                    "id": f"{STEM}_t_arr",
+                    "mode": "queued",
+                    "trigger": [{"platform": "state", "entity_id": "binary_sensor.d201", "to": "on"}],
+                    "action": [{"action": "scene.turn_on", "target": {"entity_id": f"scene.{STEM}_arr"}}],
+                },
+                {
+                    "id": f"{STEM}_t_sim0",
+                    "mode": "queued",
+                    "trigger": [{"platform": "sun", "event": "sunset", "offset": "00:20:00"}],
+                    "condition": [{"condition": "state", "entity_id": "binary_sensor.p201", "state": "off"}],
+                    "action": [{"action": "scene.turn_on", "target": {"entity_id": f"scene.{STEM}_sim0"}}],
+                },
+            ],
+        }
+        calls = []
+
+        def fake_or_raise(path, method="GET", body=None, timeout=30):
+            calls.append(path)
+            return {}
+
+        with mock.patch.object(agent, "ha_or_raise", side_effect=fake_or_raise), \
+             mock.patch.object(agent, "ha", return_value=[]), \
+             mock.patch.object(agent, "schedule_registry_refresh"), \
+             mock.patch.object(agent.time, "sleep"):
+            out = agent.place_program_apply(sim)
+        self.assertTrue(out["ok"])
+        self.assertIn(f"/config/scene/config/{STEM}_sim0", calls)
+        self.assertIn(f"/config/automation/config/{STEM}_t_sim0", calls)
+
     def test_check_returns_entities_and_missing(self):
         def fake_ha(path, method="GET", body=None, timeout=10):
             if path.endswith(f"{STEM}_arr"):

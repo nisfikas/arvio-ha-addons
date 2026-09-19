@@ -42,7 +42,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.42"
+AGENT_VERSION = "0.1.43"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -2098,7 +2098,7 @@ def delete_scenario(payload: dict, entity_id: str = "") -> dict:
 
 
 PLACE_PROGRAM_ID_RE = re.compile(r"^pp_[a-f0-9]{16}$")
-PLACE_PROGRAM_SUFFIX_RE = re.compile(r"^arvio_pp_[a-f0-9]{8}_(arr|vac|lev|t_arr|t_vac|t_lev)$")
+PLACE_PROGRAM_SUFFIX_RE = re.compile(r"^arvio_pp_[a-f0-9]{8}_(arr|vac|lev|t_arr|t_vac|t_lev|sim[012]|t_sim[012])$")
 
 
 def _place_program_stem(program_id: str) -> str:
@@ -2202,7 +2202,7 @@ def place_program_remove(payload: dict | None = None) -> dict:
     auto_ids = payload.get("automation_ids") if isinstance(payload.get("automation_ids"), list) else []
     ids = [str(x) for x in [*scene_ids, *auto_ids] if str(x)]
     if not ids:
-        ids = [f"{stem}_{s}" for s in ("arr", "vac", "lev", "t_arr", "t_vac", "t_lev")]
+        ids = [f"{stem}_{s}" for s in ("arr", "vac", "lev", "t_arr", "t_vac", "t_lev", "sim0", "sim1", "sim2", "t_sim0", "t_sim1", "t_sim2")]
     deleted = []
     for sid in ids:
         if not _pp_owned(stem, sid):
