@@ -1536,8 +1536,13 @@
         return false;
       }
       function shutdownFace(ref) {
-        const m = String(ref || "").match(/^script\.(\d+)_scene_shutdown$/);
-        return m ? m[1] : String(ref || "");
+        const s = String(ref || "");
+        let m = s.match(/^script\.(\d+)_scene_shutdown$/);
+        if (m) return m[1];
+        m = s.match(/^scenario:arvio_sd_(\d+)/);
+        if (m) return m[1];
+        m = s.match(/(\d+)/);
+        return m ? m[1] : s.replace(/^scenario:/, "");
       }
       function shutdownMode(t) {
         const script = byId(t.ref);
@@ -2029,7 +2034,11 @@
             cmd("arvio.trigger_scenario", "", { scenario_id: t.ref.slice("scenario:".length) });
           }
         } else if (t.kind === "shutdown" && t.ref) {
-          cmd("script.turn_on", t.ref);
+          if (t.ref.startsWith("scenario:")) {
+            cmd("arvio.trigger_scenario", "", { scenario_id: t.ref.slice("scenario:".length) });
+          } else {
+            cmd("script.turn_on", t.ref);
+          }
         }
       }
 

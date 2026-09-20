@@ -48,7 +48,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.48"
+AGENT_VERSION = "0.1.49"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -220,6 +220,7 @@ SCREEN_TILE_KINDS = frozenset(
 SCREEN_SECURITY_DOMAINS = frozenset({"lock", "alarm_control_panel"})
 SCREEN_LIGHT_ID_RE = re.compile(r"^light\.[A-Za-z0-9_]+$")
 SHUTDOWN_SCRIPT_RE = re.compile(r"^script\.\d+_scene_shutdown$")
+SHUTDOWN_SCENARIO_RE = re.compile(r"^scenario:[A-Za-z0-9_\-.]+$")
 SCREEN_ORIENTATIONS = frozenset({"landscape", "portrait", "square"})
 SCREEN_THEME_PRESETS = frozenset(
     {"grafitis", "penteli", "drys", "lino", "beton", "aigaio", "elia", "vasaltis", "galini"}
@@ -1205,7 +1206,8 @@ def _parse_screen_pages(raw) -> list:
                     raise ValueError("invalid_tile_ref")
                 tile["ref"] = ref
             if kind == "shutdown":
-                if not SHUTDOWN_SCRIPT_RE.fullmatch(str(ref)):
+                rid = str(ref)
+                if not (SHUTDOWN_SCRIPT_RE.fullmatch(rid) or SHUTDOWN_SCENARIO_RE.fullmatch(rid)):
                     raise ValueError("invalid_tile_ref")
                 watch = t.get("watch")
                 if watch not in (None, ""):
@@ -4257,6 +4259,8 @@ HOME_SENSOR_DEVICE_CLASSES = ("temperature", "humidity")
 HOME_MEDIA_DEVICE_CLASSES = ("speaker", "tv", "receiver")
 HOME_BINARY_SENSOR_DEVICE_CLASSES = ("door", "window", "opening", "garage_door")
 # §14.2: scripts reach the Home app by entity_id prefix only (no label lookup).
+# Shutdown scripts also reach Partner so wall tiles can be picked; Home still
+# ignores them (selectors keep script.arvio_* only).
 HOME_SCRIPT_PREFIX = "script.arvio_"
 
 MODEL_LIMIT_DEFAULT = 300
@@ -5234,7 +5238,11 @@ def entity_model_from_state(
     if domain == "media_player" and not media_player_exposed(device_class):
         return None
     labels = [str(x) for x in (reg.get("labels") or [])]
-    if domain == "script" and not eid.startswith(HOME_SCRIPT_PREFIX):
+    if (
+        domain == "script"
+        and not eid.startswith(HOME_SCRIPT_PREFIX)
+        and not SHUTDOWN_SCRIPT_RE.fullmatch(eid)
+    ):
         return None
     state = state_obj.get("state")
     state = str(state) if state is not None else None

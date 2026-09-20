@@ -66,6 +66,7 @@ class ModelBuilderTest(unittest.TestCase):
         self.assertNotIn("switch.config_thing", e)  # entity_category config
         self.assertNotIn("sensor.diag_thing", e)  # entity_category diagnostic
         self.assertIn("script.arvio_kalinyxta", e)  # prefix script.arvio_ (§14.2)
+        self.assertIn("script.201_scene_shutdown", e)  # Partner shutdown tiles
         self.assertNotIn("script.other", e)  # label "arvio" alone is not enough
         self.assertNotIn("light.hidden_one", e)  # list_for_display hb (hidden)
         self.assertIn("binary_sensor.porta", e)  # door

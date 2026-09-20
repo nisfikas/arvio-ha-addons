@@ -43,6 +43,7 @@ ENTITY_REGISTRY_DISPLAY = {
         {"ei": "script.arvio_kalinyxta", "pl": "script", "lb": ["arvio"]},
         # label "arvio" but no `script.arvio_` prefix → not exposed (§14.2)
         {"ei": "script.other", "pl": "script", "lb": ["arvio"]},
+        {"ei": "script.201_scene_shutdown", "pl": "script"},
         {"ei": "cover.ypno", "pl": "zha", "ai": "ypno"},
         {"ei": "binary_sensor.porta", "pl": "zha", "ai": "saloni"},
         {"ei": "binary_sensor.kinisi", "pl": "zha", "ai": "saloni"},
@@ -110,6 +111,7 @@ STATES = [
     st("sensor.diag_thing", "12", friendly_name="Diag", device_class="temperature"),
     st("script.arvio_kalinyxta", "off", friendly_name="Καληνύχτα"),
     st("script.other", "off", friendly_name="Other"),
+    st("script.201_scene_shutdown", "off", friendly_name="201 Shutdown"),
     st("cover.ypno", "open", friendly_name="Ρολό", current_position=60),
     st("binary_sensor.porta", "on", friendly_name="Πόρτα", device_class="door"),
     st("binary_sensor.kinisi", "off", friendly_name="Κίνηση", device_class="motion"),

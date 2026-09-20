@@ -219,7 +219,12 @@ class ScreenStoreTest(unittest.TestCase):
                                 "kind": "shutdown",
                                 "ref": "script.201_scene_shutdown",
                                 "watch": "light.201_genikos_201_137",
-                            }
+                            },
+                            {
+                                "kind": "shutdown",
+                                "ref": "scenario:arvio_sd_201",
+                                "watch": "light.201_genikos_201_137",
+                            },
                         ],
                     }
                 ]
@@ -228,6 +233,7 @@ class ScreenStoreTest(unittest.TestCase):
         self.assertEqual(tiles[0]["kind"], "shutdown")
         self.assertEqual(tiles[0]["ref"], "script.201_scene_shutdown")
         self.assertEqual(tiles[0]["watch"], "light.201_genikos_201_137")
+        self.assertEqual(tiles[1]["ref"], "scenario:arvio_sd_201")
         with self.assertRaises(ValueError) as cm:
             agent.put_wall_screen(
                 self._row(pages=[{"id": "pg_aaaaaaaa", "tiles": [{"kind": "shutdown", "ref": "script.arvio_home"}]}])
@@ -665,6 +671,8 @@ class ScreenLanHttpTest(unittest.TestCase):
         self.assertIn('t.kind === "shutdown"', html)
         self.assertIn("data-shut", html)
         self.assertIn("script.turn_on", html)
+        self.assertIn("arvio.trigger_scenario", html)
+        self.assertIn("scenario:arvio_sd_", html)
 
     def test_wallpaper_http(self):
         b64 = base64.b64encode(JPEG).decode()
