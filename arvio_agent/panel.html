@@ -124,6 +124,21 @@
         gap: 6px;
         justify-content: stretch;
       }
+      .tile--shutdown {
+        justify-content: center;
+        align-items: center;
+        text-align: center;
+      }
+      .tile--shutdown .face {
+        font-size: clamp(2.6rem, 16vmin, 4.2rem);
+        font-weight: 600;
+        letter-spacing: -0.04em;
+        line-height: 1;
+      }
+      .tile--shutdown .tile-ico { color: currentColor; opacity: 0.85; }
+      html .tile--shutdown[data-shut="idle"] { background: #121212; color: #f2f2f2; }
+      html .tile--shutdown[data-shut="lit"] { background: #9a7428; color: #f7f1e4; }
+      html .tile--shutdown[data-shut="run"] { background: #8a2a28; color: #f7eceb; }
       .floor3d__svg {
         width: 100%;
         height: 100%;
@@ -1520,6 +1535,17 @@
         if (t.kind === "security") return securityAlert();
         return false;
       }
+      function shutdownFace(ref) {
+        const m = String(ref || "").match(/^script\.(\d+)_scene_shutdown$/);
+        return m ? m[1] : String(ref || "");
+      }
+      function shutdownMode(t) {
+        const script = byId(t.ref);
+        if (script && script.state === "on") return "run";
+        const light = t.watch ? byId(t.watch) : null;
+        if (light && light.state === "on") return "lit";
+        return "idle";
+      }
       function timerRec() {
         try {
           return JSON.parse(localStorage.getItem(TIMER_KEY) || "null");
@@ -2002,6 +2028,8 @@
           else if (t.ref.startsWith("scenario:")) {
             cmd("arvio.trigger_scenario", "", { scenario_id: t.ref.slice("scenario:".length) });
           }
+        } else if (t.kind === "shutdown" && t.ref) {
+          cmd("script.turn_on", t.ref);
         }
       }
 
@@ -2065,6 +2093,9 @@
         if (t.kind === "scene") {
           const e = byId(t.ref);
           return tileGlyph("scene") + '<span class="kicker">Σκηνή</span><span class="name">' + esc(e ? e.name : t.ref) + "</span>";
+        }
+        if (t.kind === "shutdown") {
+          return tileGlyph("power") + '<span class="face">' + esc(shutdownFace(t.ref)) + "</span>";
         }
         if (t.kind === "allOff") {
           return tileGlyph("power") + '<span class="kicker"></span><span class="name">Σβήσε όλα</span>';
@@ -2211,6 +2242,7 @@
             b.className = "tile tile--" + t.kind + (size !== "s" ? " wide" : "") + (tileOn(t) ? " on" : "") + (t.bold ? " bold" : "");
             b.dataset.size = size;
             if (t.align === "center" || t.align === "right") b.dataset.align = t.align;
+            if (t.kind === "shutdown") b.dataset.shut = shutdownMode(t);
             if (t.kind === "entity") {
               const ent = byId(t.ref);
               if (ent && ent.domain === "cover") {

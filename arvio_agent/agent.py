@@ -48,7 +48,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.47"
+AGENT_VERSION = "0.1.48"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -206,6 +206,7 @@ SCREEN_TILE_KINDS = frozenset(
         "room",
         "entity",
         "scene",
+        "shutdown",
         "allOff",
         "security",
         "clock",
@@ -218,6 +219,7 @@ SCREEN_TILE_KINDS = frozenset(
 )
 SCREEN_SECURITY_DOMAINS = frozenset({"lock", "alarm_control_panel"})
 SCREEN_LIGHT_ID_RE = re.compile(r"^light\.[A-Za-z0-9_]+$")
+SHUTDOWN_SCRIPT_RE = re.compile(r"^script\.\d+_scene_shutdown$")
 SCREEN_ORIENTATIONS = frozenset({"landscape", "portrait", "square"})
 SCREEN_THEME_PRESETS = frozenset(
     {"grafitis", "penteli", "drys", "lino", "beton", "aigaio", "elia", "vasaltis", "galini"}
@@ -1198,10 +1200,18 @@ def _parse_screen_pages(raw) -> list:
             ref = t.get("ref")
             if kind in ("clock", "weather", "security", "session_countdown", "occupancy", "session_now") and ref:
                 raise ValueError("invalid_tile_ref")
-            if kind in ("room", "entity", "scene", "floor3d"):
+            if kind in ("room", "entity", "scene", "floor3d", "shutdown"):
                 if not isinstance(ref, str) or not ref:
                     raise ValueError("invalid_tile_ref")
                 tile["ref"] = ref
+            if kind == "shutdown":
+                if not SHUTDOWN_SCRIPT_RE.fullmatch(str(ref)):
+                    raise ValueError("invalid_tile_ref")
+                watch = t.get("watch")
+                if watch not in (None, ""):
+                    if not isinstance(watch, str) or not SCREEN_LIGHT_ID_RE.fullmatch(watch):
+                        raise ValueError("invalid_tile_watch")
+                    tile["watch"] = watch
             if kind == "entity" and isinstance(ref, str) and ref.split(".", 1)[0] in SCREEN_SECURITY_DOMAINS:
                 raise ValueError("tile_security_forbidden")
             if kind == "allOff" and isinstance(ref, str) and ref:
@@ -4496,7 +4506,8 @@ TARGET_ACTIONS = frozenset(
 # The unauthenticated LAN path (:8099, no auth) executes ONLY these; everything else in
 # AGENT_SERVICE_ALLOWLIST (security actions, arvio.* writes, arvio.model, arvio.batch,
 # backup.*, agent.*, any `target`) answers 403 `lan_forbidden`. `script.turn_on` is
-# further limited to `script.arvio_*` (LAN_SCRIPT_PREFIX).
+# further limited to `script.arvio_*` (LAN_SCRIPT_PREFIX) or shutdown scripts listed
+# on a saved wall screen.
 LAN_ALLOWED_ACTIONS = frozenset(
     {
         "light.turn_on",
@@ -4529,6 +4540,39 @@ LAN_ALLOWED_ACTIONS = frozenset(
     | MUSIC_ASSISTANT_ACTIONS
 )
 LAN_SCRIPT_PREFIX = "script.arvio_"
+
+
+def lan_shutdown_scripts() -> set[str]:
+    allowed: set[str] = set()
+    screens = load_screens().get("screens") or {}
+    if not isinstance(screens, dict):
+        return allowed
+    for row in screens.values():
+        if not isinstance(row, dict):
+            continue
+        pages = row.get("pages") or []
+        if not isinstance(pages, list):
+            continue
+        for page in pages:
+            if not isinstance(page, dict):
+                continue
+            tiles = page.get("tiles") or []
+            if not isinstance(tiles, list):
+                continue
+            for t in tiles:
+                if not isinstance(t, dict) or t.get("kind") != "shutdown":
+                    continue
+                ref = t.get("ref")
+                if isinstance(ref, str) and SHUTDOWN_SCRIPT_RE.fullmatch(ref):
+                    allowed.add(ref)
+    return allowed
+
+
+def lan_script_allowed(entity_id: str) -> bool:
+    eid = str(entity_id or "")
+    if eid.startswith(LAN_SCRIPT_PREFIX):
+        return True
+    return eid in lan_shutdown_scripts()
 
 HA_FLOORS_MIN_VERSION = (2024, 4)
 HA_KELVIN_MIN_VERSION = (2022, 12)
@@ -5574,8 +5618,8 @@ def check_command_safety(cmd: dict, via: str = "relay", now: float | None = None
         # Explicit allowlist (not a denylist): anything not listed is forbidden locally.
         if action not in LAN_ALLOWED_ACTIONS:
             raise CommandRejected("lan_forbidden", f"{action} not available on the LAN path")
-        if action == "script.turn_on" and not str(cmd.get("entity_id") or "").startswith(LAN_SCRIPT_PREFIX):
-            raise CommandRejected("lan_forbidden", f"only {LAN_SCRIPT_PREFIX}* scripts on the LAN path")
+        if action == "script.turn_on" and not lan_script_allowed(str(cmd.get("entity_id") or "")):
+            raise CommandRejected("lan_forbidden", f"only {LAN_SCRIPT_PREFIX}* or screen shutdown scripts on the LAN path")
         if isinstance(target, dict):
             raise CommandRejected("lan_forbidden", "target not available on the LAN path")
     status = str(cmd.get("status") or "")

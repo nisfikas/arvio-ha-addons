@@ -208,6 +208,60 @@ class ScreenStoreTest(unittest.TestCase):
         self.assertEqual(tiles[0]["ref"], "isogeio")
         self.assertEqual(tiles[0]["size"], "l")
 
+    def test_put_keeps_shutdown_tile_and_watch(self):
+        tiles = agent.put_wall_screen(
+            self._row(
+                pages=[
+                    {
+                        "id": "pg_aaaaaaaa",
+                        "tiles": [
+                            {
+                                "kind": "shutdown",
+                                "ref": "script.201_scene_shutdown",
+                                "watch": "light.201_genikos_201_137",
+                            }
+                        ],
+                    }
+                ]
+            )
+        )["screen"]["pages"][0]["tiles"]
+        self.assertEqual(tiles[0]["kind"], "shutdown")
+        self.assertEqual(tiles[0]["ref"], "script.201_scene_shutdown")
+        self.assertEqual(tiles[0]["watch"], "light.201_genikos_201_137")
+        with self.assertRaises(ValueError) as cm:
+            agent.put_wall_screen(
+                self._row(pages=[{"id": "pg_aaaaaaaa", "tiles": [{"kind": "shutdown", "ref": "script.arvio_home"}]}])
+            )
+        self.assertIn("invalid_tile_ref", str(cm.exception))
+        with self.assertRaises(ValueError) as cm:
+            agent.put_wall_screen(
+                self._row(
+                    pages=[
+                        {
+                            "id": "pg_aaaaaaaa",
+                            "tiles": [
+                                {
+                                    "kind": "shutdown",
+                                    "ref": "script.201_scene_shutdown",
+                                    "watch": "switch.x",
+                                }
+                            ],
+                        }
+                    ]
+                )
+            )
+        self.assertIn("invalid_tile_watch", str(cm.exception))
+        agent.check_command_safety(
+            {"action": "script.turn_on", "entity_id": "script.201_scene_shutdown"},
+            via="lan",
+        )
+        with self.assertRaises(agent.CommandRejected) as cm:
+            agent.check_command_safety(
+                {"action": "script.turn_on", "entity_id": "script.999_scene_shutdown"},
+                via="lan",
+            )
+        self.assertEqual(cm.exception.code, "lan_forbidden")
+
     def test_put_floor_plan_and_screen_ingest(self):
         plan = {
             "floor_id": "isogeio",
@@ -604,6 +658,13 @@ class ScreenLanHttpTest(unittest.TestCase):
         self.assertIn("function goHome()", html)
         self.assertIn("function armHomeIdle()", html)
         self.assertIn('document.addEventListener("pointerdown"', html)
+
+    def test_panel_shutdown_tiles_run_listed_scripts(self):
+        html = (ROOT / "panel.html").read_text(encoding="utf-8")
+        self.assertIn("function shutdownMode(t)", html)
+        self.assertIn('t.kind === "shutdown"', html)
+        self.assertIn("data-shut", html)
+        self.assertIn("script.turn_on", html)
 
     def test_wallpaper_http(self):
         b64 = base64.b64encode(JPEG).decode()

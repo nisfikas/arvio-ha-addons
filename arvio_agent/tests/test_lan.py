@@ -162,7 +162,7 @@ class LanPathTest(unittest.TestCase):
         agent.save_hub({"hub_id": "hub_lan", "snapshot_version": 7})
         with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/health", timeout=5) as r:
             body = json.loads(r.read().decode())
-        self.assertEqual(body["agent_version"], "0.1.47")
+        self.assertEqual(body["agent_version"], "0.1.48")
         self.assertIn("ma_available", body)
         self.assertEqual(body["snapshot_version"], 7)
 
@@ -191,6 +191,59 @@ class LanPathTest(unittest.TestCase):
         html = raw.decode()
         self.assertIn(">405421<", html)
         self.assertNotIn("presence_code", html)
+
+    def test_lan_allows_shutdown_script_listed_on_a_screen(self):
+        if agent.SCREENS.exists():
+            agent.SCREENS.unlink()
+        try:
+            agent.put_wall_screen(
+                {
+                    "screen_id": "scr_aaaaaaaaaaaaaaaa",
+                    "site_id": "site_1",
+                    "hub_id": "hub_1",
+                    "name": "Shutdown",
+                    "hardware": "nspanel_pro",
+                    "orientation": "square",
+                    "pages": [
+                        {
+                            "id": "pg_aaaaaaaa",
+                            "tiles": [
+                                {
+                                    "kind": "shutdown",
+                                    "ref": "script.201_scene_shutdown",
+                                    "watch": "light.201_genikos_201_137",
+                                }
+                            ],
+                        }
+                    ],
+                    "pairing_code_hash": "deadbeef",
+                    "pairing_expires_at": "2099-01-01T00:00:00.000Z",
+                }
+            )
+            with mock.patch.object(agent, "hub_id", "hub_lan"), mock.patch.object(
+                agent,
+                "execute_action",
+                return_value={
+                    "ok": True,
+                    "entity_id": "script.201_scene_shutdown",
+                    "affected_entity_ids": ["script.201_scene_shutdown"],
+                },
+            ):
+                status, body = self.post(
+                    "/v1/hubs/hub_lan/commands",
+                    {"action": "script.turn_on", "entity_id": "script.201_scene_shutdown"},
+                )
+                self.assertEqual(status, 200)
+                self.assertTrue(body["ok"])
+                status, body = self.post(
+                    "/v1/hubs/hub_lan/commands",
+                    {"action": "script.turn_on", "entity_id": "script.other"},
+                )
+                self.assertEqual(status, 403)
+                self.assertIn("lan_forbidden", body["error"])
+        finally:
+            if agent.SCREENS.exists():
+                agent.SCREENS.unlink()
 
 
 if __name__ == "__main__":
