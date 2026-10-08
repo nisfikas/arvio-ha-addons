@@ -42,14 +42,16 @@ OCCUPANCY_STATE = DATA / "occupancy_state.json"
 GEOFENCE_FILE = DATA / "geofence.json"
 VENUE = DATA / "venue.json"
 WALLPAPERS = DATA / "wallpapers"
-APP = Path("/app")
+# The folder this agent.py runs from: /app on HAOS and in the image, /data/agent-app after a
+# standalone OTA (launcher.py). The pages are served from next to the code.
+APP = Path(__file__).resolve().parent
 
 CLOUD = "https://cloud.arvio.systems"
 SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.50"
+AGENT_VERSION = "0.1.51"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -3328,6 +3330,101 @@ def write_updater_request(slug: str, target: str, channel: str) -> None:
         raise RuntimeError(f"cannot write update request: {e}") from e
 
 
+# --- Standalone OTA (HA Container / NAS) -------------------------------------
+# No Supervisor there to update the add-on: the agent fetches the published add-on itself,
+# checks it is the version asked for, stages it in /data and restarts into it via launcher.py.
+ADDON_TARBALL = "https://codeload.github.com/nisfikas/arvio-ha-addons/tar.gz/refs/heads/main"
+ADDON_PREFIX = "arvio-ha-addons-main/arvio_agent/"
+STANDALONE_LIVE = DATA / "agent-app"
+STANDALONE_PREV = DATA / "agent-app.prev"
+STANDALONE_NEW = DATA / "agent-app.new"
+STANDALONE_TRIAL = DATA / "agent-app.trial"
+LAUNCHER_RESTART = 75
+ADDON_MAX_BYTES = 20_000_000
+
+
+def version_tuple(v: str) -> tuple[int, ...]:
+    try:
+        return tuple(int(x) for x in str(v).strip().split("."))
+    except ValueError:
+        return ()
+
+
+def parse_config_version(text: str) -> str:
+    m = re.search(r'^version:\s*["\']?(\d+\.\d+\.\d+)["\']?\s*$', text or "", re.M)
+    return m.group(1) if m else ""
+
+
+def extract_agent_files(blob: bytes, prefix: str = ADDON_PREFIX) -> dict[str, bytes]:
+    """Regular files under the agent folder of the add-on tarball; no tests, no links, no `..`."""
+    import tarfile
+
+    out: dict[str, bytes] = {}
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
+        for m in tar.getmembers():
+            if not m.isfile() or not m.name.startswith(prefix):
+                continue
+            rel = m.name[len(prefix):]
+            parts = rel.split("/")
+            if not rel or ".." in parts or rel.startswith("/") or parts[0] in ("tests", "__pycache__"):
+                continue
+            f = tar.extractfile(m)
+            if f is not None:
+                out[rel] = f.read()
+    for need in ("agent.py", "occupancy.py", "config.yaml"):
+        if need not in out:
+            raise ValueError(f"published add-on has no {need}")
+    return out
+
+
+def stage_standalone(files: dict[str, bytes], version: str) -> None:
+    """Write the new code next to the live one, compile it, then swap; the old one is kept."""
+    import py_compile
+    import shutil
+
+    shutil.rmtree(STANDALONE_NEW, ignore_errors=True)
+    for rel, data in files.items():
+        dest = STANDALONE_NEW / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+    for py in ("agent.py", "occupancy.py"):
+        py_compile.compile(str(STANDALONE_NEW / py), doraise=True)
+    shutil.rmtree(STANDALONE_PREV, ignore_errors=True)
+    if STANDALONE_LIVE.is_dir():
+        STANDALONE_LIVE.rename(STANDALONE_PREV)
+    STANDALONE_NEW.rename(STANDALONE_LIVE)
+    STANDALONE_TRIAL.write_text(version, encoding="utf-8")
+
+
+def standalone_update(target: str) -> dict:
+    if os.environ.get("ARVIO_LAUNCHER") != "1":
+        raise RuntimeError("this image has no launcher.py: rebuild the arvio-agent container once by hand")
+    with urllib.request.urlopen(ADDON_TARBALL, timeout=60) as r:
+        blob = r.read(ADDON_MAX_BYTES + 1)
+    if len(blob) > ADDON_MAX_BYTES:
+        raise ValueError("published add-on too large")
+    files = extract_agent_files(blob)
+    published = parse_config_version(files["config.yaml"].decode("utf-8", "replace"))
+    if not published:
+        raise ValueError("published add-on has no version")
+    if target and published != target:
+        raise ValueError(f"published version is {published}, not {target}")
+    if version_tuple(published) <= version_tuple(AGENT_VERSION):
+        return {"ok": True, "method": "standalone", "agent_version": AGENT_VERSION, "note": "already up to date"}
+    stage_standalone(files, published)
+    # Answer the command first, then let the launcher start the new code.
+    threading.Timer(2.0, lambda: os._exit(LAUNCHER_RESTART)).start()
+    return {"ok": True, "method": "standalone_restart", "agent_version": AGENT_VERSION, "staged_version": published}
+
+
+def standalone_trial_ok() -> None:
+    """A staged version that has run for 90 s is kept; the launcher stops watching it."""
+    if not STANDALONE_TRIAL.exists() or APP != STANDALONE_LIVE.resolve():
+        return
+    time.sleep(90)
+    STANDALONE_TRIAL.unlink(missing_ok=True)
+
+
 def apply_agent_update(payload: dict) -> dict:
     """
     Remote Agent OTA (ARV-060).
@@ -3346,6 +3443,9 @@ def apply_agent_update(payload: dict) -> dict:
     if channel:
         st["update_channel"] = channel
     save_hub(st)
+
+    if not uses_supervisor():
+        return standalone_update(target)
 
     info = addon_self_info()
     slug = str(info.get("slug") or "local_arvio_agent")
@@ -8294,6 +8394,7 @@ if __name__ == "__main__":
     threading.Thread(target=heartbeat_loop, daemon=True).start()
     threading.Thread(target=occupancy_tick_loop, daemon=True).start()
     threading.Thread(target=venue_loop, daemon=True).start()
+    threading.Thread(target=standalone_trial_ok, daemon=True).start()
     print(
         f"arvio-agent :{PORT} mode={mode} hub={hub_id} ha={core_origin() or 'supervisor'} relay={RELAY_URL or 'off'} token={'yes' if TOKEN else 'NO'}",
         flush=True,

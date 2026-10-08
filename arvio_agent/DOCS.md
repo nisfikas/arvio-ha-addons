@@ -225,14 +225,16 @@ HA WS `media_player/browse_media` (τεκμηριωμένο, στο **query chan
 2. Στο Mac, από το repo:
 
 ```bash
-docker build -f addons/arvio_agent/Dockerfile.standalone -t arvio-agent:0.1.50 addons/arvio_agent
+docker build -f addons/arvio_agent/Dockerfile.standalone -t arvio-agent:0.1.51 addons/arvio_agent
 ```
 
 3. Στο NAS, νέο stack / compose από `addons/arvio_agent/compose.nas.example.yml`. Βάλε το token και το `ARVIO_HA_URL` (π.χ. `http://192.168.68.77:8123` ή `http://homeassistant:8123` αν είναι στο ίδιο δίκτυο). **Serial** μοναδικό: `nas-home-1` (όχι `rpi-lab-1`).
 4. Αν το HA τρέχει `network_mode: host`, βάλε host και στο agent και `ARVIO_HA_URL=http://127.0.0.1:8123`.
 5. Άνοιξε `http://<NAS>:8099` · enroll στο cloud · το σπίτι φαίνεται δεύτερο hub στο Console / Partner / Home.
 
-Δουλεύει: φώτα, κλίμα, ρολά, HACS συσκευές που είναι entities, remote HA από Console, κάμερες μέσω Core API. Δεν δουλεύει: add-on OTA, Supervisor backups, ενημερώσεις HAOS — το Core στο NAS ενημερώνεται όπως πριν (image pull).
+Δουλεύει: φώτα, κλίμα, ρολά, HACS συσκευές που είναι entities, remote HA από Console, κάμερες μέσω Core API. Δεν δουλεύει: Supervisor backups, ενημερώσεις HAOS — το Core στο NAS ενημερώνεται όπως πριν (image pull).
+
+**OTA από 0.1.51:** το image ξεκινά από το `launcher.py`. Console → Target Agent (ή η μαζική ενημέρωση) → ο agent κατεβάζει το δημοσιευμένο add-on από το `arvio-ha-addons`, ελέγχει ότι είναι η έκδοση που ζητήθηκε, το κάνει compile, το βάζει στο `/data/agent-app` (κρατά το προηγούμενο στο `agent-app.prev`) και ξεκινά με αυτό. Αν η νέα έκδοση πέσει μέσα στα πρώτα 2′, ο launcher γυρίζει στην προηγούμενη. Backup Supervisor δεν υπάρχει: στο Console χρειάζεται «Και χωρίς πρόσφατο backup». Ένα image πριν το 0.1.51 δεν έχει launcher — εκείνο ξαναχτίζεται μία φορά με το χέρι. Αλλαγή στο Dockerfile (νέα πακέτα pip) θέλει πάντα rebuild.
 
 ## 8. Agent 0.1.50 — Πάνελ τοίχου: μυστικό ανά οθόνη, πόρτα μόνο μετά από κουδούνι
 

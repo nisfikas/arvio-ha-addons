@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.51
+
+- OTA και στο Home Assistant Container (NAS): ο agent κατεβάζει μόνος του τη δημοσιευμένη έκδοση, την ελέγχει και ξεκινά με αυτήν μέσω του νέου `launcher.py`· αν δεν σηκωθεί σε 2′, γυρίζει στην προηγούμενη. Το image του NAS ξαναχτίζεται **μία** τελευταία φορά με το χέρι.
+
 ## 0.1.50
 
 - Παρουσία από το κινητό (geofence): νέες εντολές `arvio.presence_report` και `arvio.home_location`, μόνο μέσω relay. Κάθε πρόσωπο που την ανάβει στο Arvio Home γίνεται `device_tracker.arvio_<member_id>` (σπίτι / έξω) και μπαίνει στο `binary_sensor.arvio_home_occupied`· επανέρχεται μετά από restart του Home Assistant.
