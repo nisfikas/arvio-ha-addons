@@ -39,6 +39,7 @@ SCREENS = DATA / "screens.json"
 FLOOR_PLANS = DATA / "floor_plans.json"
 OCCUPANCY_PROFILE = DATA / "occupancy_profile.json"
 OCCUPANCY_STATE = DATA / "occupancy_state.json"
+GEOFENCE_FILE = DATA / "geofence.json"
 VENUE = DATA / "venue.json"
 WALLPAPERS = DATA / "wallpapers"
 APP = Path("/app")
@@ -48,7 +49,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.49"
+AGENT_VERSION = "0.1.50"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -231,13 +232,46 @@ CAMERA_STREAM_SUFFIXES = ("_main", "_sub", "_high", "_low")
 DOORBELL_CALL_RE = re.compile(r"^binary_sensor\.[a-z0-9_]+$")
 DOORBELL_UNLOCK_RE = re.compile(r"^(lock|switch)\.[a-z0-9_]+$")
 DOORBELL_LATCH_S = 45.0
+# call sensor → monotonic deadline (ring + 45 s). Written where the agent sees the ring
+# (note_doorbell_ring); the panel's ringing flag and the door-unlock window both read it.
 DOORBELL_LATCH: dict[str, float] = {}
+SCREEN_SECRET_HEADER = "X-Arvio-Screen-Secret"
+PAIR_FAIL_MAX = 10
+PAIR_LOCK_S = 15 * 60
+# ponytail: one hub-wide counter (the LAN is one network): 10 wrong codes in 15 min lock
+# pairing for everyone for 15 min. In memory, so an add-on restart clears it; per-client
+# buckets only if a venue ever needs them.
+PAIR_FAILS: list[float] = []
+PAIR_LOCKED_UNTIL = 0.0
+# One read-modify-write of screens.json at a time: pairing, panel reads (last_seen_at) and
+# relay pushes, so a poll can never save over a freshly issued secret hash.
+SCREENS_LOCK = threading.Lock()
+
+
+class ScreenDenied(ValueError):
+    """403 on /api/screens*; the message is the stable error code the panel reads."""
 
 
 def hash_screen_pairing(code: str, site_id: str, screen_id: str) -> str:
     return hashlib.sha256(
         f"arvio.screen.pair|{site_id}|{screen_id}|{code}".encode("utf-8")
     ).hexdigest()
+
+
+def hash_screen_secret(secret: str) -> str:
+    return hashlib.sha256(str(secret or "").encode("utf-8")).hexdigest()
+
+
+def check_screen_secret(row: dict, secret: str | None, *, door: bool = False) -> None:
+    """A row with a secret hash needs the matching secret. A row without one was paired
+    before 0.1.50: it still reads, but never the door or the camera (door=True)."""
+    stored = str(row.get("screen_secret_hash") or "")
+    if not stored:
+        if door:
+            raise ScreenDenied("repair_required")
+        return
+    if not hmac.compare_digest(hash_screen_secret(secret or ""), stored):
+        raise ScreenDenied("bad_screen_secret")
 
 
 def load_screens() -> dict:
@@ -592,20 +626,38 @@ def doorbell_row(screen_id: str) -> tuple[dict | None, dict | None]:
     return row, cfg
 
 
-def doorbell_jpeg(screen_id: str, width: int = 720) -> tuple[bytes, str]:
-    _, cfg = doorbell_row(screen_id)
+def doorbell_rang_recently(cfg: dict) -> bool:
+    """Server-side ring window: one of this screen's call sensors went on < 45 s ago."""
+    ids = set(doorbell_call_guesses(str(cfg.get("camera_entity_id") or "")))
+    if cfg.get("call_entity_id"):
+        ids.add(str(cfg["call_entity_id"]))
+    now = time.monotonic()
+    return any(DOORBELL_LATCH.get(eid, 0) > now for eid in ids)
+
+
+def doorbell_jpeg(screen_id: str, width: int = 720, secret: str | None = None) -> tuple[bytes, str]:
+    row, cfg = doorbell_row(screen_id)
+    if not row:
+        raise ValueError("not_found")
+    check_screen_secret(row, secret, door=True)
     if not cfg:
         raise ValueError("not_found")
     raw, mime = fetch_camera_proxy(cfg["camera_entity_id"], clamp_camera_width(width))
     return raw, mime or "image/jpeg"
 
 
-def doorbell_unlock(screen_id: str) -> dict:
-    """Configured lock/switch only — not a general LAN lock.unlock."""
-    _, cfg = doorbell_row(screen_id)
+def doorbell_unlock(screen_id: str, secret: str | None = None) -> dict:
+    """Configured lock/switch only — not a general LAN lock.unlock — for a paired screen
+    whose doorbell rang in the last 45 s."""
+    row, cfg = doorbell_row(screen_id)
+    if not row:
+        raise ValueError("doorbell_unlock_unavailable")
+    check_screen_secret(row, secret, door=True)
     unlock = (cfg or {}).get("unlock_entity_id") if cfg else None
     if not isinstance(unlock, str) or not unlock:
         raise ValueError("doorbell_unlock_unavailable")
+    if not doorbell_rang_recently(cfg):
+        raise ScreenDenied("no_recent_ring")
     domain = unlock.split(".", 1)[0]
     if domain == "lock":
         return call_service("lock", "unlock", {"entity_id": unlock})
@@ -1095,6 +1147,8 @@ def public_screen(row: dict) -> dict:
         "last_seen_at": row.get("last_seen_at"),
         "updated_at": row.get("updated_at"),
         "has_wallpaper": has,
+        # Partner asked for a new code: the panel shows the code field again (re-pairing).
+        "pairing_pending": pairing_open(row),
     }
     if has:
         try:
@@ -1247,6 +1301,11 @@ def _parse_screen_pages(raw) -> list:
 
 
 def put_wall_screen(payload: dict | None, entity_id: str = "") -> dict:
+    with SCREENS_LOCK:
+        return _put_wall_screen(payload, entity_id)
+
+
+def _put_wall_screen(payload: dict | None, entity_id: str = "") -> dict:
     payload = payload if isinstance(payload, dict) else {}
     screen_id = str(payload.get("screen_id") or entity_id or "").strip()
     if not screen_id or len(screen_id) > 40:
@@ -1263,6 +1322,12 @@ def put_wall_screen(payload: dict | None, entity_id: str = "") -> dict:
     pages = _parse_screen_pages(payload.get("pages"))
     doc = load_screens()
     prev = doc["screens"].get(screen_id) if isinstance(doc["screens"].get(screen_id), dict) else {}
+    pairing_hash = str(payload.get("pairing_code_hash") or prev.get("pairing_code_hash") or "")
+    used_at = payload.get("pairing_used_at") if "pairing_used_at" in payload else prev.get("pairing_used_at")
+    if not used_at and pairing_hash == prev.get("pairing_code_hash"):
+        # The cloud never learns the hub consumed a code, so every layout push resends
+        # pairing_used_at=null: the same hash stays used; only a new code re-arms pairing.
+        used_at = prev.get("pairing_used_at")
     row = {
         "screen_id": screen_id,
         "site_id": str(payload.get("site_id") or prev.get("site_id") or ""),
@@ -1272,12 +1337,15 @@ def put_wall_screen(payload: dict | None, entity_id: str = "") -> dict:
         "orientation": orientation,
         "pages": pages,
         "rights": "member",
-        "pairing_code_hash": str(payload.get("pairing_code_hash") or prev.get("pairing_code_hash") or ""),
+        "pairing_code_hash": pairing_hash,
         "pairing_expires_at": payload.get("pairing_expires_at") or prev.get("pairing_expires_at"),
-        "pairing_used_at": payload.get("pairing_used_at") if "pairing_used_at" in payload else prev.get("pairing_used_at"),
+        "pairing_used_at": used_at,
         "last_seen_at": prev.get("last_seen_at"),
         "updated_at": str(payload.get("updated_at") or now_iso()),
     }
+    if prev.get("screen_secret_hash"):
+        # Hub-only (pair_wall_screen): the cloud never sends or sees it.
+        row["screen_secret_hash"] = prev["screen_secret_hash"]
     if "wallpaper_scrim" in prev:
         row["wallpaper_scrim"] = prev.get("wallpaper_scrim")
     if "wallpaper_asset" in prev:
@@ -1306,9 +1374,10 @@ def delete_wall_screen(payload: dict | None, entity_id: str = "") -> dict:
     screen_id = str(payload.get("screen_id") or entity_id or "").strip()
     if not screen_id:
         raise ValueError("invalid_screen")
-    doc = load_screens()
-    doc["screens"].pop(screen_id, None)
-    save_screens(doc)
+    with SCREENS_LOCK:
+        doc = load_screens()
+        doc["screens"].pop(screen_id, None)
+        save_screens(doc)
     try:
         wallpaper_file(screen_id).unlink()
     except FileNotFoundError:
@@ -1322,44 +1391,57 @@ def list_wall_screens() -> dict:
     return {"ok": True, "screens": screens}
 
 
+def pairing_open(row: dict) -> bool:
+    if row.get("pairing_used_at") or not row.get("pairing_code_hash"):
+        return False
+    exp = parse_iso_ts(row.get("pairing_expires_at"))
+    return exp is None or time.time() <= exp
+
+
 def pair_wall_screen(code: str) -> dict:
-    code = str(code or "").strip()
-    if not re.fullmatch(r"\d{6}", code):
-        raise ValueError("invalid_code")
-    doc = load_screens()
-    now = time.time()
-    for row in doc["screens"].values():
+    """One-shot code → per-screen secret. The plain secret leaves the hub once, here;
+    screens.json keeps only its SHA-256. Re-pairing rotates it."""
+    global PAIR_LOCKED_UNTIL
+    with SCREENS_LOCK:
+        now_m = time.monotonic()
+        if now_m < PAIR_LOCKED_UNTIL:
+            raise ValueError("pairing_locked")
+        code = str(code or "").strip()
+        if not re.fullmatch(r"\d{6}", code):
+            raise ValueError("invalid_code")
+        doc = load_screens()
+        for row in doc["screens"].values():
+            if not isinstance(row, dict) or not pairing_open(row):
+                continue
+            site_id = str(row.get("site_id") or "")
+            screen_id = str(row.get("screen_id") or "")
+            if hmac.compare_digest(hash_screen_pairing(code, site_id, screen_id), str(row["pairing_code_hash"])):
+                secret = secrets.token_urlsafe(32)
+                row["screen_secret_hash"] = hash_screen_secret(secret)
+                row["pairing_used_at"] = now_iso()
+                row["last_seen_at"] = now_iso()
+                save_screens(doc)
+                return {"ok": True, "screen_id": screen_id, "screen": public_screen(row), "screen_secret": secret}
+        PAIR_FAILS[:] = [t for t in PAIR_FAILS if now_m - t < PAIR_LOCK_S] + [now_m]
+        if len(PAIR_FAILS) >= PAIR_FAIL_MAX:
+            PAIR_LOCKED_UNTIL = now_m + PAIR_LOCK_S
+            PAIR_FAILS.clear()
+        raise ValueError("pairing_mismatch")
+
+
+def panel_snapshot(screen_id: str | None = None, secret: str | None = None) -> dict:
+    if not screen_id:
+        # Unpaired panels only POST /api/screens/pair (hub id comes from /health):
+        # no rows, no doorbell, no states before a screen id.
+        return {"ok": True, "screens": []}
+    with SCREENS_LOCK:
+        doc = load_screens()
+        row = doc["screens"].get(str(screen_id))
         if not isinstance(row, dict):
-            continue
-        if row.get("pairing_used_at"):
-            continue
-        exp = parse_iso_ts(row.get("pairing_expires_at"))
-        if exp is not None and now > exp:
-            continue
-        site_id = str(row.get("site_id") or "")
-        screen_id = str(row.get("screen_id") or "")
-        expected = str(row.get("pairing_code_hash") or "")
-        if expected and hash_screen_pairing(code, site_id, screen_id) == expected:
-            row["pairing_used_at"] = now_iso()
-            row["last_seen_at"] = now_iso()
-            save_screens(doc)
-            return {"ok": True, "screen_id": screen_id, "screen": public_screen(row)}
-    raise ValueError("pairing_mismatch")
-
-
-def touch_screen_seen(screen_id: str) -> None:
-    doc = load_screens()
-    row = doc["screens"].get(screen_id)
-    if not isinstance(row, dict):
-        return
-    row["last_seen_at"] = now_iso()
-    save_screens(doc)
-
-
-def panel_snapshot(screen_id: str | None = None) -> dict:
-    if screen_id:
-        touch_screen_seen(screen_id)
-    listed = list_wall_screens()
+            raise ValueError("not_found")
+        check_screen_secret(row, secret)
+        row["last_seen_at"] = now_iso()
+        save_screens(doc)
     entities_out = []
     areas_out = []
     weather = None
@@ -1439,7 +1521,7 @@ def panel_snapshot(screen_id: str | None = None) -> dict:
     except Exception:
         states = []
         weather = None
-    screens = listed.get("screens") or []
+    screens = [public_screen(row)]  # this panel's row only, never its neighbours'
     attach_doorbell_live(screens, states)
     plans = load_floor_plans().get("plans") or {}
     return {
@@ -2803,13 +2885,79 @@ OCCUPANCY_LOCK = threading.Lock()
 _OCCUPANCY_TRACKERS: dict[str, dict] = {}
 
 
-def load_occupancy_profile() -> dict | None:
+def load_partner_occupancy_profile() -> dict | None:
     if not OCCUPANCY_PROFILE.exists():
         return None
     try:
         return occupancy.parse_profile(json.loads(OCCUPANCY_PROFILE.read_text(encoding="utf-8")))
     except (OSError, ValueError, json.JSONDecodeError):
         return None
+
+
+def load_occupancy_profile() -> dict | None:
+    """The Partner bindings plus every phone that reports its geofence."""
+    return occupancy.with_geofence(load_partner_occupancy_profile(), geofence_load().keys())
+
+
+def geofence_load() -> dict:
+    """{member_id: {state, name, at}} — the last word of each phone, restored after an HA restart."""
+    try:
+        raw = json.loads(GEOFENCE_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {k: v for k, v in raw.items() if occupancy.MEMBER_RE.match(str(k)) and isinstance(v, dict)}
+
+
+def geofence_publish(member_id: str, row: dict) -> None:
+    # Documented REST `POST /api/states/<entity_id>`: a state-only tracker the Partner's
+    # scenarios can trigger on («όταν έρθει η Μαρία»).
+    ha(
+        f"/states/{occupancy.geofence_entity(member_id)}",
+        "POST",
+        {
+            "state": row.get("state") or "unknown",
+            "attributes": {
+                "friendly_name": row.get("name") or member_id,
+                "source_type": "gps",
+                "arvio_source": "geofence",
+                "member_id": member_id,
+            },
+        },
+        timeout=8,
+    )
+
+
+def geofence_restore() -> None:
+    for member_id, row in geofence_load().items():
+        geofence_publish(member_id, row)
+
+
+def presence_report(payload: dict | None = None) -> dict:
+    """arvio.presence_report {member_id, state: home|not_home|off, name?, at?} — relay only."""
+    rep = occupancy.parse_presence_report(payload)
+    member_id = rep["member_id"]
+    eid = occupancy.geofence_entity(member_id)
+    with OCCUPANCY_LOCK:
+        rows = geofence_load()
+        if rep["state"] == "off":
+            gone = rows.pop(member_id, None)
+            row = {"state": "unknown", "name": rep["name"] or (gone or {}).get("name")}
+        else:
+            row = {"state": rep["state"], "name": rep["name"], "at": rep["at"]}
+            rows[member_id] = row
+        GEOFENCE_FILE.write_text(json.dumps(rows), encoding="utf-8")
+        _OCCUPANCY_TRACKERS[eid] = {"entity_id": eid, "state": row["state"], "last_changed_ms": int(time.time() * 1000)}
+    geofence_publish(member_id, row)
+    out = occupancy_refresh()
+    return {"ok": True, "entity_id": eid, "state": row["state"], "occupied_state": out.get("occupied_state")}
+
+
+def home_location(payload: dict | None = None) -> dict:
+    """arvio.home_location — where the phone draws its region. Relay only; the cloud passes it on."""
+    region = occupancy.home_region(ha("/config"), ha("/states/zone.home"))
+    return {"ok": True, **region}
 
 
 def load_occupancy_state() -> dict:
@@ -2903,6 +3051,8 @@ def occupancy_refresh(*, force: bool = False, restore: bool = False) -> dict:
 
 
 def occupancy_restore() -> dict:
+    # State-only entities do not survive an HA restart: the phones' trackers go back first.
+    geofence_restore()
     return occupancy_refresh(force=True, restore=True)
 
 
@@ -4003,6 +4153,10 @@ def execute_action(
         return occupancy_remove(payload)
     if action == "arvio.occupancy_sources":
         return occupancy_sources(payload)
+    if action == "arvio.presence_report":
+        return presence_report(payload)
+    if action == "arvio.home_location":
+        return home_location(payload)
     if action == "arvio.set_scenario_enabled":
         return set_scenario_enabled(payload, entity_id)
     if action == "arvio.trigger_scenario":
@@ -4463,6 +4617,8 @@ AGENT_SERVICE_ALLOWLIST = frozenset(
         "arvio.occupancy_apply",
         "arvio.occupancy_remove",
         "arvio.occupancy_sources",
+        "arvio.presence_report",
+        "arvio.home_location",
         "arvio.set_scenario_enabled",
         "arvio.trigger_scenario",
         "arvio.list_screens",
@@ -4531,10 +4687,10 @@ LAN_ALLOWED_ACTIONS = frozenset(
         "climate.turn_off",
         "scene.turn_on",
         "script.turn_on",
-        # read-only
+        # read-only (0.1.50: arvio.list_screens is relay-only — it listed every screen id
+        # and doorbell config to anyone on the Wi-Fi; a panel reads its own row only)
         "arvio.list_entities",
         "arvio.pairing_status",
-        "arvio.list_screens",
         "arvio.trigger_scenario",
     }
     # §15.5: transport/volume/grouping is not dangerous. Library, playlists and
@@ -7851,8 +8007,12 @@ class H(BaseHTTPRequestHandler):
             if not sid or _safe_screen_id(sid) != sid:
                 return self._j(400, {"error": "invalid_screen"})
             doc = load_screens()
-            if sid not in doc["screens"]:
+            if not isinstance(doc["screens"].get(sid), dict):
                 return self._j(404, {"error": "not_found"})
+            try:
+                check_screen_secret(doc["screens"][sid], self.headers.get(SCREEN_SECRET_HEADER))
+            except ScreenDenied as e:
+                return self._j(403, {"ok": False, "error": str(e)})
             path_file = wallpaper_file(sid)
             if not path_file.is_file():
                 return self._j(404, {"error": "not_found"})
@@ -7876,7 +8036,9 @@ class H(BaseHTTPRequestHandler):
             except (TypeError, ValueError):
                 w = 720
             try:
-                data, mime = doorbell_jpeg(sid, w)
+                data, mime = doorbell_jpeg(sid, w, self.headers.get(SCREEN_SECRET_HEADER))
+            except ScreenDenied as e:
+                return self._j(403, {"ok": False, "error": str(e)})
             except ValueError:
                 return self._j(404, {"error": "not_found"})
             except Exception:
@@ -7891,7 +8053,12 @@ class H(BaseHTTPRequestHandler):
         if path == "/api/screens":
             qs = parse_qs(urlparse(self.path).query)
             sid = (qs.get("screen_id") or [None])[0]
-            return self._j(200, panel_snapshot(sid))
+            try:
+                return self._j(200, panel_snapshot(sid, self.headers.get(SCREEN_SECRET_HEADER)))
+            except ScreenDenied as e:
+                return self._j(403, {"ok": False, "error": str(e)})
+            except ValueError:
+                return self._j(404, {"ok": False, "error": "unknown_screen"})
         if path == "/api/venue/wall":
             return self._j(200, venue_wall())
         if path.startswith("/health"):
@@ -7983,14 +8150,20 @@ class H(BaseHTTPRequestHandler):
 
             if path == "/api/screens/pair":
                 body = self._read_json()
-                out = pair_wall_screen(str(body.get("code") or ""))
+                try:
+                    out = pair_wall_screen(str(body.get("code") or ""))
+                except ValueError as e:
+                    status = 429 if str(e) == "pairing_locked" else 400
+                    return self._j(status, {"ok": False, "error": str(e)})
                 return self._j(200, out)
 
             if path == "/api/screens/doorbell/unlock":
                 body = self._read_json()
                 sid = str(body.get("screen_id") or "")
                 try:
-                    out = doorbell_unlock(sid)
+                    out = doorbell_unlock(sid, self.headers.get(SCREEN_SECRET_HEADER))
+                except ScreenDenied as e:
+                    return self._j(403, {"ok": False, "error": str(e)})
                 except ValueError:
                     return self._j(403, {"ok": False, "error": "doorbell_unlock_unavailable"})
                 return self._j(200, {"ok": True, **(out if isinstance(out, dict) else {})})

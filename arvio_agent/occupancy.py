@@ -136,6 +136,72 @@ def bound_trackers(profile: dict) -> list[str]:
     return ids
 
 
+# Mode B: the member's own phone says «home» / «not_home» (native geofence, opt-in on the phone).
+GEOFENCE_PREFIX = "device_tracker.arvio_"
+GEOFENCE_RADIUS_MIN_M = 150
+GEOFENCE_RADIUS_MAX_M = 2000
+REPORT_KEYS = frozenset({"member_id", "name", "state", "at"})
+
+
+def geofence_entity(member_id: str) -> str:
+    return f"{GEOFENCE_PREFIX}{member_id}"
+
+
+def parse_presence_report(raw) -> dict:
+    """`off` = the phone stopped reporting (turned off, member removed): the tracker drops to
+    `unknown`, weight 0 — never a made-up `not_home`."""
+    b = _rec(raw)
+    if not b:
+        raise ValueError("invalid_payload")
+    _assert_keys(b, REPORT_KEYS)
+    member_id = str(b.get("member_id") or "").strip()
+    if not MEMBER_RE.match(member_id):
+        raise ValueError("invalid_member_id")
+    state = str(b.get("state") or "").strip()
+    if state not in ("home", "not_home", "off"):
+        raise ValueError("invalid_state")
+    name = " ".join(str(b.get("name") or "").split())[:80]
+    at = str(b.get("at") or "").strip()[:40]
+    return {"member_id": member_id, "state": state, "name": name or None, "at": at or None}
+
+
+def with_geofence(profile: dict | None, member_ids) -> dict | None:
+    """The Partner profile plus one tracker per reporting phone. A geofence is not a MAC, so it
+    always counts; with no Partner profile the phones alone drive `arvio_home_occupied`."""
+    extra = [
+        {"member_id": m, "tracker_entity_ids": [geofence_entity(m)], "stable_mac": True}
+        for m in sorted(member_ids)
+        if MEMBER_RE.match(m)
+    ]
+    if not extra:
+        return profile
+    base = profile or {
+        "site_id": "",
+        "hub_id": "",
+        "rev": 0,
+        "t_home_s": T_HOME_DEFAULT_S,
+        "t_room_dwell_s": T_ROOM_DWELL_DEFAULT_S,
+        "members": [],
+        "sticky": [],
+        "adjacency": [],
+    }
+    return {**base, "members": [*(base.get("members") or []), *extra]}
+
+
+def home_region(config: dict | None, zone_home: dict | None) -> dict:
+    """HA `/api/config` latitude / longitude + `zone.home` radius, clamped for iOS region monitoring."""
+    cfg = config if isinstance(config, dict) else {}
+    lat, lon = cfg.get("latitude"), cfg.get("longitude")
+    ok = all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in (lat, lon))
+    if not ok or not (-90 <= lat <= 90 and -180 <= lon <= 180) or (lat == 0 and lon == 0):
+        raise ValueError("no_location")
+    attrs = zone_home.get("attributes") if isinstance(zone_home, dict) and isinstance(zone_home.get("attributes"), dict) else {}
+    radius = attrs.get("radius")
+    radius = float(radius) if isinstance(radius, (int, float)) and not isinstance(radius, bool) and math.isfinite(radius) else 0.0
+    radius = min(GEOFENCE_RADIUS_MAX_M, max(GEOFENCE_RADIUS_MIN_M, radius))
+    return {"latitude": round(float(lat), 6), "longitude": round(float(lon), 6), "radius_m": int(radius)}
+
+
 def tracker_is_home(state: str | None) -> bool | None:
     s = (state or "").lower()
     if not s or s in ("unavailable", "unknown"):

@@ -128,7 +128,7 @@ class SafetyTest(unittest.TestCase):
             "climate.set_temperature", "climate.set_hvac_mode", "climate.set_fan_mode", "climate.set_preset_mode",
             "climate.set_swing_mode", "climate.turn_on", "climate.turn_off", "scene.turn_on", "script.turn_on",
             "arvio.list_entities", "arvio.pairing_status",
-            "arvio.list_screens", "arvio.trigger_scenario",
+            "arvio.trigger_scenario",  # 0.1.50: arvio.list_screens is relay-only (screen enumeration)
         } | set(agent.MEDIA_PLAYER_ACTIONS) | set(agent.MUSIC_ASSISTANT_ACTIONS)  # 0.1.21: transport/volume only; library/art stay cloud-only
         self.assertEqual(set(agent.LAN_ALLOWED_ACTIONS), allowed)
         self.assertTrue(allowed <= set(agent.AGENT_SERVICE_ALLOWLIST))
