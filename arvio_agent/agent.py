@@ -8,6 +8,7 @@ import hmac
 import html as html_lib
 import io
 import json
+import math
 import os
 import random
 import re
@@ -51,7 +52,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.52"
+AGENT_VERSION = "0.1.53"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -4059,6 +4060,15 @@ def build_service_data(action: str, entity_id: str, payload: dict, ha_version=No
             if not members:
                 raise ValueError("group_members required")
             data["group_members"] = members
+        elif service == "media_seek":
+            # A mirrored speaker catching up with the one it copies (Home «Ηχεία»): seconds, finite, ≥ 0.
+            try:
+                pos = float(payload.get("seek_position"))
+            except (TypeError, ValueError):
+                raise ValueError("seek_position required") from None
+            if not math.isfinite(pos) or pos < 0 or pos > 86400:
+                raise ValueError("seek_position must be 0–86400 seconds")
+            data["seek_position"] = round(pos, 1)
         elif service == "play_media":
             if not payload.get("media_content_id") or not payload.get("media_content_type"):
                 raise ValueError("media_content_id and media_content_type required")
@@ -4574,6 +4584,7 @@ MEDIA_PLAYER_ACTIONS = frozenset(
         "media_player.select_source",
         "media_player.join",
         "media_player.unjoin",
+        "media_player.media_seek",
         "media_player.play_media",
         "media_player.turn_on",
         "media_player.turn_off",

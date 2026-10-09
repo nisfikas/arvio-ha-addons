@@ -129,11 +129,11 @@ class FakePillow:
 
 class VersionPinTest(unittest.TestCase):
     def test_three_places_agree(self):
-        self.assertEqual(agent.AGENT_VERSION, "0.1.52")
+        self.assertEqual(agent.AGENT_VERSION, "0.1.53")
         cfg = (ROOT / "config.yaml").read_text(encoding="utf-8")
-        self.assertIn('\nversion: "0.1.52"\n', cfg)
+        self.assertIn('\nversion: "0.1.53"\n', cfg)
         docker = (ROOT / "Dockerfile").read_text(encoding="utf-8")
-        self.assertIn('io.hass.version="0.1.52"', docker)
+        self.assertIn('io.hass.version="0.1.53"', docker)
         self.assertIn("COPY occupancy.py", docker)
         self.assertIn("COPY panel.html", docker)
         self.assertRegex(docker, r"pillow", "Pillow must be installed for the art resize path")
@@ -772,7 +772,7 @@ MEDIA_SERVICES = [
     "media_player.media_play", "media_player.media_pause", "media_player.media_play_pause", "media_player.media_stop",
     "media_player.media_next_track", "media_player.media_previous_track", "media_player.volume_set",
     "media_player.volume_mute", "media_player.volume_up", "media_player.volume_down", "media_player.select_source",
-    "media_player.join", "media_player.unjoin", "media_player.play_media", "media_player.turn_on",
+    "media_player.join", "media_player.unjoin", "media_player.media_seek", "media_player.play_media", "media_player.turn_on",
     "media_player.turn_off", "media_player.shuffle_set", "media_player.repeat_set",
     "music_assistant.play_media", "music_assistant.transfer_queue", "music_assistant.get_queue",
 ]
@@ -796,9 +796,9 @@ class MediaAllowlistTest(unittest.TestCase):
             self.assertNotIn(action, agent.HOME_DANGEROUS_ACTIONS)
             self.assertNotIn(action, agent.HOME_SECURITY_ACTIONS)
             self.assertNotIn(action, agent.TARGET_ACTIONS)
-        self.assertEqual(len(agent.MEDIA_PLAYER_ACTIONS), 18)
-        # not services: media_player.play / seek / toggle stay unknown; no target on media
-        for action in ("media_player.play", "media_player.media_seek", "media_player.toggle", "music_assistant.play_announcement"):
+        self.assertEqual(len(agent.MEDIA_PLAYER_ACTIONS), 19)
+        # not services: media_player.play / toggle stay unknown; no target on media
+        for action in ("media_player.play", "media_player.toggle", "music_assistant.play_announcement"):
             with self.assertRaises(agent.CommandRejected) as cm:
                 agent.check_command_safety({"action": action})
             self.assertEqual(cm.exception.code, "action_not_allowed")
@@ -810,6 +810,15 @@ class MediaAllowlistTest(unittest.TestCase):
 class MediaServiceDataTest(unittest.TestCase):
     def sd(self, action, payload, eid="media_player.saloni"):
         return agent.build_service_data(action, eid, payload, "2025.8.1")
+
+    def test_media_seek_takes_finite_seconds_only(self):
+        self.assertEqual(self.sd("media_player.media_seek", {"seek_position": 83.456})[1],
+                         {"entity_id": "media_player.saloni", "seek_position": 83.5})
+        self.assertEqual(self.sd("media_player.media_seek", {"seek_position": "12"})[1]["seek_position"], 12.0)
+        for bad in ({}, {"seek_position": "x"}, {"seek_position": -1}, {"seek_position": float("nan")}, {"seek_position": 1e9}):
+            with self.assertRaises(ValueError, msg=bad):
+                self.sd("media_player.media_seek", bad)
+        agent.check_command_safety({"action": "media_player.media_seek", "entity_id": "media_player.saloni", "payload": {"seek_position": 5}})
 
     def test_volume_clamp_and_volume_max(self):
         self.assertEqual(agent.clamp_volume(0.5), 0.5)
