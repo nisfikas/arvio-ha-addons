@@ -690,6 +690,19 @@ class ScreenLanHttpTest(unittest.TestCase):
         self.assertNotIn("clima-now", html)
         self.assertIn("tempCommitTimer", html)
 
+    def test_panel_hidden_class_really_hides(self):
+        # «Ναι, άνοιξε» once stayed on screen: `.hidden` only hid the ids the rule names, so the
+        # door confirm step was skipped. Every id the page toggles with "hidden" must be named.
+        html = (ROOT / "panel.html").read_text(encoding="utf-8")
+        rule = re.search(r"^\s*(#[^{]*\.hidden[^{]*)\{\s*display:\s*none;", html, re.M)
+        self.assertIsNotNone(rule)
+        hidden_ids = set(re.findall(r"#([\w-]+)\.hidden", rule.group(1)))
+        consts = dict(re.findall(r'const (\w+) = document\.getElementById\("([\w-]+)"\)', html))
+        toggled = {consts.get(v, v) for v in re.findall(r'(\w+)\.classList\.(?:add|remove|toggle)\("hidden"', html)}
+        toggled |= set(re.findall(r'id="([\w-]+)" class="hidden"', html))
+        self.assertTrue({"doorbell-open", "doorbell-yes"} <= toggled)
+        self.assertEqual(toggled - hidden_ids, set())
+
     def test_panel_idle_returns_to_first_page(self):
         html = (ROOT / "panel.html").read_text(encoding="utf-8")
         self.assertIn("HOME_IDLE_MS = 60000", html)
