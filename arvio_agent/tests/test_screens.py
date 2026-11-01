@@ -690,6 +690,15 @@ class ScreenLanHttpTest(unittest.TestCase):
         self.assertNotIn("clima-now", html)
         self.assertIn("tempCommitTimer", html)
 
+    def test_panel_afisa_is_the_factory_look(self):
+        # Αφίσα (11/2026): the platform look; a screen with no theme (or an unknown one) gets it,
+        # in the same palette Partner previews, with square corners only under that preset.
+        html = (ROOT / "panel.html").read_text(encoding="utf-8")
+        self.assertIn('const preset = THEMES[t.preset] ? t.preset : "afisa";', html)
+        self.assertIn('bg: "#141414", tile: "#1c1b1a", ink: "#eeebe5"', html)
+        self.assertIn('html[data-preset="afisa"] { --r: 4px; }', html)
+        self.assertNotIn("border-radius: 28px;", html)
+
     def test_panel_hidden_class_really_hides(self):
         # «Ναι, άνοιξε» once stayed on screen: `.hidden` only hid the ids the rule names, so the
         # door confirm step was skipped. Every id the page toggles with "hidden" must be named.
