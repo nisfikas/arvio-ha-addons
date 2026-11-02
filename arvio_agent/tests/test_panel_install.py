@@ -55,6 +55,9 @@ class FakeAdb:
                 return answer(line) if callable(answer) else answer
         return 0, ""
 
+    def available(self) -> bool:
+        return True
+
     def ran(self, fragment: str) -> bool:
         return any(fragment in c for c in self.calls)
 
@@ -233,6 +236,15 @@ class AgentWiringTest(unittest.TestCase):
         if agent.SCREENS.exists():
             agent.SCREENS.unlink()
 
+    def test_an_image_without_adb_says_so(self):
+        self.assertFalse(pi.Adb(self.apk_dir, binary="no-such-adb-binary").available())
+        no_adb = FakeAdb()
+        no_adb.available = lambda: False
+        with mock.patch.multiple(agent, PANEL_ADB=no_adb, APP=self.apk_dir):
+            for action, payload in (("arvio.panel_scan", {}), ("arvio.panel_install", {"serial_hash": SERIAL_HASH, "screen_id": "scr_hall000000000000"})):
+                self.assertEqual(agent.execute_action(action, "", payload)["error"], "no_adb", action)
+        self.assertEqual(no_adb.calls, [])
+
     def test_panel_actions_are_relay_only(self):
         for action in ("arvio.panel_scan", "arvio.panel_install", "arvio.panel_identify", "arvio.panel_status"):
             self.assertIn(action, agent.AGENT_SERVICE_ALLOWLIST)
@@ -323,6 +335,22 @@ class AgentWiringTest(unittest.TestCase):
             self.assertFalse(adb.ran("adb_enabled 0"))
             fn(*args)
         self.assertTrue(adb.ran("settings put global adb_enabled 0"))
+
+    def test_daily_check_reports_adb_opened_again(self):
+        agent.set_screen_device("scr_hall000000000000", {"label": "NSPanel Pro", "ip": IP, "serial_hash": SERIAL_HASH,
+                                                          "mode": "device_owner", "adb_closed": True})
+        with mock.patch.object(pi, "tcp_open", return_value=True) as probe:
+            agent.panel_watch_once()
+        probe.assert_called_once_with(IP, 5555)
+        device = agent.public_screen(agent.load_screens()["screens"]["scr_hall000000000000"])["device"]
+        self.assertTrue(device["adb_open"])
+        self.assertTrue(device["adb_checked_at"])
+        known = agent.panel_status()["known"]
+        self.assertEqual(known, [{"screen_id": "scr_hall000000000000", "name": "Χολ", "label": "NSPanel Pro",
+                                  "mode": "device_owner", "adb_open": True, "adb_checked_at": device["adb_checked_at"]}])
+        with mock.patch.object(pi, "tcp_open", return_value=False):
+            agent.panel_watch_once()
+        self.assertFalse(agent.panel_status()["known"][0]["adb_open"])
 
 
 if __name__ == "__main__":

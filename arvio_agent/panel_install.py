@@ -10,6 +10,7 @@ import hashlib
 import ipaddress
 import os
 import re
+import shutil
 import socket
 import subprocess
 import time
@@ -60,6 +61,10 @@ class Adb:
     def __init__(self, home: Path, binary: str = "adb"):
         self.home = Path(home)
         self.binary = binary
+
+    def available(self) -> bool:
+        # A standalone agent's OTA brings new code, not new image packages: adb may be missing.
+        return shutil.which(self.binary) is not None
 
     def __call__(self, *args: str, serial: str | None = None, timeout: float = 30) -> tuple[int, str]:
         self.home.mkdir(parents=True, exist_ok=True)

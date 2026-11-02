@@ -24,6 +24,11 @@ ports_description:
   8099/tcp: "Arvio local UI and agent API"
 map:
   - share:rw
+# The hub's ADB key for wall panels (arvio docs/ADR/012) stays on this hub. Globs under /data;
+# both forms in case the Supervisor's * does not cross folders. TODO confirm on HAOS.
+backup_exclude:
+  - "adb/*"
+  - "adb/.android/*"
 options:
   cloud_url: "https://cloud.arvio.systems"
   serial: ""

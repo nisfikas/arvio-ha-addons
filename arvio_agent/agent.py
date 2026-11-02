@@ -1413,7 +1413,9 @@ PANEL_JOBS: dict = {"scan": None, "installs": {}}
 PANEL_LOCK = threading.Lock()
 PANEL_CLOSE_TIMERS: dict = {}
 PANEL_DEVICE_KEYS = ("label", "android", "sdk", "webview", "serial_hash", "mac", "ip", "mode", "adb_closed", "installed_at")
-PANEL_DEVICE_PUBLIC = ("label", "android", "webview", "mode", "adb_closed", "installed_at")
+PANEL_DEVICE_PUBLIC = ("label", "android", "webview", "mode", "adb_closed", "installed_at", "adb_open", "adb_checked_at")
+PANEL_WATCH_FIRST_S = 10 * 60
+PANEL_WATCH_EVERY_S = 24 * 3600
 
 
 def panel_lan():
@@ -1426,8 +1428,42 @@ def panel_lan():
 
 
 def panel_status() -> dict:
+    # The panels this hub installed, with the daily ADB check, so Partner can warn.
+    known = [
+        {"screen_id": sid, "name": row.get("name"), "label": row["device"].get("label"), "mode": row["device"].get("mode"),
+         "adb_open": row["device"].get("adb_open"), "adb_checked_at": row["device"].get("adb_checked_at")}
+        for sid, row in load_screens()["screens"].items()
+        if isinstance(row, dict) and isinstance(row.get("device"), dict)
+    ]
     with PANEL_LOCK:
-        return json.loads(json.dumps({"ok": True, "scan": PANEL_JOBS["scan"], "installs": list(PANEL_JOBS["installs"].values())}))
+        return json.loads(json.dumps({"ok": True, "scan": PANEL_JOBS["scan"], "installs": list(PANEL_JOBS["installs"].values()), "known": known}))
+
+
+def panel_watch_once() -> None:
+    """Is ADB still closed on the panels this hub installed? A vendor update can open it again (§7.4)."""
+    rows = [
+        (sid, row["device"]["ip"])
+        for sid, row in load_screens()["screens"].items()
+        if isinstance(row, dict) and isinstance(row.get("device"), dict) and row["device"].get("ip")
+    ]
+    for sid, ip in rows:
+        is_open = panel_install.tcp_open(ip, panel_install.ADB_PORT)
+        with SCREENS_LOCK:
+            doc = load_screens()
+            device = (doc["screens"].get(sid) or {}).get("device")
+            if isinstance(device, dict):
+                device.update(adb_open=is_open, adb_checked_at=now_iso())
+                save_screens(doc)
+
+
+def panel_watch_loop() -> None:
+    time.sleep(PANEL_WATCH_FIRST_S)
+    while True:
+        try:
+            panel_watch_once()
+        except Exception as e:  # noqa: BLE001 — the next day tries again
+            print(f"panel watch: {e}", flush=True)
+        time.sleep(PANEL_WATCH_EVERY_S)
 
 
 def panel_scanned(serial_hash: str) -> dict | None:
@@ -1437,6 +1473,8 @@ def panel_scanned(serial_hash: str) -> dict | None:
 
 
 def panel_scan(payload: dict) -> dict:
+    if not PANEL_ADB.available():
+        return {"ok": False, "error": "no_adb"}
     try:
         net = panel_install.scan_network(payload.get("subnet"), panel_lan())
     except ValueError as e:
@@ -1468,6 +1506,8 @@ def panel_scan(payload: dict) -> dict:
 def panel_install_start(payload: dict) -> dict:
     sh = str(payload.get("serial_hash") or "")
     sid = str(payload.get("screen_id") or "")
+    if not PANEL_ADB.available():
+        return {"ok": False, "error": "no_adb"}
     dev = panel_scanned(sh)
     if not dev:
         return {"ok": False, "error": "panel_not_scanned"}
@@ -8656,6 +8696,7 @@ if __name__ == "__main__":
     threading.Thread(target=heartbeat_loop, daemon=True).start()
     threading.Thread(target=occupancy_tick_loop, daemon=True).start()
     threading.Thread(target=venue_loop, daemon=True).start()
+    threading.Thread(target=panel_watch_loop, daemon=True).start()
     threading.Thread(target=standalone_trial_ok, daemon=True).start()
     print(
         f"arvio-agent :{PORT} mode={mode} hub={hub_id} ha={core_origin() or 'supervisor'} relay={RELAY_URL or 'off'} token={'yes' if TOKEN else 'NO'}",

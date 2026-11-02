@@ -1,7 +1,8 @@
 ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.21
 FROM ${BUILD_FROM}
 
-RUN apk add --no-cache python3 py3-pip \
+# android-tools: adb, for installing the Arvio Panel app on wall panels (arvio docs/ADR/012).
+RUN apk add --no-cache python3 py3-pip android-tools \
   && pip3 install --break-system-packages --no-cache-dir websocket-client==1.8.0
 # 0.1.21 «Μουσική»: Pillow resizes album art to ≤ 256 px JPEG (arvio.media_art). Wheels exist for
 # amd64/aarch64 (musllinux); armv7 falls back to Alpine's py3-pillow. Without Pillow the agent
@@ -18,6 +19,7 @@ COPY partner.html /app/partner.html
 COPY home.html /app/home.html
 COPY remote.html /app/remote.html
 COPY panel.html /app/panel.html
+COPY panel-app /app/panel-app
 COPY run.sh /run.sh
 RUN chmod a+x /run.sh
 

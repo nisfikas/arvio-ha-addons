@@ -1,4 +1,6 @@
 """HA Container / NAS sidecar: Core URL instead of Supervisor."""
+import hashlib
+import json
 import os
 import re
 import unittest
@@ -16,6 +18,23 @@ class ImageTest(unittest.TestCase):
             text = (ROOT / name).read_text(encoding="utf-8")
             for mod in imported:
                 self.assertIn(f"{mod}.py", text, (name, mod))
+            # adb (the panel installer) and the app it installs travel in both images
+            self.assertIn("android-tools", text, name)
+            self.assertIn("COPY panel-app /app/panel-app", text, name)
+
+    def test_only_a_release_signed_panel_app_ships(self):
+        app = ROOT / "panel-app"
+        apk, meta_file = app / "arvio-panel.apk", app / "app.json"
+        if not apk.exists():
+            self.assertFalse(meta_file.exists(), "app.json without the APK")
+            return
+        meta = json.loads(meta_file.read_text(encoding="utf-8"))
+        self.assertEqual(meta["sha256"], hashlib.sha256(apk.read_bytes()).hexdigest())
+        self.assertEqual(meta["size"], apk.stat().st_size)
+        # ponytail: trusts the signer that build.sh wrote, which catches a dev build copied here by
+        # mistake; parse the APK signing block if a hand-edited app.json ever needs catching too.
+        pinned = (app / "release-cert.sha256").read_text(encoding="utf-8").strip()
+        self.assertEqual(meta["signer"], pinned, "not the release key: build with --release (panel-app/README.md)")
 
 
 class CoreDirectTest(unittest.TestCase):
