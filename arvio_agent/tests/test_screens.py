@@ -705,6 +705,10 @@ class ScreenLanHttpTest(unittest.TestCase):
         self.assertIn('bg: "#141414", tile: "#1c1b1a", ink: "#eeebe5"', html)
         self.assertIn('html[data-preset="afisa"] { --r: 4px; }', html)
         self.assertNotIn("border-radius: 28px;", html)
+        # before any theme arrives (pairing) the panel is already Αφίσα dark, logo inline (offline)
+        self.assertIn('<html lang="el" data-preset="afisa" data-mode="dark">', html)
+        self.assertIn('class="gate-card"', html)
+        self.assertRegex(html, r'class="gate-mark" alt="Arvio" src="data:image/png;base64,[A-Za-z0-9+/=]{2000,}"')
 
     def test_panel_hidden_class_really_hides(self):
         # «Ναι, άνοιξε» once stayed on screen: `.hidden` only hid the ids the rule names, so the
@@ -1100,6 +1104,9 @@ class ScreenLanHttpTest(unittest.TestCase):
         self.assertIn("location.hash.match(/^#pair=([A-Za-z0-9_-]{43})$/)", html)
         self.assertIn('history.replaceState(null, "", location.pathname + location.search)', html)
         self.assertIn("await pairWith({ token: pairToken }", html)
+        # the app's hang check: a heartbeat every 30 s, harmless in a browser
+        self.assertIn("const beat = () => window.ArvioPanel && window.ArvioPanel.alive();", html)
+        self.assertIn("setInterval(beat, 30000);", html)
 
     def test_panel_sends_the_secret_as_a_header_only(self):
         html = (ROOT / "panel.html").read_text(encoding="utf-8")
