@@ -1081,8 +1081,8 @@ class ScreenLanHttpTest(unittest.TestCase):
         token = agent.mint_screen_pair_token("scr_aaaaaaaaaaaaaaaa")
         status, raw = self.request("POST", "/api/screens/pair", {"token": token[:-1]})
         self.assertEqual((status, json.loads(raw.decode())["error"]), (400, "invalid_code"))
+        wrong = ("A" if token[0] != "A" else "B") + token[1:]  # never the real one
         for i in range(10):
-            wrong = f"{i:02d}" + token[2:]
             self.assertEqual(self.request("POST", "/api/screens/pair", {"token": wrong})[0], 400, i)
         status, raw = self.request("POST", "/api/screens/pair", {"token": token})
         self.assertEqual((status, json.loads(raw.decode())["error"]), (429, "pairing_locked"))

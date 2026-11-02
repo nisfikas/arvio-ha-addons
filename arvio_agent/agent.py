@@ -27,6 +27,7 @@ from types import MappingProxyType
 from urllib.parse import parse_qs, quote, urlparse
 
 import occupancy
+import panel_install
 
 # ARVIO_DATA_DIR lets the unit tests (and lab runs outside the add-on) use a
 # scratch directory instead of the Supervisor-mounted /data.
@@ -1174,6 +1175,10 @@ def public_screen(row: dict) -> dict:
         theme = None
     if theme:
         out["theme"] = theme
+    device = row.get("device")
+    if isinstance(device, dict):
+        # What the hub learned when it installed the Arvio Panel app; MAC and serial stay here.
+        out["device"] = {k: device.get(k) for k in PANEL_DEVICE_PUBLIC}
     return out
 
 
@@ -1350,8 +1355,8 @@ def _put_wall_screen(payload: dict | None, entity_id: str = "") -> dict:
         "last_seen_at": prev.get("last_seen_at"),
         "updated_at": str(payload.get("updated_at") or now_iso()),
     }
-    # Hub-only (pair_wall_screen, mint_screen_pair_token): the cloud never sends or sees them.
-    for key in ("screen_secret_hash", "pair_token_hash", "pair_token_expires_at"):
+    # Hub-only (pair_wall_screen, mint_screen_pair_token, panel installs): the cloud never sends them.
+    for key in ("screen_secret_hash", "pair_token_hash", "pair_token_expires_at", "device"):
         if prev.get(key):
             row[key] = prev[key]
     if "wallpaper_scrim" in prev:
@@ -1397,6 +1402,151 @@ def list_wall_screens() -> dict:
     doc = load_screens()
     screens = [public_screen(r) for r in doc["screens"].values() if isinstance(r, dict)]
     return {"ok": True, "screens": screens}
+
+
+# ---- Arvio Panel app: the hub finds, installs and pairs wall panels (arvio docs/ADR/012) ----
+# Relay-only actions (never LAN_ALLOWED_ACTIONS). An install outlives a relay command (≤ 45 s),
+# so scan and install run as jobs and Partner polls arvio.panel_status. In memory: an agent
+# restart drops a job, and Partner says «Διακόπηκε» (plan §11 row 14).
+PANEL_ADB = panel_install.Adb(DATA / "adb")
+PANEL_JOBS: dict = {"scan": None, "installs": {}}
+PANEL_LOCK = threading.Lock()
+PANEL_CLOSE_TIMERS: dict = {}
+PANEL_DEVICE_KEYS = ("label", "android", "sdk", "webview", "serial_hash", "mac", "ip", "mode", "adb_closed", "installed_at")
+PANEL_DEVICE_PUBLIC = ("label", "android", "webview", "mode", "adb_closed", "installed_at")
+
+
+def panel_lan():
+    return panel_install.lan_interface(
+        supervisor("/network/info", timeout=10) if uses_supervisor() else None,
+        core_origin(),
+        os.environ.get("ARVIO_LAN_IP", ""),
+        panel_install.route_ip(),
+    )
+
+
+def panel_status() -> dict:
+    with PANEL_LOCK:
+        return json.loads(json.dumps({"ok": True, "scan": PANEL_JOBS["scan"], "installs": list(PANEL_JOBS["installs"].values())}))
+
+
+def panel_scanned(serial_hash: str) -> dict | None:
+    with PANEL_LOCK:
+        devices = (PANEL_JOBS["scan"] or {}).get("devices") or []
+    return next((d for d in devices if d.get("serial_hash") == serial_hash and d.get("state") == "device"), None)
+
+
+def panel_scan(payload: dict) -> dict:
+    try:
+        net = panel_install.scan_network(payload.get("subnet"), panel_lan())
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    with PANEL_LOCK:
+        if (PANEL_JOBS["scan"] or {}).get("state") == "running":
+            return panel_status()
+        PANEL_JOBS["scan"] = {"state": "running", "subnet": str(net), "started_at": now_iso(), "devices": []}
+
+    def run() -> None:
+        known = {
+            r["device"]["serial_hash"]: sid
+            for sid, r in load_screens()["screens"].items()
+            if isinstance(r, dict) and isinstance(r.get("device"), dict) and r["device"].get("serial_hash")
+        }
+        try:
+            found = [panel_install.identify(PANEL_ADB, ip) for ip in panel_install.scan_hosts(net)]
+            # A panel already installed here (or reset and back): Partner offers it for the same screen.
+            done = {"state": "done", "devices": [{**panel_install.public(d), "screen_id": known.get(d.get("serial_hash"))} for d in found]}
+        except Exception as e:  # noqa: BLE001 — a job must always finish
+            done = {"state": "failed", "error": str(e)[:200]}
+        with PANEL_LOCK:
+            PANEL_JOBS["scan"].update(done, finished_at=now_iso())
+
+    threading.Thread(target=run, daemon=True).start()
+    return panel_status()
+
+
+def panel_install_start(payload: dict) -> dict:
+    sh = str(payload.get("serial_hash") or "")
+    sid = str(payload.get("screen_id") or "")
+    dev = panel_scanned(sh)
+    if not dev:
+        return {"ok": False, "error": "panel_not_scanned"}
+    if not isinstance(load_screens()["screens"].get(sid), dict):
+        return {"ok": False, "error": "screen_not_found"}
+    apk = APP / "panel-app" / "arvio-panel.apk"
+    if not apk.is_file():
+        return {"ok": False, "error": "no_apk"}
+    with PANEL_LOCK:
+        if (PANEL_JOBS["installs"].get(sh) or {}).get("state") == "running":
+            return panel_status()
+        job = {"serial_hash": sh, "screen_id": sid, "ip": dev["ip"], "label": dev.get("label"),
+               "state": "running", "steps": [], "error": None, "started_at": now_iso()}
+        PANEL_JOBS["installs"][sh] = job
+    threading.Thread(target=panel_install_job, args=(job, apk), daemon=True).start()
+    return panel_status()
+
+
+def panel_install_job(job: dict, apk: Path) -> None:
+    ip, sid = job["ip"], job["screen_id"]
+    timer = PANEL_CLOSE_TIMERS.pop(ip, None)
+    if timer:
+        timer.cancel()
+
+    def step(name: str) -> None:
+        with PANEL_LOCK:
+            job["steps"].append(name)
+
+    def paired() -> bool:
+        row = load_screens()["screens"].get(sid)
+        return isinstance(row, dict) and bool(row.get("screen_secret_hash")) and not row.get("pair_token_hash")
+
+    try:
+        lan = panel_lan()
+        # No known LAN address (e.g. a bridge network without hints): the panel saw who connected.
+        seen = [] if lan else panel_install.seen_from_panel(PANEL_ADB, ip)
+        hub_ip = str(lan.ip) if lan else (seen[0] if len(seen) == 1 else None)
+        if not hub_ip:
+            raise panel_install.InstallError("lan_unknown")
+        device = panel_install.install(
+            PANEL_ADB, ip, serial_hash=job["serial_hash"], apk=apk, hub_url=f"http://{hub_ip}:{PORT}",
+            hub_id=str(hub_id or ""), mint_token=lambda: mint_screen_pair_token(sid), paired=paired, step=step,
+        )
+        set_screen_device(sid, {**device, "installed_at": now_iso()})
+        result = {"state": "done", "mode": device["mode"], "adb_closed": device["adb_closed"]}
+    except panel_install.InstallError as e:
+        result = {"state": "failed", "error": e.code}
+        if "found" in job["steps"]:
+            # We were in: ADB stays open for «Δοκίμασε ξανά», then the hub closes it itself.
+            t = threading.Timer(panel_install.RETRY_WINDOW_S, panel_close_adb, args=(ip,))
+            t.daemon = True
+            PANEL_CLOSE_TIMERS[ip] = t
+            t.start()
+    except Exception as e:  # noqa: BLE001
+        result = {"state": "failed", "error": "internal", "detail": str(e)[:200]}
+    with PANEL_LOCK:
+        job.update(result, finished_at=now_iso())
+
+
+def panel_close_adb(ip: str) -> None:
+    PANEL_CLOSE_TIMERS.pop(ip, None)
+    panel_install.close_adb(PANEL_ADB, ip)
+
+
+def panel_identify(payload: dict) -> dict:
+    dev = panel_scanned(str(payload.get("serial_hash") or ""))
+    if not dev:
+        return {"ok": False, "error": "panel_not_scanned"}
+    panel_install.blink(PANEL_ADB, dev["ip"])
+    return {"ok": True}
+
+
+def set_screen_device(screen_id: str, device: dict) -> None:
+    with SCREENS_LOCK:
+        doc = load_screens()
+        row = doc["screens"].get(screen_id)
+        if isinstance(row, dict):
+            row["device"] = {k: device.get(k) for k in PANEL_DEVICE_KEYS}
+            save_screens(doc)
 
 
 def pairing_open(row: dict) -> bool:
@@ -4332,6 +4482,14 @@ def execute_action(
         return todo_action(payload, entity_id)
     if action == "arvio.list_screens":
         return list_wall_screens()
+    if action == "arvio.panel_scan":
+        return panel_scan(payload)
+    if action == "arvio.panel_install":
+        return panel_install_start(payload)
+    if action == "arvio.panel_identify":
+        return panel_identify(payload)
+    if action == "arvio.panel_status":
+        return panel_status()
     if action == "arvio.put_screen":
         return put_wall_screen(payload, entity_id)
     if action == "arvio.put_floor_plan":
@@ -4772,6 +4930,10 @@ AGENT_SERVICE_ALLOWLIST = frozenset(
         "arvio.set_scenario_enabled",
         "arvio.trigger_scenario",
         "arvio.list_screens",
+        "arvio.panel_scan",
+        "arvio.panel_install",
+        "arvio.panel_identify",
+        "arvio.panel_status",
         "arvio.put_screen",
         "arvio.put_floor_plan",
         "arvio.delete_screen",

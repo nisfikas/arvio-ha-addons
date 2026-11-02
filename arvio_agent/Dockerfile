@@ -12,6 +12,7 @@ RUN pip3 install --break-system-packages --no-cache-dir pillow==11.1.0 \
 WORKDIR /app
 COPY agent.py /app/agent.py
 COPY occupancy.py /app/occupancy.py
+COPY panel_install.py /app/panel_install.py
 COPY ui.html /app/ui.html
 COPY partner.html /app/partner.html
 COPY home.html /app/home.html

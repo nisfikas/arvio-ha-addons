@@ -1,8 +1,21 @@
 """HA Container / NAS sidecar: Core URL instead of Supervisor."""
 import os
+import re
 import unittest
 
-from helpers import agent
+from helpers import ROOT, agent
+
+
+class ImageTest(unittest.TestCase):
+    def test_images_ship_every_module_the_agent_imports(self):
+        # Both Dockerfiles list files by name: a module left out = an agent that cannot start.
+        local = {p.stem for p in ROOT.glob("*.py")}
+        imported = set(re.findall(r"^import (\w+)$", (ROOT / "agent.py").read_text(encoding="utf-8"), re.M)) & local
+        self.assertIn("panel_install", imported)
+        for name in ("Dockerfile", "Dockerfile.standalone"):
+            text = (ROOT / name).read_text(encoding="utf-8")
+            for mod in imported:
+                self.assertIn(f"{mod}.py", text, (name, mod))
 
 
 class CoreDirectTest(unittest.TestCase):
