@@ -1,5 +1,9 @@
 # panel-app
 
+What wall panels get from the hub besides `panel.html`. `icon.png` (180 px, the Home app's icon) is
+the home-screen icon of an iPad in wall mode (`/panel/icon.png` and the profile from
+`/panel/ipad.mobileconfig`). The rest of this file is about the Android app.
+
 The Arvio Panel app that the hub installs on wall panels over ADB and serves to them for self-update
 (`/panel/app.json`, `/panel/app.apk`). Design: `docs/ADR/012-native-wall-panel-app.md` in the arvio repo.
 

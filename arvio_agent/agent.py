@@ -11,6 +11,7 @@ import ipaddress
 import json
 import math
 import os
+import plistlib
 import random
 import re
 import secrets
@@ -18,6 +19,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from collections import OrderedDict
 from datetime import datetime, timezone
 from http.client import HTTPConnection, HTTPException
@@ -1578,6 +1580,64 @@ def panel_identify(payload: dict) -> dict:
         return {"ok": False, "error": "panel_not_scanned"}
     panel_install.blink(PANEL_ADB, dev["ip"])
     return {"ok": True}
+
+
+def panel_pair_link(payload: dict) -> dict:
+    """«Σύζευξη iPad»: a link (a QR in Partner) to a profile with one home-screen icon that pairs
+    the iPad once. The token travels through the cloud to the installer: 10 min, single use."""
+    sid = str(payload.get("screen_id") or "")
+    if not isinstance(load_screens()["screens"].get(sid), dict):
+        return {"ok": False, "error": "screen_not_found"}
+    lan = panel_lan()
+    if lan is None:
+        return {"ok": False, "error": "lan_unknown"}
+    token = mint_screen_pair_token(sid)
+    return {"ok": True, "url": f"http://{lan.ip}:{PORT}/panel/ipad.mobileconfig?t={token}", "expires_in": PAIR_TOKEN_TTL_S}
+
+
+def screen_for_pair_token(token: str) -> dict | None:
+    if not PAIR_TOKEN_RE.fullmatch(token or ""):
+        return None
+    digest = hash_screen_secret(token)
+    for row in load_screens()["screens"].values():
+        if isinstance(row, dict) and pair_token_open(row) and hmac.compare_digest(digest, str(row["pair_token_hash"])):
+            return row
+    return None
+
+
+def ipad_profile(token: str, host: str) -> bytes | None:
+    """An iOS configuration profile (unsigned) with one Web Clip: full screen, the screen's name,
+    this hub's /panel#pair=<token>. Its first launch pairs; later launches leave the spent token."""
+    row = screen_for_pair_token(token)
+    if row is None:
+        return None
+    sid = _safe_screen_id(str(row.get("screen_id") or ""))
+    name = str(row.get("name") or "Arvio")[:40]
+    clip = {
+        "PayloadType": "com.apple.webClip.managed",
+        "PayloadVersion": 1,
+        "PayloadIdentifier": f"systems.arvio.panel.webclip.{sid}",
+        "PayloadUUID": str(uuid.uuid4()).upper(),
+        "PayloadDisplayName": "Arvio",
+        "Label": name,
+        "URL": f"http://{host}/panel#pair={token}",
+        "FullScreen": True,
+        "IsRemovable": True,
+        "Precomposed": True,
+    }
+    icon = APP / "panel-app" / "icon.png"
+    if icon.is_file():
+        clip["Icon"] = icon.read_bytes()
+    return plistlib.dumps({
+        "PayloadType": "Configuration",
+        "PayloadVersion": 1,
+        "PayloadIdentifier": f"systems.arvio.panel.{sid}",
+        "PayloadUUID": str(uuid.uuid4()).upper(),
+        "PayloadDisplayName": f"Arvio · {name}",
+        "PayloadOrganization": "Arvio",
+        "PayloadDescription": "Το πάνελ τοίχου του σπιτιού σε πλήρη οθόνη. Αφαιρείται από τις Ρυθμίσεις → Γενικά → Προφίλ.",
+        "PayloadContent": [clip],
+    })
 
 
 def set_screen_device(screen_id: str, device: dict) -> None:
@@ -4530,6 +4590,8 @@ def execute_action(
         return panel_identify(payload)
     if action == "arvio.panel_status":
         return panel_status()
+    if action == "arvio.panel_pair_link":
+        return panel_pair_link(payload)
     if action == "arvio.put_screen":
         return put_wall_screen(payload, entity_id)
     if action == "arvio.put_floor_plan":
@@ -4974,6 +5036,7 @@ AGENT_SERVICE_ALLOWLIST = frozenset(
         "arvio.panel_install",
         "arvio.panel_identify",
         "arvio.panel_status",
+        "arvio.panel_pair_link",
         "arvio.put_screen",
         "arvio.put_floor_plan",
         "arvio.delete_screen",
@@ -8401,6 +8464,27 @@ class H(BaseHTTPRequestHandler):
             return self._file("panel-app/app.json", "application/json")
         if path == "/panel/app.apk":
             return self._file("panel-app/arvio-panel.apk", "application/vnd.android.package-archive")
+        if path == "/panel/icon.png":
+            return self._file("panel-app/icon.png", "image/png")
+        if path == "/panel/ipad.mobileconfig":
+            # «Σύζευξη iPad»: the QR in Partner. Only with an open pair token; 410 once used or expired.
+            token = (parse_qs(urlparse(self.path).query).get("t") or [""])[0]
+            data = ipad_profile(token, self.headers.get("Host") or "")
+            if data is None:
+                msg = "Ο σύνδεσμος έληξε ή χρησιμοποιήθηκε ήδη. Ζήτησε νέο QR από τον Partner.".encode("utf-8")
+                self.send_response(410)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", str(len(msg)))
+                self.end_headers()
+                self.wfile.write(msg)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-apple-aspen-config")
+            self.send_header("Content-Disposition", 'attachment; filename="arvio-panel.mobileconfig"')
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if path == "/api/screens/wallpaper":
             qs = parse_qs(urlparse(self.path).query)
             sid = (qs.get("id") or [None])[0]

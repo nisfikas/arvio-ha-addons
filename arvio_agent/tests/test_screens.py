@@ -5,8 +5,10 @@ import base64
 import contextlib
 import hashlib
 import io
+import ipaddress
 import json
 import pathlib
+import plistlib
 import re
 import shutil
 import tempfile
@@ -1107,6 +1109,72 @@ class ScreenLanHttpTest(unittest.TestCase):
         # the app's hang check: a heartbeat every 30 s, harmless in a browser
         self.assertIn("const beat = () => window.ArvioPanel && window.ArvioPanel.alive(!!localStorage.getItem(KEY));", html)
         self.assertIn("setInterval(beat, 30000);", html)
+
+    def raw(self, path):
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}")
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return r.status, r.headers.get("Content-Type"), r.read()
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, e.headers.get("Content-Type"), e.read()
+
+    def test_ipad_pairs_from_a_profile_the_hub_serves_once(self):
+        agent.put_wall_screen(self._row(name="Σαλόνι"))
+        with mock.patch.object(agent, "panel_lan", return_value=ipaddress.ip_interface("192.168.68.77/24")):
+            out = agent.execute_action("arvio.panel_pair_link", "", {"screen_id": "scr_aaaaaaaaaaaaaaaa"})
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["expires_in"], agent.PAIR_TOKEN_TTL_S)
+        m = re.fullmatch(r"http://192\.168\.68\.77:8099/panel/ipad\.mobileconfig\?t=([A-Za-z0-9_-]{43})", out["url"])
+        self.assertTrue(m, out["url"])
+        token = m.group(1)
+        status, ctype, body = self.raw(f"/panel/ipad.mobileconfig?t={token}")
+        self.assertEqual((status, ctype), (200, "application/x-apple-aspen-config"))
+        profile = plistlib.loads(body)
+        clip = profile["PayloadContent"][0]
+        self.assertEqual(clip["PayloadType"], "com.apple.webClip.managed")
+        self.assertEqual(clip["Label"], "Σαλόνι")
+        self.assertEqual(clip["URL"], f"http://127.0.0.1:{self.port}/panel#pair={token}")
+        self.assertTrue(clip["FullScreen"])
+        self.assertEqual(clip["Icon"][:8], b"\x89PNG\r\n\x1a\n")
+        # the Web Clip pairs once; after that the link is dead
+        self.assertEqual(self.request("POST", "/api/screens/pair", {"token": token})[0], 200)
+        self.assertEqual(self.raw(f"/panel/ipad.mobileconfig?t={token}")[0], 410)
+        self.assertEqual(self.raw("/panel/ipad.mobileconfig?t=" + "A" * 43)[0], 410)
+        self.assertEqual(self.raw("/panel/ipad.mobileconfig?t=junk")[0], 410)
+        status, ctype, body = self.raw("/panel/icon.png")
+        self.assertEqual((status, ctype, body[:4]), (200, "image/png", b"\x89PNG"))
+        self.assertNotIn("arvio.panel_pair_link", agent.LAN_ALLOWED_ACTIONS)
+        self.assertIn("arvio.panel_pair_link", agent.AGENT_SERVICE_ALLOWLIST)
+
+    def test_panel_works_on_old_ipads(self):
+        """iPad wall mode without the app (Safari 12-16): what that Safari cannot read has a fallback."""
+        html = (ROOT / "panel.html").read_text(encoding="utf-8")
+        css = re.sub(r"/\*.*?\*/", "", html[html.index("<style>") : html.index("</style>")], flags=re.S)
+        # every color-mix() (Safari 16.2) and clamp() (13.4) comes right after a plain declaration
+        decls = re.findall(r"([a-z-]+):\s*([^;{}]+);", css)
+        modern = lambda v: "color-mix(" in v or "clamp(" in v
+        for i, (prop, value) in enumerate(decls):
+            if modern(value):
+                j = i - 1  # a chain (28vw -> clamp(vw) -> clamp(cqh)) must start with a plain value
+                while j >= 0 and decls[j][0] == prop and modern(decls[j][1]):
+                    j -= 1
+                self.assertTrue(j >= 0 and decls[j][0] == prop and not modern(decls[j][1]), f"{prop}: {value}")
+        self.assertNotRegex(css, r"(^|[\s{;])inset:")  # Safari 14.1: top/right/bottom/left
+        self.assertNotIn(":is(", css)  # Safari 14
+        self.assertIn("@supports not (aspect-ratio: 1)", css)
+        self.assertIn("no-flex-gap", css)
+        self.assertIn('document.documentElement.classList.add("no-flex-gap")', html)
+        self.assertIn("window.AudioContext || window.webkitAudioContext", html)
+        self.assertEqual(html.count('hourCycle: "h23",'), html.count("hour12: false,"))
+        self.assertIn('addEventListener("touchstart", armHomeIdle', html)
+        for token in ("?.", "??", "Object.fromEntries", ".at(", "replaceAll", "structuredClone", "AbortController"):
+            self.assertNotIn(token, html[html.index("<script>") :], token)
+        # full screen from the home screen, a fresh start when stuck, a spent #pair= left alone
+        self.assertIn('<meta name="apple-mobile-web-app-capable" content="yes" />', html)
+        self.assertIn('<link rel="apple-touch-icon" href="/panel/icon.png" />', html)
+        self.assertIn("navigator.standalone && localStorage.getItem(KEY)", html)
+        self.assertIn('if ((await fetch("/health", { cache: "no-store" })).ok) location.reload();', html)
 
     def test_panel_sends_the_secret_as_a_header_only(self):
         html = (ROOT / "panel.html").read_text(encoding="utf-8")

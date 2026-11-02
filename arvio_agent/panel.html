@@ -4,6 +4,12 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#141414" />
+    <!-- iPad wall mode (no app): from the home screen it opens full screen, without Safari's bars. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+    <meta name="apple-mobile-web-app-title" content="Arvio" />
+    <link rel="apple-touch-icon" href="/panel/icon.png" />
     <title>Arvio</title>
     <style>
       /* Αφίσα dark until the screen's own theme arrives (the factory look, THEMES.afisa.dark). */
@@ -19,9 +25,20 @@
         --dry: #7a9ec4;
         --fan: #9aa3aa;
         --gap: 12px;
+        /* The same colours as r, g, b: the rgba() fallbacks before every color-mix() that older
+           iPads (Safari before 16.2) keep. applyTheme sets them with the theme. */
+        --ink-rgb: 238, 235, 229;
+        --bg-rgb: 20, 20, 20;
+        --tile-rgb: 28, 27, 26;
+        --on-rgb: 240, 217, 168;
+        --heat-rgb: 212, 160, 106;
+        --cool-rgb: 106, 168, 188;
+        --dry-rgb: 122, 158, 196;
       }
       * { box-sizing: border-box; }
       html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); }
+      /* An appliance, not a web page: no double-tap zoom, no grey tap flash, no long-press menu. */
+      html { touch-action: manipulation; -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none; }
       body {
         font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
         overflow: hidden;
@@ -36,7 +53,7 @@
         cursor: pointer;
       }
       button:disabled { opacity: 0.4; }
-      #gate, #board { position: absolute; inset: 0; }
+      #gate, #board { position: absolute; top: 0; right: 0; bottom: 0; left: 0; }
       #gate {
         display: flex;
         flex-direction: column;
@@ -131,6 +148,7 @@
         text-align: center;
       }
       .tile--shutdown .face {
+        font-size: 16vmin;
         font-size: clamp(2.6rem, 16vmin, 4.2rem);
         font-weight: 600;
         letter-spacing: -0.04em;
@@ -148,13 +166,14 @@
         display: block;
       }
       .floor3d__room {
+        fill: rgba(var(--ink-rgb), 0.08);
         fill: color-mix(in srgb, var(--ink) 8%, var(--tile));
         stroke: var(--line);
         stroke-width: 8;
         vector-effect: non-scaling-stroke;
         transition: fill 0.32s ease;
       }
-      .floor3d__room.on { fill: color-mix(in srgb, var(--on) 28%, var(--tile)); }
+      .floor3d__room.on { fill: rgba(var(--on-rgb), 0.28); fill: color-mix(in srgb, var(--on) 28%, var(--tile)); }
       .floor3d__room, .floor3d__pin { cursor: pointer; }
       .floor3d__pin circle {
         fill: var(--muted);
@@ -170,6 +189,7 @@
         right: 12px;
         bottom: 10px;
         border: 0;
+        background: rgba(var(--bg-rgb), 0.72);
         background: color-mix(in srgb, var(--bg) 72%, transparent);
         color: var(--ink);
         font: inherit;
@@ -193,38 +213,42 @@
         font-weight: 300;
         letter-spacing: -0.06em;
         line-height: 0.95;
+        font-size: 11vw;
         font-size: clamp(2.4rem, 11vw, 4.4rem);
       }
       .tile.bold .face, .sheet-clock.bold, .face.bold { font-weight: 700; }
-      .tile[data-size="m"] .face { font-size: clamp(3.4rem, 14vw, 6rem); }
-      .tile[data-size="l"] .face { font-size: clamp(5rem, 22vw, 10rem); }
+      .tile[data-size="m"] .face { font-size: 14vw; font-size: clamp(3.4rem, 14vw, 6rem); }
+      .tile[data-size="l"] .face { font-size: 22vw; font-size: clamp(5rem, 22vw, 10rem); }
       .tile--clock, .tile--weather { container-type: size; }
       .tile--clock .face, .tile--weather .face {
         line-height: 0.88;
+        font-size: 9vw; /* before container units (Safari 16): close to 38cqh on a panel */
         font-size: clamp(2.8rem, 38cqh, 9rem);
       }
       .tile--clock[data-size="m"] .face, .tile--weather[data-size="m"] .face {
+        font-size: 28vw;
         font-size: clamp(3.8rem, 28vw, 12rem);
         font-size: clamp(3.8rem, 46cqh, 12rem);
       }
       .tile--clock[data-size="l"] .face, .tile--weather[data-size="l"] .face {
+        font-size: 28vw;
         font-size: clamp(6.2rem, 28vw, 14rem);
         font-size: clamp(6.2rem, 54cqh, 16rem);
       }
-      .tile--clock .kicker, .tile--weather .kicker { font-size: clamp(1.05rem, 7cqh, 1.5rem); }
-      .tile--clock .state { font-size: clamp(1.05rem, 8cqh, 1.65rem); }
+      .tile--clock .kicker, .tile--weather .kicker { font-size: 1.05rem; font-size: clamp(1.05rem, 7cqh, 1.5rem); }
+      .tile--clock .state { font-size: 1.05rem; font-size: clamp(1.05rem, 8cqh, 1.65rem); }
       .tile--clock .kicker, .tile--clock .face, .tile--clock .state,
       .tile--weather .kicker, .tile--weather .face { position: relative; z-index: 1; }
       .colon { animation: colon-blink 1s steps(1) infinite; }
       .wx-sky {
         position: absolute;
-        inset: 0;
+        top: 0; right: 0; bottom: 0; left: 0;
         pointer-events: none;
         z-index: 0;
         overflow: hidden;
       }
       .wx-glow, .wx-orb, .wx-cloud, .wx-fall { position: absolute; }
-      .wx-glow { inset: 0; }
+      .wx-glow { top: 0; right: 0; bottom: 0; left: 0; }
       .wx-orb {
         top: 12%;
         right: 10%;
@@ -235,7 +259,8 @@
       .wx-orb::after {
         content: "";
         position: absolute;
-        inset: -75%;
+        top: -75%; right: -75%; bottom: -75%; left: -75%;
+        background: repeating-conic-gradient(from 0deg, rgba(var(--on-rgb), 0.32) 0 7deg, transparent 7deg 32deg);
         background: repeating-conic-gradient(from 0deg, color-mix(in srgb, var(--on) 32%, transparent) 0 7deg, transparent 7deg 32deg);
         mask: radial-gradient(circle, transparent 30%, #000 32%);
         -webkit-mask: radial-gradient(circle, transparent 30%, #000 32%);
@@ -244,29 +269,37 @@
       .wx-cloud {
         height: 22%;
         border-radius: var(--r, 999px);
+        background: rgba(var(--ink-rgb), 0.16);
         background: color-mix(in srgb, var(--ink) 16%, var(--tile));
         animation: wx-drift 14s ease-in-out infinite;
       }
       .wx-cloud.a { width: 44%; bottom: 24%; left: 4%; }
       .wx-cloud.b { width: 30%; height: 16%; bottom: 40%; left: 40%; opacity: 0.72; animation-delay: -5s; }
-      .wx-fall { inset: 0; opacity: 0; }
+      .wx-fall { top: 0; right: 0; bottom: 0; left: 0; opacity: 0; }
       [data-wx="sun"] .wx-glow {
+        background: radial-gradient(80% 70% at 82% 18%, rgba(var(--on-rgb), 0.42), transparent 58%);
         background: radial-gradient(80% 70% at 82% 18%, color-mix(in srgb, var(--on) 42%, transparent), transparent 58%);
       }
       [data-wx="sun"] .wx-orb, [data-wx="partly"] .wx-orb {
         background: radial-gradient(circle at 38% 36%, #fff8ea, var(--on) 58%);
+        box-shadow: 0 0 42px rgba(var(--on-rgb), 0.52);
         box-shadow: 0 0 42px color-mix(in srgb, var(--on) 52%, transparent);
         animation: wx-pulse 5s ease-in-out infinite;
       }
       [data-wx="sun"] .wx-cloud { display: none; }
       [data-wx="sun"] .wx-fall { display: none; }
       [data-wx="partly"] .wx-glow {
+        background: radial-gradient(70% 60% at 78% 16%, rgba(var(--on-rgb), 0.28), transparent 55%);
         background: radial-gradient(70% 60% at 78% 16%, color-mix(in srgb, var(--on) 28%, transparent), transparent 55%);
       }
       [data-wx="partly"] .wx-orb { width: min(26%, 4.2rem); top: 10%; right: 16%; }
       [data-wx="night"] .wx-glow {
-        background:
-          radial-gradient(1.5px 1.5px at 18% 22%, var(--ink), transparent),
+        background: radial-gradient(1.5px 1.5px at 18% 22%, var(--ink), transparent),
+          radial-gradient(1.2px 1.2px at 42% 18%, var(--ink), transparent),
+          radial-gradient(1.4px 1.4px at 70% 28%, var(--ink), transparent),
+          radial-gradient(1px 1px at 28% 48%, var(--ink), transparent),
+          radial-gradient(90% 70% at 82% 12%, rgba(var(--ink-rgb), 0.12), transparent 55%);
+        background: radial-gradient(1.5px 1.5px at 18% 22%, var(--ink), transparent),
           radial-gradient(1.2px 1.2px at 42% 18%, var(--ink), transparent),
           radial-gradient(1.4px 1.4px at 70% 28%, var(--ink), transparent),
           radial-gradient(1px 1px at 28% 48%, var(--ink), transparent),
@@ -275,6 +308,7 @@
       }
       [data-wx="night"] .wx-orb {
         background: radial-gradient(circle at 35% 35%, #f4f0e6 40%, #c8c2b4 100%);
+        box-shadow: 0 0 28px rgba(var(--ink-rgb), 0.18);
         box-shadow: 0 0 28px color-mix(in srgb, var(--ink) 18%, transparent);
       }
       [data-wx="night"] .wx-orb::after, [data-wx="cloud"] .wx-orb, [data-wx="fog"] .wx-orb,
@@ -285,6 +319,7 @@
       [data-wx="wind"] .wx-cloud { animation-duration: 6s; }
       [data-wx="rain"] .wx-fall, [data-wx="pour"] .wx-fall, [data-wx="storm"] .wx-fall {
         opacity: 0.4;
+        background: repeating-linear-gradient(-18deg, transparent 0 10px, rgba(var(--ink-rgb), 0.22) 10px 11px);
         background: repeating-linear-gradient(-18deg, transparent 0 10px, color-mix(in srgb, var(--ink) 22%, transparent) 10px 11px);
         background-size: 16px 28px;
         animation: wx-fall 0.55s linear infinite;
@@ -292,6 +327,7 @@
       [data-wx="pour"] .wx-fall { opacity: 0.55; animation-duration: 0.38s; }
       [data-wx="snow"] .wx-fall {
         opacity: 0.55;
+        background-image: radial-gradient(circle, rgba(var(--ink-rgb), 0.7) 1.1px, transparent 1.3px);
         background-image: radial-gradient(circle, color-mix(in srgb, var(--ink) 70%, transparent) 1.1px, transparent 1.3px);
         background-size: 16px 16px;
         animation: wx-fall 2.6s linear infinite;
@@ -305,9 +341,10 @@
       @keyframes wx-twinkle { 50% { opacity: 0.62; } }
       @keyframes wx-flash {
         0%, 86%, 94%, 100% { opacity: 0.2; background: transparent; }
-        88%, 91% { opacity: 1; background: color-mix(in srgb, var(--ink) 30%, transparent); }
+        88%, 91% { opacity: 1; background: rgba(var(--ink-rgb), 0.3); background: color-mix(in srgb, var(--ink) 30%, transparent); }
       }
       .name {
+        font-size: 3.6vw;
         font-size: clamp(1.15rem, 3.6vw, 1.75rem);
         font-weight: 600;
         letter-spacing: -0.03em;
@@ -317,7 +354,7 @@
       .tile.on .state { color: var(--on); opacity: 0.85; }
       #sheet {
         position: absolute;
-        inset: 0;
+        top: 0; right: 0; bottom: 0; left: 0;
         z-index: 6;
         display: flex;
         flex-direction: column;
@@ -417,6 +454,7 @@
         font-weight: 200;
         letter-spacing: -0.07em;
         line-height: 0.88;
+        font-size: 17vw;
         font-size: clamp(3.6rem, 17vw, 5.6rem);
       }
       .clima-k {
@@ -448,6 +486,7 @@
         line-height: 1.15;
         text-align: center;
         color: var(--muted);
+        background: rgba(var(--tile-rgb), 0.72);
         background: color-mix(in srgb, var(--tile) 72%, transparent);
         border: 1px solid transparent;
       }
@@ -460,27 +499,33 @@
       .clima-mode[data-hvac="off"].on { color: var(--muted); }
       .clima-mode[data-hvac="heat"].on {
         color: var(--heat);
+        background: rgba(var(--heat-rgb), 0.28);
         background: color-mix(in srgb, var(--heat) 28%, var(--tile));
       }
       .clima-mode[data-hvac="cool"].on {
         color: var(--cool);
+        background: rgba(var(--cool-rgb), 0.28);
         background: color-mix(in srgb, var(--cool) 28%, var(--tile));
       }
       .clima-mode[data-hvac="dry"].on {
         color: var(--dry);
+        background: rgba(var(--dry-rgb), 0.24);
         background: color-mix(in srgb, var(--dry) 24%, var(--tile));
       }
       .clima-mode[data-hvac="fan_only"].on { color: var(--fan); }
       html[data-mode="light"] .clima-mode[data-hvac="heat"].on {
         color: #8a5a20;
+        background: rgba(var(--heat-rgb), 0.46);
         background: color-mix(in srgb, var(--heat) 46%, var(--tile));
       }
       html[data-mode="light"] .clima-mode[data-hvac="cool"].on {
         color: #2a6a88;
+        background: rgba(var(--cool-rgb), 0.46);
         background: color-mix(in srgb, var(--cool) 46%, var(--tile));
       }
       html[data-mode="light"] .clima-mode[data-hvac="dry"].on {
         color: #3a5a78;
+        background: rgba(var(--dry-rgb), 0.42);
         background: color-mix(in srgb, var(--dry) 42%, var(--tile));
       }
       html[data-orientation="landscape"] .clima-mode { min-height: 56px; }
@@ -504,12 +549,14 @@
       .clima-chip.on {
         color: var(--ink);
         background: var(--tile);
+        border-color: rgba(var(--ink-rgb), 0.35);
         border-color: color-mix(in srgb, var(--ink) 35%, transparent);
       }
       .sheet-clock {
         font-variant-numeric: tabular-nums;
         font-weight: 300;
         letter-spacing: -0.07em;
+        font-size: 28vw;
         font-size: clamp(6.2rem, 28vw, 14rem);
         line-height: 0.88;
       }
@@ -571,22 +618,29 @@
       }
       #sheet[data-kind="room"] #sheet-body { justify-content: flex-start; }
       .lamp-glow {
+        width: 24vw;
         width: clamp(5.2rem, 24vw, 8.6rem);
+        height: 24vw;
         height: clamp(5.2rem, 24vw, 8.6rem);
         border-radius: 50%;
+        background: radial-gradient(circle at 50% 42%, rgba(var(--ink-rgb), 0.12), transparent 70%);
         background: radial-gradient(circle at 50% 42%, color-mix(in srgb, var(--ink) 12%, transparent), transparent 70%);
         border: 1px solid var(--line);
+        box-shadow: inset 0 1px 0 rgba(var(--ink-rgb), 0.08);
         box-shadow: inset 0 1px 0 color-mix(in srgb, var(--ink) 8%, transparent);
         transition: background 0.4s ease, box-shadow 0.4s ease, border-color 0.4s ease;
       }
       .lamp.on .lamp-glow {
+        background: radial-gradient(circle at 50% 36%, #fff8ea 0%, var(--on) 36%, rgba(var(--on-rgb), 0.22) 68%, transparent 100%);
         background: radial-gradient(circle at 50% 36%, #fff8ea 0%, var(--on) 36%, color-mix(in srgb, var(--on) 22%, transparent) 68%, transparent 100%);
+        border-color: rgba(var(--on-rgb), 0.4);
         border-color: color-mix(in srgb, var(--on) 40%, transparent);
+        box-shadow: 0 0 42px rgba(var(--on-rgb), 0.42);
         box-shadow: 0 0 42px color-mix(in srgb, var(--on) 42%, transparent);
         animation: lamp-breathe 3.6s ease-in-out infinite;
       }
       @keyframes lamp-breathe {
-        50% { box-shadow: 0 0 58px color-mix(in srgb, var(--on) 58%, transparent); }
+        50% { box-shadow: 0 0 58px rgba(var(--on-rgb), 0.58); box-shadow: 0 0 58px color-mix(in srgb, var(--on) 58%, transparent); }
       }
       .lamp-name {
         font-size: 0.98rem;
@@ -613,12 +667,19 @@
         position: relative;
         overflow: hidden;
         border-radius: var(--r, 16px);
+        background: rgba(var(--ink-rgb), 0.07);
         background: color-mix(in srgb, var(--ink) 7%, var(--tile));
         box-shadow: inset 0 0 0 1px var(--line);
       }
       .cv-glass {
         position: absolute;
-        inset: 0;
+        top: 0; right: 0; bottom: 0; left: 0;
+        background: linear-gradient(
+          180deg,
+          rgba(var(--ink-rgb), 0.04),
+          rgba(var(--cool-rgb), 0.16) 42%,
+          rgba(var(--ink-rgb), 0.06)
+        );
         background: linear-gradient(
           180deg,
           color-mix(in srgb, var(--ink) 4%, transparent),
@@ -633,7 +694,9 @@
         top: 0;
         height: var(--cover-fill, 100%);
         overflow: hidden;
+        background-color: rgba(var(--tile-rgb), 0.88);
         background-color: color-mix(in srgb, var(--tile) 88%, var(--ink));
+        box-shadow: inset 0 -1px 0 rgba(var(--ink-rgb), 0.28), 0 10px 18px rgba(0, 0, 0, 0.18);
         box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--ink) 28%, transparent), 0 10px 18px rgba(0, 0, 0, 0.18);
         transition: height 0.75s cubic-bezier(0.22, 1, 0.36, 1);
       }
@@ -645,9 +708,15 @@
         bottom: 0;
         height: 3px;
         border-radius: 2px 2px 0 0;
+        background: rgba(var(--ink-rgb), 0.42);
         background: color-mix(in srgb, var(--ink) 42%, transparent);
       }
       [data-cover="blind"] .cv-shade {
+        background-image: repeating-linear-gradient(
+          180deg,
+          rgba(var(--ink-rgb), 0.05) 0 7px,
+          rgba(var(--ink-rgb), 0.26) 7px 8px
+        );
         background-image: repeating-linear-gradient(
           180deg,
           color-mix(in srgb, var(--ink) 5%, transparent) 0 7px,
@@ -657,11 +726,21 @@
       [data-cover="curtain"] .cv-shade {
         background-image: repeating-linear-gradient(
           90deg,
+          rgba(var(--ink-rgb), 0.04) 0 11px,
+          rgba(var(--ink-rgb), 0.16) 11px 13px
+        );
+        background-image: repeating-linear-gradient(
+          90deg,
           color-mix(in srgb, var(--ink) 4%, transparent) 0 11px,
           color-mix(in srgb, var(--ink) 16%, transparent) 11px 13px
         );
       }
       [data-cover="awning"] .cv-shade {
+        background-image: repeating-linear-gradient(
+          180deg,
+          rgba(var(--ink-rgb), 0.04) 0 14px,
+          rgba(var(--on-rgb), 0.14) 14px 16px
+        );
         background-image: repeating-linear-gradient(
           180deg,
           color-mix(in srgb, var(--ink) 4%, transparent) 0 14px,
@@ -673,11 +752,13 @@
         left: 6%;
         right: 6%;
         border-radius: 3px;
+        background: rgba(var(--ink-rgb), 0.5);
         background: color-mix(in srgb, var(--ink) 50%, var(--on));
       }
       [data-cover="garage"] .cv-shade {
-        background-image:
-          linear-gradient(180deg, color-mix(in srgb, var(--ink) 5%, transparent), color-mix(in srgb, var(--ink) 14%, transparent)),
+        background-image: linear-gradient(180deg, rgba(var(--ink-rgb), 0.05), rgba(var(--ink-rgb), 0.14)),
+          repeating-linear-gradient(180deg, transparent 0 28%, rgba(var(--ink-rgb), 0.22) 28% 32%);
+        background-image: linear-gradient(180deg, color-mix(in srgb, var(--ink) 5%, transparent), color-mix(in srgb, var(--ink) 14%, transparent)),
           repeating-linear-gradient(180deg, transparent 0 28%, color-mix(in srgb, var(--ink) 22%, transparent) 28% 32%);
       }
       .tile--cover {
@@ -686,7 +767,7 @@
       }
       .tile--cover .cv-window {
         position: absolute;
-        inset: 14px 14px 62px;
+        top: 14px; right: 14px; bottom: 62px; left: 14px;
         border-radius: var(--r, 20px);
       }
       .tile--cover .name, .tile--cover .state { position: relative; z-index: 1; }
@@ -793,6 +874,7 @@
         font-weight: 600;
         letter-spacing: -0.04em;
         line-height: 1;
+        font-size: 12vw;
         font-size: clamp(3.2rem, 12vw, 4.6rem);
       }
       .wx-label {
@@ -857,7 +939,7 @@
       .wx-day-temps b { color: var(--ink); font-weight: 600; }
       #doorbell {
         position: absolute;
-        inset: 0;
+        top: 0; right: 0; bottom: 0; left: 0;
         z-index: 8;
         display: flex;
         flex-direction: column;
@@ -885,7 +967,7 @@
       /* Αφίσα (11/2026): the Arvio poster look on the wall. Square corners, condensed capitals for names
          and numbers (the tablet's own condensed face: no web fonts offline), no glow. */
       html[data-preset="afisa"] { --r: 4px; }
-      html[data-preset="afisa"] :is(.face, .name, h1, .room-all, .cv-name, .lamp-name) {
+      html[data-preset="afisa"] .face, html[data-preset="afisa"] .name, html[data-preset="afisa"] h1, html[data-preset="afisa"] .room-all, html[data-preset="afisa"] .cv-name, html[data-preset="afisa"] .lamp-name {
         font-family: "Roboto Condensed", "sans-serif-condensed", "Arial Narrow", "Helvetica Neue", sans-serif;
         font-weight: 700;
         letter-spacing: 0;
@@ -940,6 +1022,26 @@
       }
       #gate .err { margin-top: 0.8rem; color: var(--ink); border-left: 3px solid #c23d14; padding-left: 0.6rem; }
       #gate .err:empty { border: 0; padding: 0; }
+      /* Older iPads (Safari before 14.1) ignore gap in flex boxes: margins instead. The class comes
+         from a feature test at the top of the script. Grid gap works there. */
+      .no-flex-gap #gate > * + * { margin-top: 1rem; }
+      .no-flex-gap #sheet > * + *, .no-flex-gap .cv > * + * { margin-top: 16px; }
+      .no-flex-gap #sheet-body > * + *, .no-flex-gap .clima > * + * { margin-top: 12px; }
+      .no-flex-gap .lamp > * + * { margin-top: 14px; }
+      .no-flex-gap .cv-card > * + * { margin-top: 10px; }
+      .no-flex-gap .wx-hour > * + * { margin-top: 6px; }
+      .no-flex-gap .clima-mode > * + * { margin-top: 5px; }
+      .no-flex-gap #sheet-top > * + *, .no-flex-gap .chip > * + *, .no-flex-gap .device > * + * { margin-left: 12px; }
+      .no-flex-gap .step > * + *, .no-flex-gap .sec-row > * + * { margin-left: 16px; }
+      .no-flex-gap .wx-now > * + * { margin-left: 14px; }
+      .no-flex-gap .wx-day-temps > * + * { margin-left: 10px; }
+      .no-flex-gap .wx-hours > * + * { margin-left: 2px; }
+      .no-flex-gap .clima-chips div > * { margin: 0 8px 8px 0; }
+      .no-flex-gap #doorbell-bar > * { margin: 0 12px 12px 0; }
+      /* aspect-ratio arrived in Safari 15: a square from padding on older iPads. */
+      @supports not (aspect-ratio: 1) {
+        .wx-orb { height: 0; padding-bottom: min(34%, 5.4rem); }
+      }
     </style>
   </head>
   <body>
@@ -979,8 +1081,19 @@
       </div>
     </aside>
     <script>
+      // Flex gap arrived in Safari 14.1: older iPads get margins (.no-flex-gap in the CSS).
+      (function () {
+        const d = document.createElement("div");
+        d.style.cssText = "display:flex;flex-direction:column;row-gap:1px;position:absolute";
+        d.appendChild(document.createElement("div"));
+        d.appendChild(document.createElement("div"));
+        document.documentElement.appendChild(d);
+        if (d.scrollHeight !== 1) document.documentElement.classList.add("no-flex-gap");
+        d.parentNode.removeChild(d);
+      })();
       const KEY = "arvio.panel.screen_id";
       const SECRET_KEY = "arvio.panel.screen_secret";
+      let lastGood = Date.now(); // last snapshot the hub answered (the page's own watchdog, below)
       const DOOR_LINES = {
         repair_required: "Κάποιος στο κουδούνι. Για κάμερα και πόρτα, το πάνελ πρέπει να συνδεθεί ξανά.",
         no_recent_ring: "Η πόρτα ανοίγει μόνο αμέσως μετά το κουδούνι.",
@@ -1297,6 +1410,7 @@
         root.style.setProperty("--muted", pal.muted);
         root.style.setProperty("--on", pal.on);
         root.style.setProperty("--line", pal.line);
+        for (const k of ["bg", "tile", "ink", "on"]) root.style.setProperty("--" + k + "-rgb", hexRgb(pal[k]));
         const meta = document.querySelector('meta[name="theme-color"]');
         if (meta) meta.setAttribute("content", pal.bg);
       }
@@ -1455,6 +1569,7 @@
             hour: "2-digit",
             minute: "2-digit",
             hourCycle: "h23",
+            hour12: false,
             timeZone: tz(),
           }).format(date);
         } catch (e) {
@@ -1534,6 +1649,7 @@
             day: "2-digit",
             hour: "2-digit",
             hourCycle: "h23",
+            hour12: false,
           }).format(new Date(iso));
         } catch (e) {
           return "";
@@ -1555,6 +1671,7 @@
             hour: "2-digit",
             minute: "2-digit",
             hourCycle: "h23",
+            hour12: false,
             timeZone: tz(),
           }).format(new Date(iso));
         } catch (e) {
@@ -1674,7 +1791,7 @@
       }
       function beep() {
         try {
-          const c = new AudioContext();
+          const c = new (window.AudioContext || window.webkitAudioContext)(); // iPad before iOS 14.5: webkit only
           const o = c.createOscillator();
           const g = c.createGain();
           o.connect(g);
@@ -2285,7 +2402,8 @@
             var nx = new Date(venueWall.next_starts_at);
             var nlabel = venueWall.next_package_name || "Κράτηση";
             if (!Number.isNaN(nx.getTime())) {
-              nlabel += " " + new Intl.DateTimeFormat("el-GR", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: tz() }).format(nx);
+              nlabel += " " + new Intl.DateTimeFormat("el-GR", { hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+            hour12: false, timeZone: tz() }).format(nx);
             }
             pkg = nlabel;
           }
@@ -2419,7 +2537,8 @@
             var nx = new Date(venueWall.next_starts_at);
             var nlabel = (venueWall.next_package_name || "Κράτηση");
             if (!Number.isNaN(nx.getTime())) {
-              nlabel += " " + new Intl.DateTimeFormat("el-GR", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: tz() }).format(nx);
+              nlabel += " " + new Intl.DateTimeFormat("el-GR", { hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+            hour12: false, timeZone: tz() }).format(nx);
             }
             pkg = nlabel;
           }
@@ -2572,6 +2691,7 @@
         const found = next.screens.find((s) => s.screen_id === sid) || null;
         if (!found) return;
         miss = 0;
+        lastGood = Date.now();
         snap = next;
         pruneOverlay();
         hubId = snap.hub_id || hubId;
@@ -2749,7 +2869,9 @@
         const w = pagesEl.clientWidth || 1;
         pageIx = Math.round(pagesEl.scrollLeft / w);
       });
+      // Pointer events arrived in iOS 13; older iPads only send touches.
       document.addEventListener("pointerdown", armHomeIdle, { passive: true });
+      document.addEventListener("touchstart", armHomeIdle, { passive: true });
 
       (async () => {
         try {
@@ -2760,8 +2882,12 @@
         // leaves the address bar before anything else runs; it is never sent as a URL.
         const pairToken = (location.hash.match(/^#pair=([A-Za-z0-9_-]{43})$/) || [])[1];
         if (pairToken) history.replaceState(null, "", location.pathname + location.search);
+        // An iPad's home-screen icon keeps its first URL, #pair= included: once that iPad is
+        // paired, the spent token is left alone instead of counting as a wrong attempt.
+        const spent = pairToken && navigator.standalone && localStorage.getItem(KEY);
         const paired =
           pairToken &&
+          !spent &&
           (await pairWith({ token: pairToken }, "Η αυτόματη σύζευξη δεν έγινε. Βάλε τον κωδικό από τον Partner."));
         if (!paired && localStorage.getItem(KEY)) {
           gate.classList.add("hidden");
@@ -2780,6 +2906,20 @@
       const beat = () => window.ArvioPanel && window.ArvioPanel.alive(!!localStorage.getItem(KEY));
       beat();
       setInterval(beat, 30000);
+
+      // Without the app (an iPad, any browser) the page looks after itself: a fresh start when the
+      // hub has answered nothing useful for 3 min, and every night at 04:00 (old Safari leaks
+      // memory over days). Only when /health answers, so Safari never lands on its error page.
+      const PAGE_BORN = Date.now();
+      setInterval(async () => {
+        if (window.ArvioPanel || !localStorage.getItem(KEY)) return; // the app has its own watchdog
+        const stale = Date.now() - lastGood > 3 * 60000;
+        const nightly = new Date().getHours() === 4 && Date.now() - PAGE_BORN > 3600000;
+        if (!stale && !nightly) return;
+        try {
+          if ((await fetch("/health", { cache: "no-store" })).ok) location.reload();
+        } catch (e) {}
+      }, 60000);
     </script>
   </body>
 </html>
