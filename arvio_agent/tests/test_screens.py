@@ -170,6 +170,11 @@ class ScreenStoreTest(unittest.TestCase):
         cleared = agent.put_wall_screen(self._row(theme=None))
         self.assertNotIn("theme", cleared["screen"])
 
+    def test_accepts_afisa(self):
+        # Partner's first and default look (domain THEME_PRESETS); panel.html draws it.
+        out = agent.put_wall_screen(self._row(theme={"preset": "afisa", "mode": "light", "icons": "line"}))
+        self.assertEqual(out["screen"]["theme"]["preset"], "afisa")
+
     def test_refuses_unknown_theme(self):
         with self.assertRaises(ValueError) as cm:
             agent.put_wall_screen(self._row(theme={"preset": "neon", "mode": "dark", "icons": "line"}))

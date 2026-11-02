@@ -228,7 +228,7 @@ SHUTDOWN_SCRIPT_RE = re.compile(r"^script\.\d+_scene_shutdown$")
 SHUTDOWN_SCENARIO_RE = re.compile(r"^scenario:[A-Za-z0-9_\-.]+$")
 SCREEN_ORIENTATIONS = frozenset({"landscape", "portrait", "square"})
 SCREEN_THEME_PRESETS = frozenset(
-    {"grafitis", "penteli", "drys", "lino", "beton", "aigaio", "elia", "vasaltis", "galini"}
+    {"afisa", "grafitis", "penteli", "drys", "lino", "beton", "aigaio", "elia", "vasaltis", "galini"}
 )
 SCREEN_THEME_MODES = frozenset({"light", "dark"})
 SCREEN_ICON_STYLES = frozenset({"line", "filled"})
