@@ -1,5 +1,5 @@
 name: "Arvio Updater"
-version: "0.1.0"
+version: "0.1.1"
 slug: arvio_updater
 description: "Companion that applies Arvio Agent store updates (Supervisor forbids self-update)."
 url: "https://github.com/nisfikas/arvio-ha-addons"

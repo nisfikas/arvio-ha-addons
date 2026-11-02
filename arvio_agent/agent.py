@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import html as html_lib
 import io
+import ipaddress
 import json
 import math
 import os
@@ -52,7 +53,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.54"
+AGENT_VERSION = "0.1.55"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -8048,6 +8049,40 @@ def redeem_claim(claim_id: str, token: str, site_id: str, actor: dict) -> dict:
     }
 
 
+# A hub on the home network answers to its IP, `localhost`, a single-label name, mDNS (`.local`) and
+# the usual private suffixes. Any other name in `Host` is DNS rebinding: a public domain pointed at
+# the hub's LAN address so a web page can read and drive it (security review 2026-11-02).
+LAN_HOST_SUFFIXES = (".local", ".lan", ".home.arpa", ".internal", ".ts.net")
+
+
+def lan_host_ok(host: str) -> bool:
+    host = host.strip().lower()
+    if host.startswith("["):
+        host = host[1:].split("]", 1)[0]
+    elif host.count(":") == 1:
+        host = host.split(":", 1)[0]
+    host = host.rstrip(".")
+    if not host:
+        return False
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        pass
+    return host == "localhost" or "." not in host or host.endswith(LAN_HOST_SUFFIXES)
+
+
+def lan_request_ok(host: str, origin: str | None) -> bool:
+    """Same host, and a host of the home network. A browser always sends `Origin` across sites."""
+    if not lan_host_ok(host):
+        return False
+    if not origin or origin == "null":
+        return origin is None
+    o = urlparse(origin)
+    h = host.strip().lower()
+    return (o.netloc or "").lower() == h or (o.hostname or "").lower() == h.rsplit(":", 1)[0].strip("[]")
+
+
 class H(BaseHTTPRequestHandler):
     """Unauthenticated LAN HTTP on :8099.
 
@@ -8102,7 +8137,15 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Allow", "GET, POST, OPTIONS")
         self.end_headers()
 
+    def _lan_ok(self) -> bool:
+        if lan_request_ok(self.headers.get("Host") or "", self.headers.get("Origin")):
+            return True
+        self._j(403, {"ok": False, "error": "forbidden_origin"})
+        return False
+
     def do_GET(self) -> None:  # noqa: N802
+        if not self._lan_ok():
+            return
         path = urlparse(self.path).path
         if path in ("/partner", "/partner/"):
             return self._file("partner.html", "text/html; charset=utf-8")
@@ -8250,6 +8293,8 @@ class H(BaseHTTPRequestHandler):
         self._j(404, {"error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802
+        if not self._lan_ok():
+            return
         path = urlparse(self.path).path
         try:
             if path == "/v1/lab/bootstrap":

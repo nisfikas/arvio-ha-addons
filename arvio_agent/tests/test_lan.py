@@ -140,8 +140,9 @@ class LanPathTest(unittest.TestCase):
     def test_same_origin_only_no_cors_grants(self):
         agent.save_hub({"hub_id": "hub_lan"})
         origin = {"Origin": "http://evil.example"}
+        # A page on another site gets nothing at all, not even /health (review 2026-11-02).
         status, headers, _ = self.request("GET", "/health", headers=origin)
-        self.assertEqual(status, 200)
+        self.assertEqual(status, 403)
         self.assertFalse([k for k in headers if k.lower().startswith("access-control-")], headers)
         with mock.patch.object(agent, "hub_id", "hub_lan"):
             status, headers, _ = self.request("POST", "/v1/hubs/hub_lan/commands",
@@ -162,7 +163,7 @@ class LanPathTest(unittest.TestCase):
         agent.save_hub({"hub_id": "hub_lan", "snapshot_version": 7})
         with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/health", timeout=5) as r:
             body = json.loads(r.read().decode())
-        self.assertEqual(body["agent_version"], "0.1.54")
+        self.assertEqual(body["agent_version"], "0.1.55")
         self.assertIn("ma_available", body)
         self.assertEqual(body["snapshot_version"], 7)
 
@@ -248,3 +249,21 @@ class LanPathTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LanOriginTest(unittest.TestCase):
+    """DNS rebinding and cross-site requests (security review 2026-11-02)."""
+
+    def test_hosts_of_the_home_network(self):
+        for host in ("192.168.1.20:8099", "[fe80::1]:8099", "localhost:8099", "homeassistant:8099", "homeassistant.local.:8099", "hub.lan", "nas.tail1234.ts.net:8099"):
+            self.assertTrue(agent.lan_host_ok(host), host)
+        for host in ("evil.example.com:8099", "attacker.com", ""):
+            self.assertFalse(agent.lan_host_ok(host), host)
+
+    def test_origin_must_be_the_hub_itself(self):
+        self.assertTrue(agent.lan_request_ok("192.168.1.20:8099", None))
+        self.assertTrue(agent.lan_request_ok("192.168.1.20:8099", "http://192.168.1.20:8099"))
+        self.assertFalse(agent.lan_request_ok("192.168.1.20:8099", "http://evil.example.com"))
+        self.assertFalse(agent.lan_request_ok("192.168.1.20:8099", "null"))
+        # Rebinding: same host and origin, but a public name.
+        self.assertFalse(agent.lan_request_ok("evil.example.com:8099", "http://evil.example.com:8099"))

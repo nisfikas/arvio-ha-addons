@@ -67,11 +67,9 @@ def process_request(req: dict) -> None:
         # Never update ourselves from this file without an explicit agent slug.
         if not slug:
             raise RuntimeError("slug required")
-    # Prefer agent slug from request; fall back common names.
-    candidates = [slug]
-    for alt in ("local_arvio_agent", "arvio_agent"):
-        if alt not in candidates:
-            candidates.append(alt)
+    # Only the Arvio agent, whatever store prefix it carries: anything that can write to /share
+    # must not be able to have this add-on (manager role) update any other add-on (review 2026-11-02).
+    candidates = [c for c in dict.fromkeys([slug, "local_arvio_agent", "arvio_agent"]) if c == "arvio_agent" or c.endswith("_arvio_agent")]
 
     supervisor("/store/reload", "POST", {}, timeout=90)
     last_err = None
