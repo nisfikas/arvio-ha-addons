@@ -2776,7 +2776,8 @@
 
       // Arvio Panel app (docs/ADR/012): a heartbeat; without it for 2 min the app replaces a
       // hung page. A browser has no ArvioPanel, so this does nothing there.
-      const beat = () => window.ArvioPanel && window.ArvioPanel.alive();
+      // alive(true) once paired: the app (device owner, release build) then locks ADB away.
+      const beat = () => window.ArvioPanel && window.ArvioPanel.alive(!!localStorage.getItem(KEY));
       beat();
       setInterval(beat, 30000);
     </script>

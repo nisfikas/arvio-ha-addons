@@ -1105,7 +1105,7 @@ class ScreenLanHttpTest(unittest.TestCase):
         self.assertIn('history.replaceState(null, "", location.pathname + location.search)', html)
         self.assertIn("await pairWith({ token: pairToken }", html)
         # the app's hang check: a heartbeat every 30 s, harmless in a browser
-        self.assertIn("const beat = () => window.ArvioPanel && window.ArvioPanel.alive();", html)
+        self.assertIn("const beat = () => window.ArvioPanel && window.ArvioPanel.alive(!!localStorage.getItem(KEY));", html)
         self.assertIn("setInterval(beat, 30000);", html)
 
     def test_panel_sends_the_secret_as_a_header_only(self):
