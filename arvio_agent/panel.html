@@ -2546,19 +2546,24 @@
           gateErr.textContent = "Έξι ψηφία.";
           return;
         }
+        await pairWith({ code }, "Λάθος ή ληγμένος κωδικός.");
+      }
+
+      // { code } typed from Partner, or { token } from the hub when it installs the Arvio Panel app.
+      async function pairWith(payload, failText) {
         const r = await screenFetch("/api/screens/pair", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ code }),
+          body: JSON.stringify(payload),
         });
         const body = await r.json().catch(() => ({}));
         if (r.status === 429) {
           gateErr.textContent = "Πολλές λάθος προσπάθειες. Ξανά σε 15 λεπτά.";
-          return;
+          return false;
         }
         if (!r.ok || !body.screen_id) {
-          gateErr.textContent = "Λάθος ή ληγμένος κωδικός.";
-          return;
+          gateErr.textContent = failText;
+          return false;
         }
         localStorage.setItem(KEY, body.screen_id);
         if (body.screen_secret) localStorage.setItem(SECRET_KEY, body.screen_secret);
@@ -2566,6 +2571,7 @@
         document.getElementById("code").value = "";
         await load(false);
         armHomeIdle();
+        return true;
       }
 
       document.getElementById("pair").addEventListener("click", pair);
@@ -2697,7 +2703,14 @@
           const h = await fetch("/health").then((r) => r.json());
           hubId = h.hub_id;
         } catch (e) {}
-        if (localStorage.getItem(KEY)) {
+        // The app opens /panel#pair=<token> once, right after the hub installed it. The token
+        // leaves the address bar before anything else runs; it is never sent as a URL.
+        const pairToken = (location.hash.match(/^#pair=([A-Za-z0-9_-]{43})$/) || [])[1];
+        if (pairToken) history.replaceState(null, "", location.pathname + location.search);
+        const paired =
+          pairToken &&
+          (await pairWith({ token: pairToken }, "Η αυτόματη σύζευξη δεν έγινε. Βάλε τον κωδικό από τον Partner."));
+        if (!paired && localStorage.getItem(KEY)) {
           gate.classList.add("hidden");
           await load(true).catch(() => {});
           armHomeIdle();

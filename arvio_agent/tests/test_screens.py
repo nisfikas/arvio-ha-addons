@@ -6,8 +6,10 @@ import contextlib
 import hashlib
 import io
 import json
+import pathlib
 import re
 import shutil
+import tempfile
 import threading
 import time
 import unittest
@@ -1039,6 +1041,65 @@ class ScreenLanHttpTest(unittest.TestCase):
         logged = "\n".join(lines) + out.getvalue() + err.getvalue()
         self.assertNotIn(secret, logged)
         self.assertNotIn(agent.hash_screen_secret(secret), logged)
+
+    def test_install_token_pairs_once_and_closes_the_code(self):
+        agent.put_wall_screen(self._row(code="246810"))
+        token = agent.mint_screen_pair_token("scr_aaaaaaaaaaaaaaaa")
+        self.assertEqual(len(token), 43)
+        self.assertNotIn(token, agent.SCREENS.read_text(encoding="utf-8"))
+        # a Partner layout save during the install keeps the token
+        agent.put_wall_screen(self._row(code="246810", name="Είσοδος"))
+        status, raw = self.request("POST", "/api/screens/pair", {"token": token})
+        self.assertEqual(status, 200, raw)
+        body = json.loads(raw.decode())
+        self.assertEqual(body["screen_id"], "scr_aaaaaaaaaaaaaaaa")
+        row = agent.load_screens()["screens"]["scr_aaaaaaaaaaaaaaaa"]
+        self.assertEqual(row["screen_secret_hash"], agent.hash_screen_secret(body["screen_secret"]))
+        self.assertNotIn("pair_token_hash", row)
+        # single use, and the installer's outstanding 6-digit code is spent with it
+        self.assertEqual(self.request("POST", "/api/screens/pair", {"token": token})[0], 400)
+        self.assertEqual(self.request("POST", "/api/screens/pair", {"code": "246810"})[0], 400)
+        self.assertNotIn("pair_token", json.dumps(agent.list_wall_screens()))
+
+    def test_install_token_expires_after_ten_minutes(self):
+        agent.put_wall_screen(self._row())
+        token = agent.mint_screen_pair_token("scr_aaaaaaaaaaaaaaaa")
+        doc = agent.load_screens()
+        doc["screens"]["scr_aaaaaaaaaaaaaaaa"]["pair_token_expires_at"] = "2020-01-01T00:00:00.000Z"
+        agent.save_screens(doc)
+        status, raw = self.request("POST", "/api/screens/pair", {"token": token})
+        self.assertEqual((status, json.loads(raw.decode())["error"]), (400, "pairing_mismatch"))
+        with self.assertRaises(ValueError):
+            agent.mint_screen_pair_token("scr_missing000000000")
+
+    def test_wrong_tokens_share_the_lockout_and_junk_is_refused(self):
+        agent.put_wall_screen(self._row())
+        token = agent.mint_screen_pair_token("scr_aaaaaaaaaaaaaaaa")
+        status, raw = self.request("POST", "/api/screens/pair", {"token": token[:-1]})
+        self.assertEqual((status, json.loads(raw.decode())["error"]), (400, "invalid_code"))
+        for i in range(10):
+            wrong = f"{i:02d}" + token[2:]
+            self.assertEqual(self.request("POST", "/api/screens/pair", {"token": wrong})[0], 400, i)
+        status, raw = self.request("POST", "/api/screens/pair", {"token": token})
+        self.assertEqual((status, json.loads(raw.decode())["error"]), (429, "pairing_locked"))
+
+    def test_panel_app_is_served_from_the_agent_image(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(agent, "APP", pathlib.Path(d)):
+            self.assertEqual(self.request("GET", "/panel/app.json")[0], 404)
+            self.assertEqual(self.request("GET", "/panel/app.apk")[0], 404)
+            (pathlib.Path(d) / "panel-app").mkdir()
+            meta = {"version_code": 1, "version_name": "0.1.0", "sha256": "00" * 32, "size": 6}
+            (pathlib.Path(d) / "panel-app" / "app.json").write_text(json.dumps(meta), encoding="utf-8")
+            (pathlib.Path(d) / "panel-app" / "arvio-panel.apk").write_bytes(b"PK\x03\x04ok")
+            status, raw = self.request("GET", "/panel/app.json")
+            self.assertEqual((status, json.loads(raw.decode())), (200, meta))
+            self.assertEqual(self.request("GET", "/panel/app.apk"), (200, b"PK\x03\x04ok"))
+
+    def test_panel_pairs_from_the_install_fragment_and_drops_it(self):
+        html = (ROOT / "panel.html").read_text(encoding="utf-8")
+        self.assertIn("location.hash.match(/^#pair=([A-Za-z0-9_-]{43})$/)", html)
+        self.assertIn('history.replaceState(null, "", location.pathname + location.search)', html)
+        self.assertIn("await pairWith({ token: pairToken }", html)
 
     def test_panel_sends_the_secret_as_a_header_only(self):
         html = (ROOT / "panel.html").read_text(encoding="utf-8")

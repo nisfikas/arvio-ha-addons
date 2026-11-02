@@ -247,6 +247,9 @@ PAIR_LOCK_S = 15 * 60
 # buckets only if a venue ever needs them.
 PAIR_FAILS: list[float] = []
 PAIR_LOCKED_UNTIL = 0.0
+# Install-time pairing: the hub hands its own app a token over ADB (docs/ADR/012).
+PAIR_TOKEN_TTL_S = 10 * 60
+PAIR_TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{43}")  # secrets.token_urlsafe(32)
 # One read-modify-write of screens.json at a time: pairing, panel reads (last_seen_at) and
 # relay pushes, so a poll can never save over a freshly issued secret hash.
 SCREENS_LOCK = threading.Lock()
@@ -1347,9 +1350,10 @@ def _put_wall_screen(payload: dict | None, entity_id: str = "") -> dict:
         "last_seen_at": prev.get("last_seen_at"),
         "updated_at": str(payload.get("updated_at") or now_iso()),
     }
-    if prev.get("screen_secret_hash"):
-        # Hub-only (pair_wall_screen): the cloud never sends or sees it.
-        row["screen_secret_hash"] = prev["screen_secret_hash"]
+    # Hub-only (pair_wall_screen, mint_screen_pair_token): the cloud never sends or sees them.
+    for key in ("screen_secret_hash", "pair_token_hash", "pair_token_expires_at"):
+        if prev.get(key):
+            row[key] = prev[key]
     if "wallpaper_scrim" in prev:
         row["wallpaper_scrim"] = prev.get("wallpaper_scrim")
     if "wallpaper_asset" in prev:
@@ -1402,28 +1406,62 @@ def pairing_open(row: dict) -> bool:
     return exp is None or time.time() <= exp
 
 
+def pair_token_open(row: dict) -> bool:
+    exp = parse_iso_ts(row.get("pair_token_expires_at"))
+    return bool(row.get("pair_token_hash")) and exp is not None and time.time() <= exp
+
+
+def mint_screen_pair_token(screen_id: str) -> str:
+    """Install-time pairing: 256 bits, 10 min, single use. The hub hands it to its own app
+    over ADB; screens.json keeps only its SHA-256."""
+    with SCREENS_LOCK:
+        doc = load_screens()
+        row = doc["screens"].get(str(screen_id))
+        if not isinstance(row, dict):
+            raise ValueError("not_found")
+        token = secrets.token_urlsafe(32)
+        row["pair_token_hash"] = hash_screen_secret(token)
+        row["pair_token_expires_at"] = datetime.fromtimestamp(
+            time.time() + PAIR_TOKEN_TTL_S, timezone.utc
+        ).isoformat()
+        save_screens(doc)
+        return token
+
+
 def pair_wall_screen(code: str) -> dict:
-    """One-shot code → per-screen secret. The plain secret leaves the hub once, here;
-    screens.json keeps only its SHA-256. Re-pairing rotates it."""
+    """One-shot code (6 digits from Partner) or install token → per-screen secret. The plain
+    secret leaves the hub once, here; screens.json keeps only its SHA-256. Re-pairing rotates
+    it, and any pairing spends whatever code or token was still open for that screen."""
     global PAIR_LOCKED_UNTIL
     with SCREENS_LOCK:
         now_m = time.monotonic()
         if now_m < PAIR_LOCKED_UNTIL:
             raise ValueError("pairing_locked")
         code = str(code or "").strip()
-        if not re.fullmatch(r"\d{6}", code):
+        is_token = bool(PAIR_TOKEN_RE.fullmatch(code))
+        if not is_token and not re.fullmatch(r"\d{6}", code):
             raise ValueError("invalid_code")
         doc = load_screens()
         for row in doc["screens"].values():
-            if not isinstance(row, dict) or not pairing_open(row):
+            if not isinstance(row, dict):
                 continue
             site_id = str(row.get("site_id") or "")
             screen_id = str(row.get("screen_id") or "")
-            if hmac.compare_digest(hash_screen_pairing(code, site_id, screen_id), str(row["pairing_code_hash"])):
+            if is_token:
+                ok = pair_token_open(row) and hmac.compare_digest(
+                    hash_screen_secret(code), str(row["pair_token_hash"])
+                )
+            else:
+                ok = pairing_open(row) and hmac.compare_digest(
+                    hash_screen_pairing(code, site_id, screen_id), str(row["pairing_code_hash"])
+                )
+            if ok:
                 secret = secrets.token_urlsafe(32)
                 row["screen_secret_hash"] = hash_screen_secret(secret)
                 row["pairing_used_at"] = now_iso()
                 row["last_seen_at"] = now_iso()
+                row.pop("pair_token_hash", None)
+                row.pop("pair_token_expires_at", None)
                 save_screens(doc)
                 return {"ok": True, "screen_id": screen_id, "screen": public_screen(row), "screen_secret": secret}
         PAIR_FAILS[:] = [t for t in PAIR_FAILS if now_m - t < PAIR_LOCK_S] + [now_m]
@@ -8155,6 +8193,12 @@ class H(BaseHTTPRequestHandler):
             return self._file("remote.html", "text/html; charset=utf-8")
         if path in ("/panel", "/panel/"):
             return self._file("panel.html", "text/html; charset=utf-8")
+        # The Arvio Panel app updates itself from its hub, offline (docs/ADR/012). The APK is
+        # not secret; Android refuses one that SFK's key did not sign.
+        if path == "/panel/app.json":
+            return self._file("panel-app/app.json", "application/json")
+        if path == "/panel/app.apk":
+            return self._file("panel-app/arvio-panel.apk", "application/vnd.android.package-archive")
         if path == "/api/screens/wallpaper":
             qs = parse_qs(urlparse(self.path).query)
             sid = (qs.get("id") or [None])[0]
@@ -8307,7 +8351,7 @@ class H(BaseHTTPRequestHandler):
             if path == "/api/screens/pair":
                 body = self._read_json()
                 try:
-                    out = pair_wall_screen(str(body.get("code") or ""))
+                    out = pair_wall_screen(str(body.get("token") or body.get("code") or ""))
                 except ValueError as e:
                     status = 429 if str(e) == "pairing_locked" else 400
                     return self._j(status, {"ok": False, "error": str(e)})
