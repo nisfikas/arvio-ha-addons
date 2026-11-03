@@ -54,10 +54,17 @@ class DeviceRegistryParseTest(unittest.TestCase):
             out = agent.area_update({"area_id": "saloni", "name": "Καθιστικό"})
             self.assertEqual(calls[-1][0], "config/area_registry/update")
             self.assertEqual(calls[-1][1]["name"], "Καθιστικό")
+            out = agent.area_create({"name": "  Ξενώνας "})
+            self.assertEqual(calls[-1], ("config/area_registry/create", {"name": "Ξενώνας"}))
+            self.assertEqual(out["name"], "Ξενώνας")
+            with self.assertRaises(ValueError):
+                agent.area_create({"name": " "})
 
     def test_not_on_lan_allowlist(self):
         self.assertIn("arvio.device_update", agent.AGENT_SERVICE_ALLOWLIST)
         self.assertIn("arvio.area_update", agent.AGENT_SERVICE_ALLOWLIST)
+        self.assertIn("arvio.area_create", agent.AGENT_SERVICE_ALLOWLIST)
+        self.assertNotIn("arvio.area_create", agent.LAN_ALLOWED_ACTIONS)
         self.assertIn("arvio.device_remove", agent.AGENT_SERVICE_ALLOWLIST)
         self.assertNotIn("arvio.device_update", agent.LAN_ALLOWED_ACTIONS)
         self.assertNotIn("arvio.area_update", agent.LAN_ALLOWED_ACTIONS)

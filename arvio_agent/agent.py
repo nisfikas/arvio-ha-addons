@@ -56,7 +56,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.56"
+AGENT_VERSION = "0.1.57"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -2463,6 +2463,20 @@ def area_update(payload: dict | None = None, entity_id: str = "") -> dict:
     return {"ok": True, **extra}
 
 
+def area_create(payload: dict | None = None, entity_id: str = "") -> dict:
+    """«Νέο δωμάτιο» from Arvio Home: one HA area by name. entity_id unused."""
+    del entity_id
+    payload = payload if isinstance(payload, dict) else {}
+    name = str(payload.get("name") or "").strip()
+    if not name or len(name) > DEVICE_NAME_MAX:
+        raise ValueError("invalid name")
+    # TODO confirm: config/area_registry/create is frontend-internal but stable (sibling of update).
+    entry = ha_ws_command("config/area_registry/create", {"name": name})
+    schedule_registry_refresh("area_create", delay=0.4)
+    area_id = entry.get("area_id") if isinstance(entry, dict) else None
+    return {"ok": True, "area_id": area_id, "name": name}
+
+
 def device_update(payload: dict | None = None, entity_id: str = "") -> dict:
     """Rename / assign area via documented device or entity registry WS."""
     payload = payload if isinstance(payload, dict) else {}
@@ -4526,6 +4540,8 @@ def execute_action(
         return device_update(payload, entity_id)
     if action == "arvio.area_update":
         return area_update(payload, entity_id)
+    if action == "arvio.area_create":
+        return area_create(payload, entity_id)
     if action == "arvio.device_remove":
         return device_remove(payload, entity_id)
     if action == "arvio.light_group":
@@ -5014,6 +5030,7 @@ AGENT_SERVICE_ALLOWLIST = frozenset(
         "arvio.zigbee_permit",
         "arvio.device_update",
         "arvio.area_update",
+        "arvio.area_create",
         "arvio.device_remove",
         "arvio.light_group",
         "arvio.upsert_scene",
