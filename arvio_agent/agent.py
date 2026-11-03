@@ -56,7 +56,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.57"
+AGENT_VERSION = "0.1.58"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -180,12 +180,39 @@ def opts() -> None:
         RELAY_URL = CLOUD
 
 
+def write_json_atomic(path: Path, s: dict) -> None:
+    """Write, fsync, rename: a power cut leaves the old file or the new one, never an empty one."""
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(json.dumps(s, indent=2))
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+
 def save_hub(s: dict) -> None:
-    STATE.write_text(json.dumps(s, indent=2))
+    write_json_atomic(STATE, s)
 
 
 def load_hub() -> dict:
-    return json.loads(STATE.read_text()) if STATE.exists() else {}
+    """The hub's identity. An unreadable file (one a power cut emptied before 0.1.58 wrote atomically)
+    used to crash the agent on every start, for ever (SFK office HP, 2026-11-02): it is kept aside
+    for support and the agent starts with no hub state instead."""
+    if not STATE.exists():
+        return {}
+    try:
+        data = json.loads(STATE.read_text() or "null")
+        if isinstance(data, dict):
+            return data
+    except (OSError, ValueError):
+        pass
+    aside = STATE.with_name(f"hub.json.unreadable-{int(time.time())}")
+    try:
+        STATE.replace(aside)
+    except OSError:
+        pass
+    print(f"arvio-agent: hub.json unreadable, kept as {aside.name}; starting with no hub state", flush=True)
+    return {}
 
 
 def load_lab() -> dict:
@@ -202,7 +229,7 @@ def load_lab() -> dict:
 
 
 def save_lab(s: dict) -> None:
-    LAB.write_text(json.dumps(s, indent=2))
+    write_json_atomic(LAB, s)
 
 
 def sha(s: str) -> str:
