@@ -3520,6 +3520,33 @@ def occupancy_tick_loop() -> None:
             print(f"occupancy tick: {e}", flush=True)
 
 
+def flow_runs(payload: dict) -> dict:
+    """What an automation did lately, from Arvio Core's own log. A hub on Home Assistant has no such
+    route and answers an error, which the cloud shows as «needs Arvio Core»."""
+    sid = str(payload.get("id") or payload.get("scenario_id") or "").strip()
+    if not _is_ha_config_id(sid):
+        raise ValueError("invalid_id")
+    try:
+        limit = max(1, min(int(payload.get("limit") or 100), 300))
+    except (TypeError, ValueError):
+        limit = 100
+    out = ha_or_raise(f"/arvio/flows/{sid}/runs?limit={limit}", timeout=15)
+    return {"ok": True, "runs": out.get("runs", []) if isinstance(out, dict) else []}
+
+
+def flow_dryrun(payload: dict) -> dict:
+    """A rehearsal: Arvio Core works the flow out and touches no device. Only a read for the agent."""
+    config = payload.get("config")
+    if not isinstance(config, dict):
+        raise ValueError("config required")
+    body = {"config": config}
+    for key in ("start", "at", "states", "fail"):
+        if key in payload:
+            body[key] = payload[key]
+    out = ha_or_raise("/arvio/flows/rehearse", method="POST", body=body, timeout=15)
+    return {"ok": True, "result": out}
+
+
 def _resolve_automation_entity(sid: str, entity_id: str = "") -> str:
     """Scenario id → automation entity_id. Config id must be a HA yaml/UI id;
     an explicit automation entity_id is verified via /states (`attributes.id == sid`)
@@ -4670,6 +4697,10 @@ def execute_action(
         return home_location(payload)
     if action == "arvio.set_scenario_enabled":
         return set_scenario_enabled(payload, entity_id)
+    if action == "arvio.flow_runs":
+        return flow_runs(payload)
+    if action == "arvio.flow_dryrun":
+        return flow_dryrun(payload)
     if action == "arvio.trigger_scenario":
         return trigger_scenario(payload, entity_id)
     if action == "arvio.media_art":
@@ -5146,6 +5177,8 @@ AGENT_SERVICE_ALLOWLIST = frozenset(
         "arvio.home_location",
         "arvio.set_scenario_enabled",
         "arvio.trigger_scenario",
+        "arvio.flow_runs",
+        "arvio.flow_dryrun",
         "arvio.list_screens",
         "arvio.panel_scan",
         "arvio.panel_install",
