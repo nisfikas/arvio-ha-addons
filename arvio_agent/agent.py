@@ -1873,7 +1873,7 @@ def panel_snapshot(screen_id: str | None = None, secret: str | None = None) -> d
                 if e.get("device_class"):
                     item["device_class"] = e.get("device_class")
             if domain == "vacuum":
-                for k in ("battery_level", "status", "supported_features"):
+                for k in ("battery_level", "status", "supported_features", "cleaned_area", "cleaning_time"):
                     item[k] = e.get(k)
             entities_out.append(item)
         states = ha("/states") or []
