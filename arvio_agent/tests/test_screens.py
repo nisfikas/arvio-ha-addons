@@ -1168,9 +1168,12 @@ class ScreenLanHttpTest(unittest.TestCase):
         """iPad wall mode without the app (Safari 12-16): what that Safari cannot read has a fallback."""
         html = (ROOT / "panel.html").read_text(encoding="utf-8")
         css = re.sub(r"/\*.*?\*/", "", html[html.index("<style>") : html.index("</style>")], flags=re.S)
-        # every color-mix() (Safari 16.2) and clamp() (13.4) comes right after a plain declaration
+        # No color-mix(): with a var() inside it voids the declaration only when applied, so a line
+        # before it is no fallback. On the NSPanel Pro (WebView 107) lit lamps came out as empty rings.
+        self.assertNotIn("color-mix(", css)
+        # every clamp() (Safari 13.4) comes right after a plain declaration
         decls = re.findall(r"([a-z-]+):\s*([^;{}]+);", css)
-        modern = lambda v: "color-mix(" in v or "clamp(" in v
+        modern = lambda v: "clamp(" in v
         for i, (prop, value) in enumerate(decls):
             if modern(value):
                 j = i - 1  # a chain (28vw -> clamp(vw) -> clamp(cqh)) must start with a plain value
@@ -1191,7 +1194,9 @@ class ScreenLanHttpTest(unittest.TestCase):
         self.assertIn('<meta name="apple-mobile-web-app-capable" content="yes" />', html)
         self.assertIn('<link rel="apple-touch-icon" href="/panel/icon.png" />', html)
         self.assertIn("navigator.standalone && localStorage.getItem(KEY)", html)
-        self.assertIn('if ((await fetch("/health", { cache: "no-store" })).ok) location.reload();', html)
+        self.assertIn('const r = await fetch("/health", { cache: "no-store" });', html)
+        # an agent update reaches the screen: the app itself loads the page only once
+        self.assertIn("(v && v !== pageVersion)) location.reload();", html)
 
     def test_panel_sends_the_secret_as_a_header_only(self):
         html = (ROOT / "panel.html").read_text(encoding="utf-8")

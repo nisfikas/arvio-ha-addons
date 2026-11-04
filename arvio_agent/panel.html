@@ -30,8 +30,9 @@
         --dry: #7a9ec4;
         --fan: #9aa3aa;
         --gap: 12px;
-        /* The same colours as r, g, b: the rgba() fallbacks before every color-mix() that older
-           iPads (Safari before 16.2) keep. applyTheme sets them with the theme. */
+        /* The same colours as r, g, b, for rgba(). No color-mix() anywhere in this page: Android WebView
+           before 111 and Safari before 16.2 lack it, and a var() inside it voids the declaration only
+           when applied, so the line before it is no fallback. The NSPanel Pro has WebView 107. */
         --ink-rgb: 238, 235, 229;
         --bg-rgb: 20, 20, 20;
         --tile-rgb: 28, 27, 26;
@@ -48,7 +49,6 @@
         font-family: "Geologica", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
         overflow: hidden;
         -webkit-user-select: none;
-        user-select: none;
       }
       button {
         font: inherit;
@@ -172,13 +172,12 @@
       }
       .floor3d__room {
         fill: rgba(var(--ink-rgb), 0.08);
-        fill: color-mix(in srgb, var(--ink) 8%, var(--tile));
         stroke: var(--line);
         stroke-width: 8;
         vector-effect: non-scaling-stroke;
         transition: fill 0.32s ease;
       }
-      .floor3d__room.on { fill: rgba(var(--on-rgb), 0.28); fill: color-mix(in srgb, var(--on) 28%, var(--tile)); }
+      .floor3d__room.on { fill: rgba(var(--on-rgb), 0.28); }
       .floor3d__room, .floor3d__pin { cursor: pointer; }
       .floor3d__pin circle {
         fill: var(--muted);
@@ -195,7 +194,6 @@
         bottom: 10px;
         border: 0;
         background: rgba(var(--bg-rgb), 0.72);
-        background: color-mix(in srgb, var(--bg) 72%, transparent);
         color: var(--ink);
         font: inherit;
         font-weight: 600;
@@ -266,7 +264,6 @@
         position: absolute;
         top: -75%; right: -75%; bottom: -75%; left: -75%;
         background: repeating-conic-gradient(from 0deg, rgba(var(--on-rgb), 0.32) 0 7deg, transparent 7deg 32deg);
-        background: repeating-conic-gradient(from 0deg, color-mix(in srgb, var(--on) 32%, transparent) 0 7deg, transparent 7deg 32deg);
         mask: radial-gradient(circle, transparent 30%, #000 32%);
         -webkit-mask: radial-gradient(circle, transparent 30%, #000 32%);
         animation: wx-spin 38s linear infinite;
@@ -275,7 +272,6 @@
         height: 22%;
         border-radius: var(--r, 999px);
         background: rgba(var(--ink-rgb), 0.16);
-        background: color-mix(in srgb, var(--ink) 16%, var(--tile));
         animation: wx-drift 14s ease-in-out infinite;
       }
       .wx-cloud.a { width: 44%; bottom: 24%; left: 4%; }
@@ -283,19 +279,16 @@
       .wx-fall { top: 0; right: 0; bottom: 0; left: 0; opacity: 0; }
       [data-wx="sun"] .wx-glow {
         background: radial-gradient(80% 70% at 82% 18%, rgba(var(--on-rgb), 0.42), transparent 58%);
-        background: radial-gradient(80% 70% at 82% 18%, color-mix(in srgb, var(--on) 42%, transparent), transparent 58%);
       }
       [data-wx="sun"] .wx-orb, [data-wx="partly"] .wx-orb {
         background: radial-gradient(circle at 38% 36%, #fff8ea, var(--on) 58%);
         box-shadow: 0 0 42px rgba(var(--on-rgb), 0.52);
-        box-shadow: 0 0 42px color-mix(in srgb, var(--on) 52%, transparent);
         animation: wx-pulse 5s ease-in-out infinite;
       }
       [data-wx="sun"] .wx-cloud { display: none; }
       [data-wx="sun"] .wx-fall { display: none; }
       [data-wx="partly"] .wx-glow {
         background: radial-gradient(70% 60% at 78% 16%, rgba(var(--on-rgb), 0.28), transparent 55%);
-        background: radial-gradient(70% 60% at 78% 16%, color-mix(in srgb, var(--on) 28%, transparent), transparent 55%);
       }
       [data-wx="partly"] .wx-orb { width: min(26%, 4.2rem); top: 10%; right: 16%; }
       [data-wx="night"] .wx-glow {
@@ -304,17 +297,11 @@
           radial-gradient(1.4px 1.4px at 70% 28%, var(--ink), transparent),
           radial-gradient(1px 1px at 28% 48%, var(--ink), transparent),
           radial-gradient(90% 70% at 82% 12%, rgba(var(--ink-rgb), 0.12), transparent 55%);
-        background: radial-gradient(1.5px 1.5px at 18% 22%, var(--ink), transparent),
-          radial-gradient(1.2px 1.2px at 42% 18%, var(--ink), transparent),
-          radial-gradient(1.4px 1.4px at 70% 28%, var(--ink), transparent),
-          radial-gradient(1px 1px at 28% 48%, var(--ink), transparent),
-          radial-gradient(90% 70% at 82% 12%, color-mix(in srgb, var(--ink) 12%, transparent), transparent 55%);
         animation: wx-twinkle 3.8s ease-in-out infinite;
       }
       [data-wx="night"] .wx-orb {
         background: radial-gradient(circle at 35% 35%, #f4f0e6 40%, #c8c2b4 100%);
         box-shadow: 0 0 28px rgba(var(--ink-rgb), 0.18);
-        box-shadow: 0 0 28px color-mix(in srgb, var(--ink) 18%, transparent);
       }
       [data-wx="night"] .wx-orb::after, [data-wx="cloud"] .wx-orb, [data-wx="fog"] .wx-orb,
       [data-wx="rain"] .wx-orb, [data-wx="pour"] .wx-orb, [data-wx="snow"] .wx-orb,
@@ -325,7 +312,6 @@
       [data-wx="rain"] .wx-fall, [data-wx="pour"] .wx-fall, [data-wx="storm"] .wx-fall {
         opacity: 0.4;
         background: repeating-linear-gradient(-18deg, transparent 0 10px, rgba(var(--ink-rgb), 0.22) 10px 11px);
-        background: repeating-linear-gradient(-18deg, transparent 0 10px, color-mix(in srgb, var(--ink) 22%, transparent) 10px 11px);
         background-size: 16px 28px;
         animation: wx-fall 0.55s linear infinite;
       }
@@ -333,7 +319,6 @@
       [data-wx="snow"] .wx-fall {
         opacity: 0.55;
         background-image: radial-gradient(circle, rgba(var(--ink-rgb), 0.7) 1.1px, transparent 1.3px);
-        background-image: radial-gradient(circle, color-mix(in srgb, var(--ink) 70%, transparent) 1.1px, transparent 1.3px);
         background-size: 16px 16px;
         animation: wx-fall 2.6s linear infinite;
       }
@@ -346,7 +331,7 @@
       @keyframes wx-twinkle { 50% { opacity: 0.62; } }
       @keyframes wx-flash {
         0%, 86%, 94%, 100% { opacity: 0.2; background: transparent; }
-        88%, 91% { opacity: 1; background: rgba(var(--ink-rgb), 0.3); background: color-mix(in srgb, var(--ink) 30%, transparent); }
+        88%, 91% { opacity: 1; background: rgba(var(--ink-rgb), 0.3); }
       }
       .name {
         font-size: 3.6vw;
@@ -492,7 +477,6 @@
         text-align: center;
         color: var(--muted);
         background: rgba(var(--tile-rgb), 0.72);
-        background: color-mix(in srgb, var(--tile) 72%, transparent);
         border: 1px solid transparent;
       }
       .clima-mode svg { display: block; }
@@ -505,33 +489,27 @@
       .clima-mode[data-hvac="heat"].on {
         color: var(--heat);
         background: rgba(var(--heat-rgb), 0.28);
-        background: color-mix(in srgb, var(--heat) 28%, var(--tile));
       }
       .clima-mode[data-hvac="cool"].on {
         color: var(--cool);
         background: rgba(var(--cool-rgb), 0.28);
-        background: color-mix(in srgb, var(--cool) 28%, var(--tile));
       }
       .clima-mode[data-hvac="dry"].on {
         color: var(--dry);
         background: rgba(var(--dry-rgb), 0.24);
-        background: color-mix(in srgb, var(--dry) 24%, var(--tile));
       }
       .clima-mode[data-hvac="fan_only"].on { color: var(--fan); }
       html[data-mode="light"] .clima-mode[data-hvac="heat"].on {
         color: #8a5a20;
         background: rgba(var(--heat-rgb), 0.46);
-        background: color-mix(in srgb, var(--heat) 46%, var(--tile));
       }
       html[data-mode="light"] .clima-mode[data-hvac="cool"].on {
         color: #2a6a88;
         background: rgba(var(--cool-rgb), 0.46);
-        background: color-mix(in srgb, var(--cool) 46%, var(--tile));
       }
       html[data-mode="light"] .clima-mode[data-hvac="dry"].on {
         color: #3a5a78;
         background: rgba(var(--dry-rgb), 0.42);
-        background: color-mix(in srgb, var(--dry) 42%, var(--tile));
       }
       html[data-orientation="landscape"] .clima-mode { min-height: 56px; }
       .clima-chips { display: grid; gap: 6px; flex: 0 0 auto; min-height: 0; overflow: auto; }
@@ -555,7 +533,6 @@
         color: var(--ink);
         background: var(--tile);
         border-color: rgba(var(--ink-rgb), 0.35);
-        border-color: color-mix(in srgb, var(--ink) 35%, transparent);
       }
       .sheet-clock {
         font-variant-numeric: tabular-nums;
@@ -629,23 +606,18 @@
         height: clamp(5.2rem, 24vw, 8.6rem);
         border-radius: 50%;
         background: radial-gradient(circle at 50% 42%, rgba(var(--ink-rgb), 0.12), transparent 70%);
-        background: radial-gradient(circle at 50% 42%, color-mix(in srgb, var(--ink) 12%, transparent), transparent 70%);
         border: 1px solid var(--line);
         box-shadow: inset 0 1px 0 rgba(var(--ink-rgb), 0.08);
-        box-shadow: inset 0 1px 0 color-mix(in srgb, var(--ink) 8%, transparent);
         transition: background 0.4s ease, box-shadow 0.4s ease, border-color 0.4s ease;
       }
       .lamp.on .lamp-glow {
         background: radial-gradient(circle at 50% 36%, #fff8ea 0%, var(--on) 36%, rgba(var(--on-rgb), 0.22) 68%, transparent 100%);
-        background: radial-gradient(circle at 50% 36%, #fff8ea 0%, var(--on) 36%, color-mix(in srgb, var(--on) 22%, transparent) 68%, transparent 100%);
         border-color: rgba(var(--on-rgb), 0.4);
-        border-color: color-mix(in srgb, var(--on) 40%, transparent);
         box-shadow: 0 0 42px rgba(var(--on-rgb), 0.42);
-        box-shadow: 0 0 42px color-mix(in srgb, var(--on) 42%, transparent);
         animation: lamp-breathe 3.6s ease-in-out infinite;
       }
       @keyframes lamp-breathe {
-        50% { box-shadow: 0 0 58px rgba(var(--on-rgb), 0.58); box-shadow: 0 0 58px color-mix(in srgb, var(--on) 58%, transparent); }
+        50% { box-shadow: 0 0 58px rgba(var(--on-rgb), 0.58); }
       }
       .lamp-name {
         font-size: 0.98rem;
@@ -673,7 +645,6 @@
         overflow: hidden;
         border-radius: var(--r, 16px);
         background: rgba(var(--ink-rgb), 0.07);
-        background: color-mix(in srgb, var(--ink) 7%, var(--tile));
         box-shadow: inset 0 0 0 1px var(--line);
       }
       .cv-glass {
@@ -685,12 +656,6 @@
           rgba(var(--cool-rgb), 0.16) 42%,
           rgba(var(--ink-rgb), 0.06)
         );
-        background: linear-gradient(
-          180deg,
-          color-mix(in srgb, var(--ink) 4%, transparent),
-          color-mix(in srgb, var(--cool) 16%, transparent) 42%,
-          color-mix(in srgb, var(--ink) 6%, transparent)
-        );
       }
       .cv-shade {
         position: absolute;
@@ -700,9 +665,7 @@
         height: var(--cover-fill, 100%);
         overflow: hidden;
         background-color: rgba(var(--tile-rgb), 0.88);
-        background-color: color-mix(in srgb, var(--tile) 88%, var(--ink));
         box-shadow: inset 0 -1px 0 rgba(var(--ink-rgb), 0.28), 0 10px 18px rgba(0, 0, 0, 0.18);
-        box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--ink) 28%, transparent), 0 10px 18px rgba(0, 0, 0, 0.18);
         transition: height 0.75s cubic-bezier(0.22, 1, 0.36, 1);
       }
       .cv-shade::after {
@@ -714,18 +677,12 @@
         height: 3px;
         border-radius: 2px 2px 0 0;
         background: rgba(var(--ink-rgb), 0.42);
-        background: color-mix(in srgb, var(--ink) 42%, transparent);
       }
       [data-cover="blind"] .cv-shade {
         background-image: repeating-linear-gradient(
           180deg,
           rgba(var(--ink-rgb), 0.05) 0 7px,
           rgba(var(--ink-rgb), 0.26) 7px 8px
-        );
-        background-image: repeating-linear-gradient(
-          180deg,
-          color-mix(in srgb, var(--ink) 5%, transparent) 0 7px,
-          color-mix(in srgb, var(--ink) 26%, transparent) 7px 8px
         );
       }
       [data-cover="curtain"] .cv-shade {
@@ -734,22 +691,12 @@
           rgba(var(--ink-rgb), 0.04) 0 11px,
           rgba(var(--ink-rgb), 0.16) 11px 13px
         );
-        background-image: repeating-linear-gradient(
-          90deg,
-          color-mix(in srgb, var(--ink) 4%, transparent) 0 11px,
-          color-mix(in srgb, var(--ink) 16%, transparent) 11px 13px
-        );
       }
       [data-cover="awning"] .cv-shade {
         background-image: repeating-linear-gradient(
           180deg,
           rgba(var(--ink-rgb), 0.04) 0 14px,
           rgba(var(--on-rgb), 0.14) 14px 16px
-        );
-        background-image: repeating-linear-gradient(
-          180deg,
-          color-mix(in srgb, var(--ink) 4%, transparent) 0 14px,
-          color-mix(in srgb, var(--on) 14%, transparent) 14px 16px
         );
       }
       [data-cover="awning"] .cv-shade::after {
@@ -758,13 +705,10 @@
         right: 6%;
         border-radius: 3px;
         background: rgba(var(--ink-rgb), 0.5);
-        background: color-mix(in srgb, var(--ink) 50%, var(--on));
       }
       [data-cover="garage"] .cv-shade {
         background-image: linear-gradient(180deg, rgba(var(--ink-rgb), 0.05), rgba(var(--ink-rgb), 0.14)),
           repeating-linear-gradient(180deg, transparent 0 28%, rgba(var(--ink-rgb), 0.22) 28% 32%);
-        background-image: linear-gradient(180deg, color-mix(in srgb, var(--ink) 5%, transparent), color-mix(in srgb, var(--ink) 14%, transparent)),
-          repeating-linear-gradient(180deg, transparent 0 28%, color-mix(in srgb, var(--ink) 22%, transparent) 28% 32%);
       }
       .tile--cover {
         justify-content: flex-end;
@@ -980,10 +924,7 @@
       }
       html[data-preset="afisa"] .name { font-size: 7vw; font-size: clamp(1.7rem, 7vw, 2.6rem); line-height: 1; }
       html[data-preset="afisa"] .tile, html[data-preset="afisa"] .clima-nudge, html[data-preset="afisa"] .clima-mode.on { box-shadow: none; }
-      html[data-preset="afisa"] .room-all { font-size: 1.15rem; }
       html[data-preset="afisa"] .lamp-name { font-size: 1.45rem; line-height: 1; }
-      html[data-preset="afisa"] .lamp-glow { background: transparent; box-shadow: none; }
-      html[data-preset="afisa"] .lamp.on .lamp-glow { background: var(--on); border-color: var(--on); box-shadow: none; animation: none; }
       html[data-preset="afisa"] .cv-name { font-size: 1.7rem; line-height: 1; }
       /* Pairing, in the look of Partner's sign-in: a flat card, condensed capitals, one orange
          signal. Orange never carries text here (2.4:1 on ink); the focus ring is paper. */
@@ -1079,6 +1020,97 @@
       html[data-preset="afisa"] [data-wx="night"] .wx-cloud { display: none; }
       /* The sun stays clear of the words: on the far side when they are on the right. */
       .tile[data-align="right"] .wx-orb { right: auto; left: 10%; }
+      .kicker:empty { display: none; }
+      /* Clouds stay clear of the number too. */
+      html[data-preset="afisa"] .wx-cloud.a { width: 32%; left: 6%; bottom: 14%; }
+      html[data-preset="afisa"] .wx-cloud.b { width: 20%; left: 22%; bottom: 30%; }
+      html[data-preset="afisa"] .tile--weather:not([data-align]) .wx-cloud.a { left: auto; right: 6%; }
+      html[data-preset="afisa"] .tile--weather:not([data-align]) .wx-cloud.b { left: auto; right: 22%; }
+      html[data-preset="afisa"] .tile--weather[data-align="center"] .wx-cloud { display: none; }
+      /* Αφίσα, the sheets, sized for a 480×480 panel: square keys, the current choice inverted. */
+      html[data-preset="afisa"] #sheet[data-kind="clock"] .sheet-date { display: none; }
+      html[data-preset="afisa"] .presets .chip {
+        font-family: "Sofia Sans Extra Condensed", "Arial Narrow", "Geologica", sans-serif;
+        font-size: 2.2rem;
+        font-weight: 800;
+        text-align: center;
+      }
+      html[data-preset="afisa"] .wx-now .wx-sky { display: none; }
+      html[data-preset="afisa"] .wx-temp {
+        font-family: "Sofia Sans Extra Condensed", "Arial Narrow", "Geologica", sans-serif;
+        font-weight: 800;
+        letter-spacing: 0;
+        font-size: 22vw;
+        font-size: clamp(4.8rem, 22vw, 7.5rem);
+        line-height: 0.9;
+      }
+      html[data-preset="afisa"] .clima-dial {
+        flex: 0 0 auto;
+        min-height: 0;
+        grid-template-columns: 68px minmax(0, 1fr) 68px;
+      }
+      html[data-preset="afisa"] .clima-nudge {
+        width: 68px;
+        height: 68px;
+        min-width: 68px;
+        min-height: 68px;
+        border-radius: var(--r);
+        border-color: var(--ink);
+        background: transparent;
+        font-size: 2.2rem;
+        font-weight: 400;
+      }
+      html[data-preset="afisa"] .clima-target {
+        font-family: "Sofia Sans Extra Condensed", "Arial Narrow", "Geologica", sans-serif;
+        font-weight: 800;
+        letter-spacing: 0;
+        font-size: 22vw;
+        font-size: clamp(4.8rem, 22vw, 7.5rem);
+      }
+      html[data-preset="afisa"] .clima-k { font-size: 0.82rem; letter-spacing: 0.08em; }
+      html[data-preset="afisa"] .clima-modes { gap: 6px; }
+      html[data-preset="afisa"] .clima-mode {
+        min-height: 58px;
+        padding: 6px 4px 5px;
+        color: var(--ink);
+        background: var(--tile);
+        border-color: var(--line);
+      }
+      html[data-preset="afisa"] .clima-mode[data-hvac].on {
+        color: var(--bg);
+        background: var(--ink);
+        border-color: var(--ink);
+      }
+      html[data-preset="afisa"] .clima-chip { color: var(--ink); font-size: 0.95rem; }
+      html[data-preset="afisa"] .clima-chip.on {
+        color: var(--bg);
+        background: var(--ink);
+        border-color: var(--ink);
+      }
+      html[data-preset="afisa"] .room-all {
+        align-self: stretch;
+        min-height: 52px;
+        border: 1px solid var(--ink);
+        border-radius: var(--r);
+        color: var(--ink);
+        font-size: 1.6rem;
+        letter-spacing: 0.02em;
+      }
+      html[data-preset="afisa"] .lamps { gap: 8px; padding: 0; }
+      html[data-preset="afisa"] .lamp {
+        align-items: flex-start;
+        justify-content: flex-end;
+        min-height: 92px;
+        padding: 12px;
+        text-align: left;
+        background: var(--tile);
+        border: 1px solid var(--line);
+        border-radius: var(--r);
+      }
+      html[data-preset="afisa"] .lamp-glow { display: none; }
+      html[data-preset="afisa"] .lamp-name { text-align: left; color: var(--ink); }
+      html[data-preset="afisa"] .lamp.on { background: var(--on); border-color: var(--on); }
+      html[data-preset="afisa"] .lamp.on .lamp-name { color: var(--bg); }
     </style>
   </head>
   <body>
@@ -1255,6 +1287,7 @@
       // Partner's editor shows this very page (public/panel-preview.html, a copy), not a drawing of
       // it. The layout arrives by postMessage and nothing talks to a hub.
       const PREVIEW = /\/panel-preview\.html$/.test(location.pathname);
+      let pageVersion = ""; // the agent version this page came from
       let snap = { screens: [], entities: [], areas: [], weather: null, timezone: "Europe/Athens" };
       let overlay = {};
       let screen = null;
@@ -2341,8 +2374,7 @@
             tileGlyph(glyphForEntity(e)) +
             '<span class="kicker"></span><span class="name">' +
             esc(e ? e.name : t.ref) +
-            '</span><span class="state">' +
-            esc(climateTemp || entityWord(e)) +
+            (climateTemp ? '</span><span class="face">' + esc(climateTemp) : '</span><span class="state">' + esc(entityWord(e))) +
             "</span>"
           );
         }
@@ -2936,6 +2968,7 @@
         try {
           const h = await fetch("/health").then((r) => r.json());
           hubId = h.hub_id;
+          pageVersion = h.agent_version || "";
         } catch (e) {}
         // The app opens /panel#pair=<token> once, right after the hub installed it. The token
         // leaves the address bar before anything else runs; it is never sent as a URL.
@@ -2966,17 +2999,21 @@
       beat();
       setInterval(beat, 30000);
 
-      // Without the app (an iPad, any browser) the page looks after itself: a fresh start when the
-      // hub has answered nothing useful for 3 min, and every night at 04:00 (old Safari leaks
-      // memory over days). Only when /health answers, so Safari never lands on its error page.
+      // An agent update brings a new version of this page, and nothing else would reload it: the app
+      // loads it once. Without the app (an iPad, any browser) the page also looks after itself: a
+      // fresh start when the hub has answered nothing useful for 3 min, and every night at 04:00 (old
+      // Safari leaks memory over days). All only when /health answers, so no error page ever shows.
       const PAGE_BORN = Date.now();
       setInterval(async () => {
-        if (window.ArvioPanel || !localStorage.getItem(KEY)) return; // the app has its own watchdog
-        const stale = Date.now() - lastGood > 3 * 60000;
-        const nightly = new Date().getHours() === 4 && Date.now() - PAGE_BORN > 3600000;
-        if (!stale && !nightly) return;
+        if (PREVIEW || !localStorage.getItem(KEY)) return;
+        const stale = !window.ArvioPanel && Date.now() - lastGood > 3 * 60000; // the app has its own watchdog
+        const nightly = !window.ArvioPanel && new Date().getHours() === 4 && Date.now() - PAGE_BORN > 3600000;
         try {
-          if ((await fetch("/health", { cache: "no-store" })).ok) location.reload();
+          const r = await fetch("/health", { cache: "no-store" });
+          if (!r.ok) return;
+          const v = (await r.json()).agent_version || "";
+          if (!pageVersion) pageVersion = v;
+          if (stale || nightly || (v && v !== pageVersion)) location.reload();
         } catch (e) {}
       }, 60000);
     </script>
