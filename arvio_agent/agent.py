@@ -588,6 +588,50 @@ def post_doorbell_ring(call_entity_id: str) -> None:
         pass
 
 
+def notify_body(data) -> dict | None:
+    """The event's `{title?, message, to}` and nothing else (automation and context ids stay here)."""
+    if not isinstance(data, dict):
+        return None
+    message = " ".join(str(data.get("message") or "").split())
+    if not message or len(message) > NOTIFY_MESSAGE_MAX:
+        return None
+    to = data.get("to", "all")
+    if to != "all":
+        if not isinstance(to, list) or not to or len(to) > 50 or not all(isinstance(m, str) and NOTIFY_MEMBER_RE.match(m) for m in to):
+            return None
+        to = list(dict.fromkeys(to))
+    body = {"message": message, "to": to}
+    title = " ".join(str(data.get("title") or "").split())
+    if title:
+        body["title"] = title[:NOTIFY_TITLE_MAX]
+    return body
+
+
+def post_hub_notify(body: dict) -> None:
+    """Hand an automation «Ειδοποίηση» to the cloud, which pushes it to the house's people.
+    No queue: offline, it is dropped (a «η σκούπα τελείωσε» an hour late is noise). Logs never hold the text."""
+    if os.environ.get("ARVIO_AGENT_TEST") == "1":
+        return
+    st = load_hub()
+    hid = str(st.get("hub_id") or hub_id or "").strip()
+    pk = str(st.get("enroll_public_key") or "").strip()
+    if not hid or not pk or not CLOUD:
+        return
+    try:
+        req = urllib.request.Request(
+            f"{CLOUD}/v1/hubs/{hid}/notify",
+            data=json.dumps({"enroll_public_key": pk, **body}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=8) as r:
+            r.read()
+    except urllib.error.HTTPError as e:
+        print(f"notify: cloud answered {e.code}", flush=True)
+    except Exception as e:
+        print(f"notify: not sent ({type(e).__name__})", flush=True)
+
+
 def resolve_doorbell_call(cfg: dict, have: set[str]) -> str | None:
     explicit = cfg.get("call_entity_id")
     if isinstance(explicit, str) and explicit in have:
@@ -7643,6 +7687,13 @@ def state_event_message(event_data: dict, regs: dict, doorbell_call_ids=None) ->
     }
 
 
+# «Ειδοποίηση»: an automation fires HA's own event (Arvio Core fires the same one); we forward it.
+NOTIFY_EVENT = "arvio_notify"
+NOTIFY_MESSAGE_MAX = 200
+NOTIFY_TITLE_MAX = 60
+NOTIFY_MEMBER_RE = re.compile(r"^mem_[a-z0-9]{8,64}$")
+HA_EVENT_TYPES = ("state_changed", "homeassistant_started", NOTIFY_EVENT)
+
 REGISTRY_EVENT_TYPES = (
     "area_registry_updated",
     "floor_registry_updated",
@@ -7679,6 +7730,11 @@ def handle_ha_event(event: dict) -> None:
     etype = str(event.get("event_type") or "")
     if etype == "homeassistant_started":
         occupancy_restore()
+        return
+    if etype == NOTIFY_EVENT:
+        body = notify_body(event.get("data"))
+        if body is not None:
+            threading.Thread(target=post_hub_notify, args=(body,), daemon=True).start()
         return
     if etype == "state_changed":
         data = event.get("data") if isinstance(event.get("data"), dict) else {}
@@ -7717,7 +7773,7 @@ def ha_events_loop() -> None:
         ws = None
         try:
             ws = HaWs(timeout=20.0)
-            for etype in ("state_changed", "homeassistant_started") + REGISTRY_EVENT_TYPES:
+            for etype in HA_EVENT_TYPES + REGISTRY_EVENT_TYPES:
                 # subscribe_events is documented; the *_registry_updated event names are
                 # frontend-internal but stable. TODO confirm.
                 ws.command("subscribe_events", {"event_type": etype})

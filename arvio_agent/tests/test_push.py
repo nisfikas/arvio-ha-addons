@@ -413,3 +413,36 @@ class CloudHeartbeatTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NotifyTest(unittest.TestCase):
+    """«Ειδοποίηση»: the agent forwards an automation's arvio_notify event to the cloud."""
+
+    def test_subscribes_to_the_event(self):
+        self.assertIn(agent.NOTIFY_EVENT, agent.HA_EVENT_TYPES)
+        self.assertIn("state_changed", agent.HA_EVENT_TYPES)
+
+    def test_body_keeps_only_title_message_and_recipients(self):
+        body = agent.notify_body({
+            "title": "  Σκούπα ", "message": " Τελείωσε   το καθάρισμα ", "to": ["mem_maria001", "mem_maria001"],
+            "automation_id": "arvio_x", "context_id": "abc",
+        })
+        self.assertEqual(body, {"title": "Σκούπα", "message": "Τελείωσε το καθάρισμα", "to": ["mem_maria001"]})
+        self.assertEqual(agent.notify_body({"message": "Καληνύχτα"}), {"message": "Καληνύχτα", "to": "all"})
+
+    def test_body_refuses_junk(self):
+        for bad in (None, {}, {"message": ""}, {"message": "x" * 201}, {"message": "ok", "to": []},
+                    {"message": "ok", "to": ["user_nick"]}, {"message": "ok", "to": "some"}):
+            self.assertIsNone(agent.notify_body(bad), bad)
+
+    def test_event_is_handed_to_the_cloud_once(self):
+        with mock.patch.object(agent, "post_hub_notify") as post:
+            agent.handle_ha_event({"event_type": "arvio_notify", "data": {"message": "Η σκούπα κόλλησε", "to": "all"}})
+            for _ in range(50):
+                if post.called:
+                    break
+                time.sleep(0.01)
+            post.assert_called_once_with({"message": "Η σκούπα κόλλησε", "to": "all"})
+            agent.handle_ha_event({"event_type": "arvio_notify", "data": {"message": ""}})
+            time.sleep(0.05)
+            post.assert_called_once()
