@@ -26,7 +26,7 @@ from http.client import HTTPConnection, HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import MappingProxyType
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 import occupancy
 import panel_install
@@ -3520,6 +3520,64 @@ def occupancy_tick_loop() -> None:
             print(f"occupancy tick: {e}", flush=True)
 
 
+HISTORY_ENTITY_RE = re.compile(r"^[a-z_]+\.[a-z0-9_]{1,128}$")
+HISTORY_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def history_action(payload: dict) -> dict:
+    """The owner's history and energy, kept on the hub. The cloud decides who may ask; a hub on
+    Home Assistant has no such routes and answers an error, shown as «needs Arvio Core». Never on
+    the LAN path: this shows when people were home."""
+    op = str(payload.get("op") or "")
+    if op == "query":
+        ids = [str(i) for i in (payload.get("entity_ids") or []) if HISTORY_ENTITY_RE.match(str(i))][:8]
+        if not ids:
+            raise ValueError("entity_ids required")
+        query = [("entity_id", i) for i in ids]
+        for key in ("from", "to"):
+            if isinstance(payload.get(key), int):
+                query.append((key, payload[key]))
+        out = ha_or_raise(f"/arvio/history?{urlencode(query)}", timeout=20)
+    elif op == "energy":
+        period = str(payload.get("period") or "day")
+        date = str(payload.get("date") or "")
+        if period not in ("day", "week", "month", "year") or (date and not HISTORY_DATE_RE.match(date)):
+            raise ValueError("invalid_period")
+        query = [("period", period)] + ([("date", date)] if date else [])
+        out = ha_or_raise(f"/arvio/energy?{urlencode(query)}", timeout=25)
+    elif op == "settings":
+        out = {**ha_or_raise("/arvio/energy/settings", timeout=15), "history": ha_or_raise("/arvio/history/status", timeout=15)}
+    elif op == "set_tariffs":
+        out = ha_or_raise("/arvio/energy/tariffs", method="POST", body={"tariffs": payload.get("tariffs")}, timeout=15)
+    elif op == "set_watts":
+        out = ha_or_raise("/arvio/energy/watts", method="POST", body={"entity_id": payload.get("entity_id"), "watts": payload.get("watts")}, timeout=15)
+    elif op == "set_enabled":
+        if not isinstance(payload.get("enabled"), bool):
+            raise ValueError("enabled required")
+        out = ha_or_raise("/arvio/history/enabled", method="POST", body={"enabled": payload["enabled"]}, timeout=15)
+    elif op == "erase":
+        out = ha_or_raise("/arvio/history/erase", method="POST", body={}, timeout=30)
+    else:
+        raise ValueError("invalid_op")
+    return {"ok": True, "result": out}
+
+
+def meters_action(payload: dict) -> dict:
+    """What the installer needs: what each meter measures and whether it works. Never a time series."""
+    op = str(payload.get("op") or "list")
+    if op == "list":
+        out = ha_or_raise("/arvio/meters", timeout=20)
+    elif op == "set":
+        body = {k: payload[k] for k in ("key", "role", "part_of") if k in payload}
+        out = ha_or_raise("/arvio/meters", method="POST", body=body, timeout=15)
+    elif op == "set_watts":
+        out = ha_or_raise("/arvio/energy/watts", method="POST", body={"entity_id": payload.get("entity_id"), "watts": payload.get("watts")}, timeout=15)
+        out = {"meters": ha_or_raise("/arvio/meters", timeout=20).get("meters", []), "unmetered": out.get("unmetered", [])}
+    else:
+        raise ValueError("invalid_op")
+    return {"ok": True, "result": out}
+
+
 def flow_runs(payload: dict) -> dict:
     """What an automation did lately, from Arvio Core's own log. A hub on Home Assistant has no such
     route and answers an error, which the cloud shows as «needs Arvio Core»."""
@@ -4712,6 +4770,10 @@ def execute_action(
         return home_location(payload)
     if action == "arvio.set_scenario_enabled":
         return set_scenario_enabled(payload, entity_id)
+    if action == "arvio.history":
+        return history_action(payload)
+    if action == "arvio.meters":
+        return meters_action(payload)
     if action == "arvio.flow_runs":
         return flow_runs(payload)
     if action == "arvio.flow_dryrun":
@@ -5196,6 +5258,8 @@ AGENT_SERVICE_ALLOWLIST = frozenset(
         "arvio.home_location",
         "arvio.set_scenario_enabled",
         "arvio.trigger_scenario",
+        "arvio.history",
+        "arvio.meters",
         "arvio.flow_runs",
         "arvio.flow_dryrun",
         "arvio.flow_catalog",
