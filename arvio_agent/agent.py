@@ -56,7 +56,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.67"
+AGENT_VERSION = "0.1.68"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -337,6 +337,8 @@ def save_screens(doc: dict) -> None:
 
 
 FLOOR_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,120}$")
+# Rooms with no floor share one plan under this id (the domain's VIRTUAL_FLOOR_NONE): never a real floor.
+FLOOR_NONE = "__floor_none"
 PIN_ENTITY_RE = re.compile(r"^[a-z][a-z0-9_]+\.[A-Za-z0-9_]+$")
 
 
@@ -2568,17 +2570,32 @@ def parse_device_update_extra(payload: dict | None) -> dict:
     return extra
 
 
+def parse_floor_ref(value) -> str | None:
+    """Pure: a real floor id, or None for «no floor». Raises ValueError."""
+    if value in (None, ""):
+        return None
+    floor_id = str(value).strip()
+    if not FLOOR_ID_RE.fullmatch(floor_id) or floor_id == FLOOR_NONE:
+        raise ValueError("invalid floor_id")
+    return floor_id
+
+
 def parse_area_update(payload: dict | None) -> dict:
-    """Pure: area_id + name for config/area_registry/update. Raises ValueError."""
+    """Pure: area_id + name and/or floor_id for config/area_registry/update. Raises ValueError."""
     payload = payload if isinstance(payload, dict) else {}
     area_id = str(payload.get("area_id") or "").strip()
     if not AREA_ID_RE.fullmatch(area_id):
         raise ValueError("invalid area_id")
-    name = payload.get("name")
-    n = str(name).strip() if name is not None else ""
-    if not n or len(n) > DEVICE_NAME_MAX:
-        raise ValueError("invalid name")
-    return {"area_id": area_id, "name": n}
+    out: dict = {"area_id": area_id}
+    if "name" in payload or "floor_id" not in payload:
+        name = payload.get("name")
+        n = str(name).strip() if name is not None else ""
+        if not n or len(n) > DEVICE_NAME_MAX:
+            raise ValueError("invalid name")
+        out["name"] = n
+    if "floor_id" in payload:
+        out["floor_id"] = parse_floor_ref(payload.get("floor_id"))
+    return out
 
 
 def area_update(payload: dict | None = None, entity_id: str = "") -> dict:
@@ -2598,11 +2615,143 @@ def area_create(payload: dict | None = None, entity_id: str = "") -> dict:
     name = str(payload.get("name") or "").strip()
     if not name or len(name) > DEVICE_NAME_MAX:
         raise ValueError("invalid name")
+    body = {"name": name}
+    floor_id = parse_floor_ref(payload.get("floor_id"))
+    if floor_id:
+        body["floor_id"] = floor_id
     # TODO confirm: config/area_registry/create is frontend-internal but stable (sibling of update).
-    entry = ha_ws_command("config/area_registry/create", {"name": name})
+    entry = ha_ws_command("config/area_registry/create", body)
     schedule_registry_refresh("area_create", delay=0.4)
     area_id = entry.get("area_id") if isinstance(entry, dict) else None
     return {"ok": True, "area_id": area_id, "name": name}
+
+
+# --- Rooms and floors (docs/plans/2026-11-05-rooms-and-floors.md) ---------------------------------
+# The hub knows the devices and the automations, so `dry_run` asks it; screens and floor plans live in
+# the cloud, which handles those itself. A delete moves things first and deletes last: a failure half
+# way loses nothing and can simply be repeated.
+
+
+def _mentions_area(value, area_id: str) -> bool:
+    """Pure: an `area_id` key anywhere in an automation's config that names this room."""
+    if isinstance(value, dict):
+        for k, v in value.items():
+            if k == "area_id" and (v == area_id or (isinstance(v, list) and area_id in v)):
+                return True
+            if _mentions_area(v, area_id):
+                return True
+    elif isinstance(value, list):
+        return any(_mentions_area(v, area_id) for v in value)
+    return False
+
+
+def _automations_using_area(area_id: str) -> list:
+    states = ha("/states") or []
+    return [
+        str(cfg.get("alias") or sid)
+        for sid, cfg in fetch_arvio_automation_configs(states).items()
+        if _mentions_area(cfg, area_id)
+    ]
+
+
+def area_delete(payload: dict | None = None, entity_id: str = "") -> dict:
+    """Delete a room. `move_to`: another room takes its devices (a merge); without it they stay with no
+    room. `dry_run`: only say what points at it."""
+    del entity_id
+    payload = payload if isinstance(payload, dict) else {}
+    area_id = str(payload.get("area_id") or "").strip()
+    if not AREA_ID_RE.fullmatch(area_id):
+        raise ValueError("invalid area_id")
+    refresh_registry_cache("area_delete")
+    snap = registry_snapshot()
+    if area_id not in snap["areas"]:
+        raise ValueError("not_found")
+    move_to = str(payload.get("move_to") or "").strip() or None
+    if move_to and (move_to == area_id or move_to not in snap["areas"]):
+        raise ValueError("invalid move_to")
+    devices = snap["devices"]
+    regs = snap["entity_regs"]
+    impact = {
+        "devices": sum(1 for r in regs.values() if effective_area_id(r, devices) == area_id),
+        "automations": _automations_using_area(area_id),
+    }
+    if payload.get("dry_run"):
+        return {"ok": True, "dry_run": True, **impact}
+    if move_to:
+        for did, d in devices.items():
+            if d.get("area_id") == area_id:
+                ha_ws_command("config/device_registry/update", {"device_id": did, "area_id": move_to})
+        for eid, r in regs.items():
+            if r.get("area_id") == area_id:
+                ha_ws_command("config/entity_registry/update", {"entity_id": eid, "area_id": move_to})
+    ha_ws_command("config/area_registry/delete", {"area_id": area_id})
+    schedule_registry_refresh("area_delete", delay=0.4)
+    return {"ok": True, "area_id": area_id, "move_to": move_to, **impact}
+
+
+def floor_create(payload: dict | None = None, entity_id: str = "") -> dict:
+    """«Νέος όροφος». With no level it goes on top."""
+    del entity_id
+    payload = payload if isinstance(payload, dict) else {}
+    name = str(payload.get("name") or "").strip()
+    if not name or len(name) > DEVICE_NAME_MAX:
+        raise ValueError("invalid name")
+    refresh_registry_cache("floor_create")
+    floors = registry_snapshot()["floors"]
+    level = payload.get("level")
+    if level is None:
+        level = max((f["level"] for f in floors if isinstance(f.get("level"), int)), default=-1) + 1
+    elif not isinstance(level, int) or isinstance(level, bool):
+        raise ValueError("invalid level")
+    entry = ha_ws_command("config/floor_registry/create", {"name": name, "level": level})
+    floor_id = entry.get("floor_id") if isinstance(entry, dict) else None
+    schedule_registry_refresh("floor_create", delay=0.4)
+    # `first`, `last`: the cloud moves the house's floor plan between «no floors» and a real floor.
+    return {"ok": True, "floor_id": floor_id, "name": name, "level": level, "first": not floors}
+
+
+def floor_update(payload: dict | None = None, entity_id: str = "") -> dict:
+    """Rename a floor or move it up or down (`level`)."""
+    del entity_id
+    payload = payload if isinstance(payload, dict) else {}
+    floor_id = parse_floor_ref(payload.get("floor_id"))
+    if not floor_id:
+        raise ValueError("invalid floor_id")
+    body: dict = {"floor_id": floor_id}
+    if "name" in payload:
+        name = str(payload.get("name") or "").strip()
+        if not name or len(name) > DEVICE_NAME_MAX:
+            raise ValueError("invalid name")
+        body["name"] = name
+    if "level" in payload:
+        level = payload.get("level")
+        if level is not None and (not isinstance(level, int) or isinstance(level, bool)):
+            raise ValueError("invalid level")
+        body["level"] = level
+    if len(body) == 1:
+        raise ValueError("name or level required")
+    ha_ws_command("config/floor_registry/update", body)
+    schedule_registry_refresh("floor_update", delay=0.4)
+    return {"ok": True, **body}
+
+
+def floor_delete(payload: dict | None = None, entity_id: str = "") -> dict:
+    """Delete a floor: its rooms stay, with no floor."""
+    del entity_id
+    payload = payload if isinstance(payload, dict) else {}
+    floor_id = parse_floor_ref(payload.get("floor_id"))
+    if not floor_id:
+        raise ValueError("invalid floor_id")
+    refresh_registry_cache("floor_delete")
+    snap = registry_snapshot()
+    if not any(f["floor_id"] == floor_id for f in snap["floors"]):
+        raise ValueError("not_found")
+    rooms = [a["name"] for a in snap["areas"].values() if a.get("floor_id") == floor_id]
+    if payload.get("dry_run"):
+        return {"ok": True, "dry_run": True, "rooms": rooms}
+    ha_ws_command("config/floor_registry/delete", {"floor_id": floor_id})
+    schedule_registry_refresh("floor_delete", delay=0.4)
+    return {"ok": True, "floor_id": floor_id, "rooms": rooms, "last": len(snap["floors"]) == 1}
 
 
 def device_update(payload: dict | None = None, entity_id: str = "") -> dict:
@@ -4780,6 +4929,14 @@ def execute_action(
         return area_update(payload, entity_id)
     if action == "arvio.area_create":
         return area_create(payload, entity_id)
+    if action == "arvio.area_delete":
+        return area_delete(payload, entity_id)
+    if action == "arvio.floor_create":
+        return floor_create(payload, entity_id)
+    if action == "arvio.floor_update":
+        return floor_update(payload, entity_id)
+    if action == "arvio.floor_delete":
+        return floor_delete(payload, entity_id)
     if action == "arvio.device_remove":
         return device_remove(payload, entity_id)
     if action == "arvio.light_group":
@@ -5288,6 +5445,10 @@ AGENT_SERVICE_ALLOWLIST = frozenset(
         "arvio.device_update",
         "arvio.area_update",
         "arvio.area_create",
+        "arvio.area_delete",
+        "arvio.floor_create",
+        "arvio.floor_update",
+        "arvio.floor_delete",
         "arvio.device_remove",
         "arvio.light_group",
         "arvio.upsert_scene",
