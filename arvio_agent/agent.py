@@ -56,7 +56,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.59"
+AGENT_VERSION = "0.1.60"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -1438,6 +1438,7 @@ def list_wall_screens() -> dict:
 # so scan and install run as jobs and Partner polls arvio.panel_status. In memory: an agent
 # restart drops a job, and Partner says «Διακόπηκε» (plan §11 row 14).
 PANEL_ADB = panel_install.Adb(DATA / "adb")
+PANEL_FONTS = {f"/panel/fonts/{n}.woff2" for n in ("text-greek", "text-latin", "display-greek", "display-latin")}
 PANEL_JOBS: dict = {"scan": None, "installs": {}}
 PANEL_LOCK = threading.Lock()
 PANEL_CLOSE_TIMERS: dict = {}
@@ -8510,6 +8511,8 @@ class H(BaseHTTPRequestHandler):
             return self._file("panel-app/arvio-panel.apk", "application/vnd.android.package-archive")
         if path == "/panel/icon.png":
             return self._file("panel-app/icon.png", "image/png")
+        if path in PANEL_FONTS:
+            return self._file("panel-app/fonts/" + path.rsplit("/", 1)[1], "font/woff2")
         if path == "/panel/ipad.mobileconfig":
             # «Σύζευξη iPad»: the QR in Partner. Only with an open pair token; 410 once used or expired.
             token = (parse_qs(urlparse(self.path).query).get("t") or [""])[0]

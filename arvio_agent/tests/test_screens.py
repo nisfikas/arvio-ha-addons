@@ -1147,6 +1147,23 @@ class ScreenLanHttpTest(unittest.TestCase):
         self.assertNotIn("arvio.panel_pair_link", agent.LAN_ALLOWED_ACTIONS)
         self.assertIn("arvio.panel_pair_link", agent.AGENT_SERVICE_ALLOWLIST)
 
+    def test_panel_fonts_come_from_the_hub(self):
+        """Αφίσα without internet: every font the page names is served, and only those files."""
+        html = (ROOT / "panel.html").read_text(encoding="utf-8")
+        urls = re.findall(r'url\("(/panel/fonts/[^"]+)"\)', html)
+        self.assertEqual(set(urls), agent.PANEL_FONTS)
+        for url in urls:
+            status, ctype, body = self.raw(url)
+            self.assertEqual((status, ctype, body[:4]), (200, "font/woff2", b"wOF2"))
+        self.assertEqual(self.raw("/panel/fonts/../agent.py")[0], 404)
+
+    def test_panel_preview_never_talks_to_a_hub(self):
+        """Partner's editor shows this page: in preview it stops before pairing, /health and load()."""
+        html = (ROOT / "panel.html").read_text(encoding="utf-8")
+        boot = html[html.index("if (PREVIEW) {\n          gate.classList"):]
+        self.assertLess(boot.index("return;"), boot.index('fetch("/health")'))
+        self.assertIn("ev.origin === location.origin", boot)
+
     def test_panel_works_on_old_ipads(self):
         """iPad wall mode without the app (Safari 12-16): what that Safari cannot read has a fallback."""
         html = (ROOT / "panel.html").read_text(encoding="utf-8")

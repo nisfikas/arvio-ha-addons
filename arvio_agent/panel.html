@@ -12,6 +12,11 @@
     <link rel="apple-touch-icon" href="/panel/icon.png" />
     <title>Arvio</title>
     <style>
+      /* From the hub, so the panel looks the same without internet. */
+      @font-face { font-family: "Geologica"; font-weight: 100 900; font-display: swap; src: url("/panel/fonts/text-greek.woff2") format("woff2"); unicode-range: U+0370-0377, U+037A-037F, U+0384-038A, U+038C, U+038E-03A1, U+03A3-03FF; }
+      @font-face { font-family: "Geologica"; font-weight: 100 900; font-display: swap; src: url("/panel/fonts/text-latin.woff2") format("woff2"); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+      @font-face { font-family: "Sofia Sans Extra Condensed"; font-weight: 1 1000; font-display: swap; src: url("/panel/fonts/display-greek.woff2") format("woff2"); unicode-range: U+0370-0377, U+037A-037F, U+0384-038A, U+038C, U+038E-03A1, U+03A3-03FF; }
+      @font-face { font-family: "Sofia Sans Extra Condensed"; font-weight: 1 1000; font-display: swap; src: url("/panel/fonts/display-latin.woff2") format("woff2"); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
       /* Αφίσα dark until the screen's own theme arrives (the factory look, THEMES.afisa.dark). */
       :root {
         --ink: #eeebe5;
@@ -40,7 +45,7 @@
       /* An appliance, not a web page: no double-tap zoom, no grey tap flash, no long-press menu. */
       html { touch-action: manipulation; -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none; }
       body {
-        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        font-family: "Geologica", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
         overflow: hidden;
         -webkit-user-select: none;
         user-select: none;
@@ -964,16 +969,22 @@
       #doorbell-bar p { flex: 1 1 8rem; color: var(--ink); }
       #doorbell-confirm { color: var(--on); }
       #doorbell-bar button { min-height: 72px; border-radius: var(--r, 28px); padding: 0 1.2rem; font-size: 1.1rem; }
-      /* Αφίσα (11/2026): the Arvio poster look on the wall. Square corners, condensed capitals for names
-         and numbers (the tablet's own condensed face: no web fonts offline), no glow. */
+      /* Αφίσα (11/2026), the factory look, as on Σπίτι: hairlines, 4px corners, one flat colour, no glow,
+         poster capitals for names and numbers. The fonts come from the hub, so offline looks the same. */
       html[data-preset="afisa"] { --r: 4px; }
-      html[data-preset="afisa"] .face, html[data-preset="afisa"] .name, html[data-preset="afisa"] h1, html[data-preset="afisa"] .room-all, html[data-preset="afisa"] .cv-name, html[data-preset="afisa"] .lamp-name {
-        font-family: "Roboto Condensed", "sans-serif-condensed", "Arial Narrow", "Helvetica Neue", sans-serif;
-        font-weight: 700;
+      html[data-preset="afisa"] .face, html[data-preset="afisa"] .name, html[data-preset="afisa"] h1, html[data-preset="afisa"] .room-all, html[data-preset="afisa"] .cv-name, html[data-preset="afisa"] .lamp-name, html[data-preset="afisa"] .sheet-clock, html[data-preset="afisa"] #sheet-title {
+        font-family: "Sofia Sans Extra Condensed", "Arial Narrow", "Geologica", sans-serif;
+        font-weight: 800;
         letter-spacing: 0;
         text-transform: uppercase;
       }
-      html[data-preset="afisa"] .tile { box-shadow: none; }
+      html[data-preset="afisa"] .name { font-size: 7vw; font-size: clamp(1.7rem, 7vw, 2.6rem); line-height: 1; }
+      html[data-preset="afisa"] .tile, html[data-preset="afisa"] .clima-nudge, html[data-preset="afisa"] .clima-mode.on { box-shadow: none; }
+      html[data-preset="afisa"] .room-all { font-size: 1.15rem; }
+      html[data-preset="afisa"] .lamp-name { font-size: 1.45rem; line-height: 1; }
+      html[data-preset="afisa"] .lamp-glow { background: transparent; box-shadow: none; }
+      html[data-preset="afisa"] .lamp.on .lamp-glow { background: var(--on); border-color: var(--on); box-shadow: none; animation: none; }
+      html[data-preset="afisa"] .cv-name { font-size: 1.7rem; line-height: 1; }
       /* Pairing, in the look of Partner's sign-in: a flat card, condensed capitals, one orange
          signal. Orange never carries text here (2.4:1 on ink); the focus ring is paper. */
       #gate .gate-card { width: min(22rem, 100%); display: flex; flex-direction: column; text-align: left; }
@@ -981,8 +992,8 @@
       #gate .gate-kicker { border-top: 1px solid var(--line); padding-top: 0.8rem; font-size: 0.85rem; }
       #gate h1 {
         margin: 0.45rem 0 0.6rem;
-        font-family: "Roboto Condensed", "sans-serif-condensed", "Arial Narrow", "Helvetica Neue", sans-serif;
-        font-size: 3.1rem;
+        font-family: "Sofia Sans Extra Condensed", "Arial Narrow", "Geologica", sans-serif;
+        font-size: 3.8rem;
         font-weight: 800;
         line-height: 0.95;
         letter-spacing: 0;
@@ -1000,9 +1011,9 @@
       #gate input {
         width: 100%;
         border-radius: 3px;
-        font-family: "Roboto Condensed", "sans-serif-condensed", "Arial Narrow", sans-serif;
+        font-family: "Sofia Sans Extra Condensed", "Arial Narrow", "Geologica", sans-serif;
         font-weight: 700;
-        font-size: 2.3rem;
+        font-size: 2.9rem;
         letter-spacing: 0.4em;
         text-indent: 0.4em;
         padding: 0.45rem;
@@ -1015,8 +1026,8 @@
         border-radius: 3px;
         background: var(--ink);
         color: var(--bg);
-        font-family: "Roboto Condensed", "sans-serif-condensed", "Arial Narrow", sans-serif;
-        font-size: 1.3rem;
+        font-family: "Sofia Sans Extra Condensed", "Arial Narrow", "Geologica", sans-serif;
+        font-size: 1.7rem;
         font-weight: 800;
         text-transform: uppercase;
       }
@@ -1042,6 +1053,32 @@
       @supports not (aspect-ratio: 1) {
         .wx-orb { height: 0; padding-bottom: min(34%, 5.4rem); }
       }
+      html[data-preset="afisa"] .tile.bold .face,
+      html[data-preset="afisa"] .sheet-clock.bold { font-weight: 1000; }
+      html[data-preset="afisa"] #sheet-title { font-size: 2.2rem; line-height: 1; }
+      html[data-preset="afisa"] #sheet-back { border-radius: var(--r); }
+      html[data-preset="afisa"] .tile--clock .face,
+      html[data-preset="afisa"] .tile--weather .face {
+        line-height: 0.82;
+        font-size: 18vw; /* before container units (Safari 16) */
+        font-size: clamp(4rem, 60cqh, 12rem);
+      }
+      html[data-preset="afisa"] .tile--clock[data-size="m"] .face,
+      html[data-preset="afisa"] .tile--weather[data-size="m"] .face {
+        font-size: 36vw;
+        font-size: clamp(5rem, 70cqh, 18rem);
+      }
+      html[data-preset="afisa"] .tile--clock[data-size="l"] .face,
+      html[data-preset="afisa"] .tile--weather[data-size="l"] .face {
+        font-size: 44vw;
+        font-size: clamp(8rem, 66cqh, 24rem);
+      }
+      html[data-preset="afisa"] .wx-glow, html[data-preset="afisa"] .wx-orb::after { display: none; }
+      html[data-preset="afisa"] .wx-orb { background: var(--on); box-shadow: none; animation: none; }
+      html[data-preset="afisa"] .wx-cloud { border-radius: 999px; }
+      html[data-preset="afisa"] [data-wx="night"] .wx-cloud { display: none; }
+      /* The sun stays clear of the words: on the far side when they are on the right. */
+      .tile[data-align="right"] .wx-orb { right: auto; left: 10%; }
     </style>
   </head>
   <body>
@@ -1215,6 +1252,9 @@
       const sheetSub = document.getElementById("sheet-sub");
       const sheetBody = document.getElementById("sheet-body");
       let hubId = null;
+      // Partner's editor shows this very page (public/panel-preview.html, a copy), not a drawing of
+      // it. The layout arrives by postMessage and nothing talks to a hub.
+      const PREVIEW = /\/panel-preview\.html$/.test(location.pathname);
       let snap = { screens: [], entities: [], areas: [], weather: null, timezone: "Europe/Athens" };
       let overlay = {};
       let screen = null;
@@ -2475,7 +2515,9 @@
           pagesEl.appendChild(el);
         }
         const kids = pagesEl.children;
-        if (kids[pageIx]) kids[pageIx].scrollIntoView({ inline: "start", block: "nearest" });
+        // scrollIntoView would also scroll the Partner page around the preview.
+        if (PREVIEW) pagesEl.scrollLeft = pageIx * pagesEl.clientWidth;
+        else if (kids[pageIx]) kids[pageIx].scrollIntoView({ inline: "start", block: "nearest" });
       }
 
       function paintTime() {
@@ -2555,7 +2597,7 @@
           let url = "";
           if (want) {
             try {
-              url = await screenBlobUrl("/api/screens/wallpaper?id=" + encodeURIComponent(s.screen_id));
+              url = s.preview_wallpaper_url || (await screenBlobUrl("/api/screens/wallpaper?id=" + encodeURIComponent(s.screen_id)));
             } catch (e) {}
             if (wallpaperFor !== want) {
               if (url) URL.revokeObjectURL(url);
@@ -2874,6 +2916,23 @@
       document.addEventListener("touchstart", armHomeIdle, { passive: true });
 
       (async () => {
+        if (PREVIEW) {
+          gate.classList.add("hidden");
+          window.addEventListener("message", (ev) => {
+            const p = ev.origin === location.origin && ev.data && ev.data.arvioPreview;
+            if (!p) return;
+            snap = p.snap;
+            screen = p.screen;
+            pageIx = p.page || 0;
+            board.classList.remove("hidden");
+            applyTheme(screen);
+            applyWallpaper(screen);
+            render();
+            paintTime();
+          });
+          setInterval(paintTime, 1000);
+          return;
+        }
         try {
           const h = await fetch("/health").then((r) => r.json());
           hubId = h.hub_id;
