@@ -1442,8 +1442,9 @@
         curtain: '<path d="M3 3h18"/><path d="M6 3v18"/><path d="M18 3v18"/><path d="M6 8c2 1 4 3 4 6s-2 5-4 7"/><path d="M18 8c-2 1-4 3-4 6s2 5 4 7"/>',
         garage: '<path d="M3 21V9l9-5 9 5v12"/><path d="M7 21v-8h10v8"/><path d="M7 16.5h10"/>',
         awning: '<path d="M3 8l9-4 9 4"/><path d="M3 8v3c3 2 6 2 9 0s6-2 9 0V8"/><path d="M5 21h14"/>',
+        vacuum: '<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="9" r="2.2"/><path d="M7.5 15.5h9"/>',
       };
-      const ROOM_DOMAINS = { light: 1, switch: 1, cover: 1, climate: 1, media_player: 1 };
+      const ROOM_DOMAINS = { light: 1, switch: 1, cover: 1, climate: 1, media_player: 1, vacuum: 1 };
       const gate = document.getElementById("gate");
       const board = document.getElementById("board");
       const pagesEl = document.getElementById("pages");
@@ -1557,6 +1558,7 @@
         if (d === "switch") return "switch";
         if (d === "cover") return coverGlyph(e);
         if (d === "media_player") return "music";
+        if (d === "vacuum") return "vacuum";
         return "climate";
       }
       function coverKind(e) {
@@ -1953,8 +1955,33 @@
         if (typeof n !== "number" || !isFinite(n)) return "";
         return "Υγρασία " + Math.round(n) + " %";
       }
+      // Vacuum card (HA's vacuum shape): words, the detail the driver gives, and what this robot can do.
+      const VAC_WORD = { cleaning: "καθαρίζει", docked: "στη βάση", paused: "σε παύση", returning: "επιστρέφει", idle: "σε αναμονή", error: "σφάλμα" };
+      const VAC_DETAIL = { charging: "φορτίζει", emptying: "αδειάζει", washing_mop: "πλένει τη σφουγγαρίστρα", drying: "στεγνώνει", mapping: "χαρτογραφεί", locating: "βρίσκει θέση" };
+      function vacuumBattery(e) {
+        const b = e && Number(e.battery_level);
+        return e && e.battery_level != null && isFinite(b) ? Math.round(b) + " %" : "";
+      }
+      function vacuumWord(e) {
+        if (!e) return "";
+        if (e.state === "unavailable") return "εκτός";
+        const w = VAC_WORD[e.state] || e.state || "";
+        const b = vacuumBattery(e);
+        return b ? w + " · " + b : w;
+      }
+      function vacuumCaps(e) {
+        const f = Number((e && e.supported_features) || 0);
+        return { start: Boolean(f & 8192), pause: Boolean(f & 4), home: Boolean(f & 16), locate: Boolean(f & 512) };
+      }
+      function vacuumCommand(e, act) {
+        if (!e) return;
+        const next = { start: "cleaning", pause: "paused", return_to_base: "returning" }[act];
+        if (next) setOverlay(e.entity_id, { state: next });
+        cmd("vacuum." + act, e.entity_id);
+      }
       function entityWord(e) {
         if (!e) return "";
+        if (e.domain === "vacuum") return vacuumWord(e);
         if (e.domain === "lock") return lockWord(e.state);
         if (e.domain === "alarm_control_panel") return alarmWord(e.state);
         if (e.domain === "cover") return coverWord(e);
@@ -1979,6 +2006,7 @@
           if (!e) return false;
           if (e.domain === "climate") return e.state && e.state !== "off" && e.state !== "unavailable";
           if (e.domain === "cover") return e.state === "open" || e.state === "opening";
+          if (e.domain === "vacuum") return e.state === "cleaning" || e.state === "returning";
           return e.state === "on" || e.state === "open" || e.state === "playing";
         }
         if (t.kind === "room") return lightsForRoom(t.ref, t.lights).some((e) => e.state === "on");
@@ -2058,6 +2086,10 @@
       }
       function toggleEntity(e) {
         if (!e) return;
+        if (e.domain === "vacuum") {
+          vacuumCommand(e, e.state === "cleaning" ? "pause" : "start");
+          return;
+        }
         if (e.domain === "light" || e.domain === "switch") {
           const next = e.state === "on" ? "off" : "on";
           setOverlay(e.entity_id, { state: next });
@@ -2135,6 +2167,10 @@
           openSheet({ kind: "cover", ref: eid });
           return;
         }
+        if (e.domain === "vacuum") {
+          openSheet({ kind: "vacuum", ref: eid });
+          return;
+        }
         if (e.area_id) openSheet(roomSheet(e.area_id));
       }
       async function tapPin(eid) {
@@ -2150,8 +2186,8 @@
           render();
           return;
         }
-        if (e.domain === "cover") {
-          openSheet({ kind: "cover", ref: eid });
+        if (e.domain === "cover" || e.domain === "vacuum") {
+          openSheet({ kind: e.domain, ref: eid });
           render();
           return;
         }
@@ -2338,7 +2374,8 @@
                     const on =
                       e.state === "on" ||
                       e.state === "playing" ||
-                      (e.domain === "climate" && e.state && e.state !== "off");
+                      (e.domain === "climate" && e.state && e.state !== "off") ||
+                      (e.domain === "vacuum" && (e.state === "cleaning" || e.state === "returning"));
                     return (
                       '<button type="button" class="device' +
                       (on ? " on" : "") +
@@ -2398,6 +2435,34 @@
             ' data-cover-act="stop">Στοπ</button><button type="button" data-cover-act="close">' +
             (garage ? "Κλείσιμο πόρτας" : "Κλείσιμο") +
             "</button></div></div>";
+        } else if (sheet.kind === "vacuum") {
+          const e = byId(sheet.ref);
+          const caps = vacuumCaps(e);
+          const st = e ? e.state : "";
+          const away = st === "cleaning" || st === "paused" || st === "idle" || st === "error";
+          const detail = e && VAC_DETAIL[e.status] ? VAC_DETAIL[e.status] : "";
+          sheetTitle.textContent = e && e.name ? e.name : "Σκούπα";
+          sheetSub.textContent = (VAC_WORD[st] || entityWord(e) || "") + (detail ? " · " + detail : "");
+          const area = e && e.cleaned_area != null ? Math.round(Number(e.cleaned_area)) + " m²" : "";
+          const mins = e && e.cleaning_time != null ? Math.round(Number(e.cleaning_time)) + "′" : "";
+          const rows =
+            (vacuumBattery(e) ? secRow("Μπαταρία", vacuumBattery(e), "") : "") +
+            (area || mins ? secRow("Τελευταίο καθάρισμα", [area, mins].filter(Boolean).join(" · "), "") : "");
+          const primary =
+            st === "cleaning" && caps.pause
+              ? ["pause", "Παύση"]
+              : st === "paused" && caps.start
+                ? ["start", "Συνέχεια"]
+                : st !== "returning" && caps.start
+                  ? ["start", "Έναρξη"]
+                  : null;
+          sheetBody.innerHTML =
+            (rows ? '<div class="sec">' + rows + "</div>" : "") +
+            '<div class="cv-btns">' +
+            (primary ? '<button type="button" class="on" data-vac-act="' + primary[0] + '">' + primary[1] + "</button>" : "") +
+            (away && caps.home ? '<button type="button" data-vac-act="return_to_base">Βάση</button>' : "") +
+            (caps.locate ? '<button type="button" data-vac-act="locate">Εντοπισμός</button>' : "") +
+            "</div>";
         } else if (sheet.kind === "climate") {
           const e = byId(sheet.ref);
           const modes = (e && Array.isArray(e.hvac_modes) && e.hvac_modes.length ? e.hvac_modes : ["off", "heat", "cool"]);
@@ -2467,6 +2532,10 @@
           }
           if (e.domain === "cover") {
             openSheet({ kind: "cover", ref: t.ref });
+            return;
+          }
+          if (e.domain === "vacuum") {
+            openSheet({ kind: "vacuum", ref: t.ref });
             return;
           }
           toggleEntity(e);
@@ -3060,6 +3129,11 @@
           }
           return;
         }
+        const vacBtn = e.target.closest && e.target.closest("[data-vac-act]");
+        if (vacBtn && sheet && sheet.kind === "vacuum") {
+          vacuumCommand(byId(sheet.ref), vacBtn.getAttribute("data-vac-act"));
+          return;
+        }
         const coverBtn = e.target.closest && e.target.closest("[data-cover-act]");
         if (coverBtn && sheet && sheet.kind === "cover") {
           coverCommand(byId(sheet.ref), coverBtn.getAttribute("data-cover-act"));
@@ -3076,9 +3150,9 @@
             });
             return;
           }
-          if (ent && ent.domain === "cover") {
+          if (ent && (ent.domain === "cover" || ent.domain === "vacuum")) {
             openSheet({
-              kind: "cover",
+              kind: ent.domain,
               ref: ent.entity_id,
               parent: sheet && sheet.kind === "room" ? roomSheet(sheet.ref, sheet.lights) : undefined,
             });
