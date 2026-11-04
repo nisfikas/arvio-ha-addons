@@ -2766,6 +2766,13 @@
         if (!found) return;
         miss = 0;
         lastGood = Date.now();
+        // «Επανεκκίνηση» in Partner; the hub gives this order once. The app from 0.1.1 restarts the
+        // panel; an older app, an iPad or a browser reload the page.
+        if (found.restart) {
+          if (window.ArvioPanel && window.ArvioPanel.reboot) window.ArvioPanel.reboot();
+          else location.reload();
+          return;
+        }
         snap = next;
         pruneOverlay();
         hubId = snap.hub_id || hubId;

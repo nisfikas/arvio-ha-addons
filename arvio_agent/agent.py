@@ -56,7 +56,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.61"
+AGENT_VERSION = "0.1.62"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -1385,7 +1385,7 @@ def _put_wall_screen(payload: dict | None, entity_id: str = "") -> dict:
         "updated_at": str(payload.get("updated_at") or now_iso()),
     }
     # Hub-only (pair_wall_screen, mint_screen_pair_token, panel installs): the cloud never sends them.
-    for key in ("screen_secret_hash", "pair_token_hash", "pair_token_expires_at", "device"):
+    for key in ("screen_secret_hash", "pair_token_hash", "pair_token_expires_at", "device", "restart_until"):
         if prev.get(key):
             row[key] = prev[key]
     if "wallpaper_scrim" in prev:
@@ -1438,6 +1438,7 @@ def list_wall_screens() -> dict:
 # so scan and install run as jobs and Partner polls arvio.panel_status. In memory: an agent
 # restart drops a job, and Partner says «Διακόπηκε» (plan §11 row 14).
 PANEL_ADB = panel_install.Adb(DATA / "adb")
+PANEL_RESTART_TTL_S = 120
 PANEL_FONTS = {f"/panel/fonts/{n}.woff2" for n in ("text-greek", "text-latin", "display-greek", "display-latin")}
 PANEL_JOBS: dict = {"scan": None, "installs": {}}
 PANEL_LOCK = threading.Lock()
@@ -1623,6 +1624,22 @@ def panel_pair_link(payload: dict) -> dict:
     return {"ok": True, "url": f"http://{lan.ip}:{PORT}/panel/ipad.mobileconfig?t={token}", "expires_in": PAIR_TOKEN_TTL_S}
 
 
+def panel_restart(payload: dict) -> dict:
+    """«Επανεκκίνηση» in Partner: one order for one paired screen, taken once by its panel and void
+    after PANEL_RESTART_TTL_S, so it can neither loop nor surprise a panel that comes back later."""
+    sid = str(payload.get("screen_id") or "")
+    with SCREENS_LOCK:
+        doc = load_screens()
+        row = doc["screens"].get(sid)
+        if not isinstance(row, dict):
+            return {"ok": False, "error": "screen_not_found"}
+        if not row.get("screen_secret_hash"):
+            return {"ok": False, "error": "screen_not_paired"}
+        row["restart_until"] = time.time() + PANEL_RESTART_TTL_S
+        save_screens(doc)
+    return {"ok": True, "expires_in": PANEL_RESTART_TTL_S}
+
+
 def screen_for_pair_token(token: str) -> dict | None:
     if not PAIR_TOKEN_RE.fullmatch(token or ""):
         return None
@@ -1761,6 +1778,7 @@ def panel_snapshot(screen_id: str | None = None, secret: str | None = None) -> d
             raise ValueError("not_found")
         check_screen_secret(row, secret)
         row["last_seen_at"] = now_iso()
+        restart = float(row.pop("restart_until", 0) or 0) > time.time()
         save_screens(doc)
     entities_out = []
     areas_out = []
@@ -1842,6 +1860,8 @@ def panel_snapshot(screen_id: str | None = None, secret: str | None = None) -> d
         states = []
         weather = None
     screens = [public_screen(row)]  # this panel's row only, never its neighbours'
+    if restart:
+        screens[0]["restart"] = True
     attach_doorbell_live(screens, states)
     plans = load_floor_plans().get("plans") or {}
     return {
@@ -4636,6 +4656,8 @@ def execute_action(
         return panel_status()
     if action == "arvio.panel_pair_link":
         return panel_pair_link(payload)
+    if action == "arvio.panel_restart":
+        return panel_restart(payload)
     if action == "arvio.put_screen":
         return put_wall_screen(payload, entity_id)
     if action == "arvio.put_floor_plan":
@@ -5082,6 +5104,7 @@ AGENT_SERVICE_ALLOWLIST = frozenset(
         "arvio.panel_identify",
         "arvio.panel_status",
         "arvio.panel_pair_link",
+        "arvio.panel_restart",
         "arvio.put_screen",
         "arvio.put_floor_plan",
         "arvio.delete_screen",

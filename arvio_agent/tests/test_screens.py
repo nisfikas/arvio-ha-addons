@@ -1147,6 +1147,34 @@ class ScreenLanHttpTest(unittest.TestCase):
         self.assertNotIn("arvio.panel_pair_link", agent.LAN_ALLOWED_ACTIONS)
         self.assertIn("arvio.panel_pair_link", agent.AGENT_SERVICE_ALLOWLIST)
 
+    def test_panel_restart_is_one_order_taken_once(self):
+        """Partner's «Επανεκκίνηση»: never a boot loop, never a surprise for a panel back later."""
+        restart = lambda sid="scr_aaaaaaaaaaaaaaaa": agent.execute_action("arvio.panel_restart", "", {"screen_id": sid})
+        def read():
+            status, raw = self.request("GET", "/api/screens?screen_id=scr_aaaaaaaaaaaaaaaa", secret=secret)
+            self.assertEqual(status, 200)
+            return json.loads(raw)["screens"][0]
+
+        self.assertEqual(restart("scr_nope")["error"], "screen_not_found")
+        agent.put_wall_screen(self._row())
+        self.assertEqual(restart()["error"], "screen_not_paired")
+        secret = self._paired()
+        self.assertNotIn("restart", read())
+        self.assertTrue(restart()["ok"])
+        # a layout pushed in between keeps the order, and only the panel ever sees it
+        agent.put_wall_screen(self._row())
+        self.assertNotIn("restart", agent.list_wall_screens()["screens"][0])
+        self.assertIs(read()["restart"], True)
+        self.assertNotIn("restart", read())  # taken once: after the reboot it is gone
+        # too late: a panel that comes back after the window does not restart
+        self.assertTrue(restart()["ok"])
+        with mock.patch.object(agent.time, "time", return_value=agent.time.time() + agent.PANEL_RESTART_TTL_S + 1):
+            self.assertNotIn("restart", read())
+        self.assertNotIn("arvio.panel_restart", agent.LAN_ALLOWED_ACTIONS)
+        self.assertIn("arvio.panel_restart", agent.AGENT_SERVICE_ALLOWLIST)
+        html = (ROOT / "panel.html").read_text(encoding="utf-8")
+        self.assertIn("if (window.ArvioPanel && window.ArvioPanel.reboot) window.ArvioPanel.reboot();", html)
+
     def test_panel_fonts_come_from_the_hub(self):
         """Αφίσα without internet: every font the page names is served, and only those files."""
         html = (ROOT / "panel.html").read_text(encoding="utf-8")
