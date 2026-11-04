@@ -7,12 +7,12 @@ the home-screen icon of an iPad in wall mode (`/panel/icon.png` and the profile 
 The Arvio Panel app that the hub installs on wall panels over ADB and serves to them for self-update
 (`/panel/app.json`, `/panel/app.apk`). Design: `docs/ADR/012-native-wall-panel-app.md` in the arvio repo.
 
-Until a release is put here, the hub answers `no_apk` to «Εγκατάσταση» and 404 to the two URLs.
+Without a release here, the hub answers `no_apk` to «Εγκατάσταση» and 404 to the two URLs.
 
 ## Putting a release here
 
-1. In the arvio repo, with SFK's offline panel key:
-   `ARVIO_PANEL_KEYSTORE=/Volumes/<usb>/arvio-panel.p12 apps/panel-android/build.sh --release`
+1. In the arvio repo, with SFK's panel key (on Νικόλας's Mac, never in a repo; bump `VERSION_CODE`):
+   `ARVIO_PANEL_KEYSTORE=~/arvio-keys/arvio-panel.p12 VERSION_CODE=2 VERSION_NAME=0.1.1 apps/panel-android/build.sh --release`
 2. Copy `out/arvio-panel.apk` and `out/app.json` into this folder.
 3. Bump the agent version as usual. Panels take the new app from their hub, offline.
 
