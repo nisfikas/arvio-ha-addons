@@ -818,6 +818,13 @@
         .tile:active { transform: none; }
         .clima-nudge:active { transform: none; }
       }
+      /* «Ενέργεια»: χωρίς color-mix και χωρίς βιβλιοθήκη, για WebView 107 και Safari 12. */
+      .en-now { margin: 0; font-size: 92px; line-height: 1; font-weight: var(--w-face-bold, 700); }
+      .en-hours { display: flex; align-items: flex-end; height: 96px; margin: 14px 0 10px; }
+      .en-hour { display: block; flex: 1 1 0; margin-right: 2px; min-height: 1px; background: var(--ink); }
+      .en-hour.cheap { opacity: 0.55; }
+      .en-hour.last { background: var(--on); opacity: 1; }
+      .en-today { margin: 0; font-size: 21px; }
       .wx-now {
         position: relative;
         overflow: hidden;
@@ -1937,6 +1944,16 @@
         if (!col) return;
         root.scrollLeft = Math.max(0, col.offsetLeft - root.clientWidth / 2 + col.offsetWidth / 2);
       }
+      function energyNowText() {
+        const e = snap.energy;
+        if (!e || e.now_w === null || e.now_w === undefined) return "—";
+        if (Math.abs(e.now_w) >= 1000) return (e.now_w / 1000).toFixed(2).replace(".", ",") + " kW";
+        return Math.round(e.now_w) + " W";
+      }
+      function energyKwhText(wh) {
+        if (wh > 0 && wh < 50) return "< 0,1";
+        return ((wh || 0) / 1000).toFixed(1).replace(".", ",");
+      }
       function weatherWord() {
         const w = snap.weather;
         if (!w) return "Καιρός";
@@ -2232,6 +2249,29 @@
                     .map((n) => '<button type="button" class="chip" data-min="' + n + '">' + n + "′</button>")
                     .join("") +
                   "</div>");
+        } else if (sheet.kind === "energy") {
+          const e = snap.energy;
+          sheetTitle.textContent = "Ενέργεια";
+          sheetSub.textContent = e && !e.whole_house ? "Μόνο ό,τι μετριέται" : "";
+          if (!e) {
+            sheetBody.innerHTML = "<p>Δεν υπάρχουν ακόμα μετρήσεις.</p>";
+          } else {
+            const hours = e.hours || [];
+            const top = Math.max.apply(null, hours.concat([1]));
+            sheetBody.innerHTML =
+              '<p class="en-now face">' + esc(energyNowText()) + "</p>" +
+              '<div class="en-hours" role="img" aria-label="Κατανάλωση ανά ώρα σήμερα">' +
+              hours
+                .map(function (wh, i) {
+                  const pct = Math.max(1, Math.round((wh / top) * 100));
+                  const cheap = (e.reduced || []).indexOf(i) >= 0 ? " cheap" : "";
+                  const last = i === hours.length - 1 ? " last" : "";
+                  return '<i class="en-hour' + cheap + last + '" style="height:' + pct + '%"></i>';
+                })
+                .join("") +
+              "</div>" +
+              '<p class="en-today">Σήμερα ' + esc(energyKwhText(e.today_wh)) + " kWh</p>";
+          }
         } else if (sheet.kind === "weather") {
           const w = snap.weather;
           sheetTitle.textContent = "Καιρός";
@@ -2451,6 +2491,10 @@
           openSheet({ kind: "weather", bold: !!t.bold });
           return;
         }
+        if (t.kind === "energy") {
+          openSheet({ kind: "energy" });
+          return;
+        }
         if (t.kind === "room") {
           openSheet(roomSheet(t.ref, t.lights));
           return;
@@ -2505,6 +2549,9 @@
             esc(remain && !ringing ? "χρονόμετρο" : dateText()) +
             "</span>"
           );
+        }
+        if (t.kind === "energy") {
+          return '<span class="kicker">Ενέργεια</span><span class="face">' + esc(energyNowText()) + "</span>";
         }
         if (t.kind === "weather") {
           return (

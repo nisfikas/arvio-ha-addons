@@ -70,5 +70,41 @@ class Boundaries(unittest.TestCase):
             agent.check_command_safety({"action": "arvio.history", "payload": {"op": "erase"}}, via="lan")
 
 
+
+class PanelEnergy(unittest.TestCase):
+    def setUp(self):
+        agent._panel_energy_cache.update(at=0.0, value=None)
+
+    def row(self, *kinds):
+        return {"pages": [{"tiles": [{"kind": k} for k in kinds]}]}
+
+    def test_nothing_without_the_tile(self):
+        with mock.patch.object(agent, "ha_or_raise") as ha:
+            self.assertIsNone(agent.panel_energy(self.row("clock", "weather"), now=1000.0))
+        ha.assert_not_called()
+
+    def test_only_the_now_and_today_never_devices_or_money(self):
+        report = {"now_w": 1840, "whole_house": True, "total_wh": 9400, "cents": 124, "devices": [{"name": "Κρεβατοκάμαρα"}], "bars": [{"wh": 100, "reduced": True}, {"wh": 200}]}
+        with mock.patch.object(agent, "ha_or_raise", return_value=report):
+            out = agent.panel_energy(self.row("energy"), now=1000.0)
+        self.assertEqual(out, {"now_w": 1840, "whole_house": True, "today_wh": 9400, "hours": [100, 200], "reduced": [0]})
+
+    def test_asks_core_at_most_every_30_seconds(self):
+        with mock.patch.object(agent, "ha_or_raise", return_value={"now_w": 1}) as ha:
+            agent.panel_energy(self.row("energy"), now=1000.0)
+            agent.panel_energy(self.row("energy"), now=1010.0)
+            self.assertEqual(ha.call_count, 1)
+            agent.panel_energy(self.row("energy"), now=1031.0)
+            self.assertEqual(ha.call_count, 2)
+
+    def test_a_hub_on_home_assistant_is_a_dash_not_an_error(self):
+        with mock.patch.object(agent, "ha_or_raise", side_effect=RuntimeError("404")):
+            self.assertIsNone(agent.panel_energy(self.row("energy"), now=1000.0))
+
+    def test_the_tile_needs_no_ref(self):
+        with self.assertRaises(ValueError):
+            agent._parse_screen_pages([{"id": "p", "tiles": [{"kind": "energy", "ref": "x"}]}])
+
+
 if __name__ == "__main__":
     unittest.main()

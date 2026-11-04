@@ -250,6 +250,7 @@ SCREEN_TILE_KINDS = frozenset(
         "session_countdown",
         "occupancy",
         "session_now",
+        "energy",
     }
 )
 SCREEN_SECURITY_DOMAINS = frozenset({"lock", "alarm_control_panel"})
@@ -1338,7 +1339,7 @@ def _parse_screen_pages(raw) -> list:
             elif span == 2:
                 tile["span"] = 2
             ref = t.get("ref")
-            if kind in ("clock", "weather", "security", "session_countdown", "occupancy", "session_now") and ref:
+            if kind in ("clock", "weather", "security", "session_countdown", "occupancy", "session_now", "energy") and ref:
                 raise ValueError("invalid_tile_ref")
             if kind in ("room", "entity", "scene", "floor3d", "shutdown"):
                 if not isinstance(ref, str) or not ref:
@@ -1814,6 +1815,33 @@ def pair_wall_screen(code: str) -> dict:
         raise ValueError("pairing_mismatch")
 
 
+PANEL_ENERGY_TTL_S = 30
+_panel_energy_cache: dict = {"at": 0.0, "value": None}
+
+
+def panel_energy(row: dict, now: float | None = None) -> dict | None:
+    """Only the now and today, and only on a screen that has the tile: a wall panel is seen by whoever
+    walks past, so never devices, money or history. From the hub, so it works with no internet."""
+    if not any(t.get("kind") == "energy" for p in (row.get("pages") or []) for t in (p.get("tiles") or []) if isinstance(t, dict)):
+        return None
+    now = time.time() if now is None else now
+    if now - _panel_energy_cache["at"] < PANEL_ENERGY_TTL_S:
+        return _panel_energy_cache["value"]
+    try:
+        report = ha_or_raise("/arvio/energy?period=day", timeout=8)
+        value = {
+            "now_w": report.get("now_w"),
+            "whole_house": bool(report.get("whole_house")),
+            "today_wh": report.get("total_wh"),
+            "hours": [int(b.get("wh") or 0) for b in report.get("bars") or [] if isinstance(b, dict)][:25],
+            "reduced": [i for i, b in enumerate(report.get("bars") or []) if isinstance(b, dict) and b.get("reduced")],
+        }
+    except Exception:  # a hub on Home Assistant, or Core busy: the tile shows a dash
+        value = None
+    _panel_energy_cache.update(at=now, value=value)
+    return value
+
+
 def panel_snapshot(screen_id: str | None = None, secret: str | None = None) -> dict:
     if not screen_id:
         # Unpaired panels only POST /api/screens/pair (hub id comes from /health):
@@ -1919,6 +1947,7 @@ def panel_snapshot(screen_id: str | None = None, secret: str | None = None) -> d
         "entities": entities_out,
         "areas": areas_out,
         "weather": weather,
+        "energy": panel_energy(row),
         "timezone": HA_INFO.get("time_zone") or "Europe/Athens",
         "floor_plans": [p for p in plans.values() if isinstance(p, dict)],
     }
