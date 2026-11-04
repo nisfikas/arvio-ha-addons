@@ -1872,6 +1872,9 @@ def panel_snapshot(screen_id: str | None = None, secret: str | None = None) -> d
                 item["current_position"] = e.get("current_position")
                 if e.get("device_class"):
                     item["device_class"] = e.get("device_class")
+            if domain == "vacuum":
+                for k in ("battery_level", "status", "supported_features"):
+                    item[k] = e.get(k)
             entities_out.append(item)
         states = ha("/states") or []
         if not isinstance(states, list):
@@ -4151,6 +4154,7 @@ def entities() -> list:
                 "lock.",
                 "alarm_control_panel.",
                 "media_player.",
+                "vacuum.",
             )
         ):
             continue
@@ -4215,9 +4219,9 @@ def entities() -> list:
         }
         if domain == "cover":
             item["device_class"] = attrs.get("device_class")
-        if domain == "media_player":
+        if domain in ("media_player", "vacuum"):
             state_s = str(e.get("state")) if e.get("state") is not None else None
-            item.update(typed_attrs("media_player", state_s, attrs))
+            item.update(typed_attrs(domain, state_s, attrs))
         out.append(item)
     return out[:120]
 
@@ -4235,6 +4239,9 @@ def _expected_state_for(domain: str, service: str) -> str | None:
         }.get(service)
     if domain == "music_assistant":
         return None
+    if domain == "vacuum":
+        # locate changes no state: acked on the call itself.
+        return {"start": "cleaning", "pause": "paused", "return_to_base": "returning", "stop": "idle"}.get(service)
     # Scenes/scripts are stateless (scene state = timestamp, script flips back to off).
     if service == "turn_on" and domain not in ("scene", "script"):
         return "on"
@@ -4270,6 +4277,12 @@ def _state_matches(domain: str, expected: str | None, state: str | None) -> bool
         return state in (expected, "arming")
     if domain == "lock":
         return state == expected or state in ("locking", "unlocking", "jammed")
+    if domain == "vacuum":
+        if expected == "returning":
+            return state in ("returning", "docked")
+        if expected == "idle":
+            return state in ("idle", "docked", "returning")
+        return state == expected
     if domain == "media_player":
         if expected == "playing":
             return state in ("playing", "buffering")
@@ -4980,6 +4993,7 @@ HOME_ENTITY_DOMAINS = (
     "media_player",
     "todo",
     "camera",
+    "vacuum",
 )
 HOME_SENSOR_DEVICE_CLASSES = ("temperature", "humidity")
 # §15.2: media_player device_class speaker | tv | receiver | null (HA knows no other today).
@@ -5021,6 +5035,10 @@ MEDIA_FEATURE = {
 }
 # CameraEntityFeature (HA core camera/__init__.py).
 CAMERA_FEATURE = {"ON_OFF": 1, "STREAM": 2}
+# HA VacuumEntityFeature (vacuum card, docs/plans/2026-11-04-vacuum-card.md in the arvio repo).
+VACUUM_FEATURE = {"PAUSE": 4, "STOP": 8, "RETURN_HOME": 16, "FAN_SPEED": 32, "BATTERY": 64, "LOCATE": 512, "STATE": 4096, "START": 8192}
+# The five vacuum services Home, screens and panels may send (domain HOME_VACUUM_ACTIONS).
+VACUUM_ACTIONS = frozenset({"vacuum.start", "vacuum.pause", "vacuum.stop", "vacuum.return_to_base", "vacuum.locate"})
 CAMERA_HANDLERS = frozenset({"onvif", "generic"})
 CAMERA_ENTITY_RE = re.compile(r"^camera\.[a-z0-9_]+$")
 CAMERA_SNAPSHOT_WIDTH_MIN = 96
@@ -5220,6 +5238,8 @@ AGENT_SERVICE_ALLOWLIST = frozenset(
     | TODO_AGENT_ACTIONS
     | CAMERA_AGENT_ACTIONS
     | INTEGRATION_AGENT_ACTIONS
+    # Vacuum card: start / pause / stop / return_to_base / locate — comfort, like a cover.
+    | VACUUM_ACTIONS
 )
 
 # Mirrors HOME_DANGEROUS_ACTIONS / HOME_SECURITY_ACTIONS in home-model.ts.
@@ -5283,6 +5303,8 @@ LAN_ALLOWED_ACTIONS = frozenset(
     # LAN path is unauthenticated until the HA-ingress hardening lands.
     | MEDIA_PLAYER_ACTIONS
     | MUSIC_ASSISTANT_ACTIONS
+    # Vacuum card: start / pause / stop / return_to_base / locate — comfort, like a cover.
+    | VACUUM_ACTIONS
 )
 LAN_SCRIPT_PREFIX = "script.arvio_"
 
@@ -5799,6 +5821,15 @@ def entity_capabilities(domain: str, attrs: dict) -> dict:
     if domain == "camera":
         sf = _int_or_none(attrs.get("supported_features")) or 0
         return {"stream": bool(sf & CAMERA_FEATURE["STREAM"]), "power": bool(sf & CAMERA_FEATURE["ON_OFF"])}
+    if domain == "vacuum":
+        sf = _int_or_none(attrs.get("supported_features")) or 0
+        return {
+            "start": bool(sf & VACUUM_FEATURE["START"]),
+            "pause": bool(sf & VACUUM_FEATURE["PAUSE"]),
+            "stop": bool(sf & VACUUM_FEATURE["STOP"]),
+            "return_home": bool(sf & VACUUM_FEATURE["RETURN_HOME"]),
+            "locate": bool(sf & VACUUM_FEATURE["LOCATE"]),
+        }
     return {
         "brightness": domain == "light"
         and (
@@ -5941,6 +5972,17 @@ def typed_attrs(
     elif domain == "camera":
         # Never emit entity_picture — HA puts an access token in the query string.
         out["platform"] = str(platform) if platform else None
+        out["supported_features"] = _int_or_none(attrs.get("supported_features"))
+    elif domain == "vacuum":
+        battery = _int_or_none(attrs.get("battery_level"))
+        # A negative battery is a sentinel (the Imou reports -100 while charging), never 0 %.
+        out["battery_level"] = min(100, battery) if battery is not None and battery >= 0 else None
+        out["status"] = str(attrs["status"])[:60] if attrs.get("status") else None
+        out["fan_speed"] = str(attrs["fan_speed"])[:40] if attrs.get("fan_speed") else None
+        speeds = attrs.get("fan_speed_list")
+        out["fan_speed_list"] = [str(s)[:40] for s in speeds[:12]] if isinstance(speeds, list) else []
+        out["cleaned_area"] = _num(attrs.get("cleaned_area"))
+        out["cleaning_time"] = _num(attrs.get("cleaning_time"))
         out["supported_features"] = _int_or_none(attrs.get("supported_features"))
     return out
 

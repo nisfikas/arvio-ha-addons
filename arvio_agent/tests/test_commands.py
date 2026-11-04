@@ -130,6 +130,7 @@ class SafetyTest(unittest.TestCase):
             "arvio.list_entities", "arvio.pairing_status",
             "arvio.trigger_scenario",  # 0.1.50: arvio.list_screens is relay-only (screen enumeration)
         } | set(agent.MEDIA_PLAYER_ACTIONS) | set(agent.MUSIC_ASSISTANT_ACTIONS)  # 0.1.21: transport/volume only; library/art stay cloud-only
+        allowed |= set(agent.VACUUM_ACTIONS)  # vacuum card: wall panels start / pause / dock the robot
         self.assertEqual(set(agent.LAN_ALLOWED_ACTIONS), allowed)
         self.assertTrue(allowed <= set(agent.AGENT_SERVICE_ALLOWLIST))
         for action in sorted(allowed - {"script.turn_on"}):
