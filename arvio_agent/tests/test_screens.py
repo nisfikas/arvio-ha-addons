@@ -705,12 +705,25 @@ class ScreenLanHttpTest(unittest.TestCase):
         html = (ROOT / "panel.html").read_text(encoding="utf-8")
         self.assertIn('const preset = THEMES[t.preset] ? t.preset : "afisa";', html)
         self.assertIn('bg: "#141414", tile: "#1c1b1a", ink: "#eeebe5"', html)
-        self.assertIn('html[data-preset="afisa"] { --r: 4px; }', html)
+        self.assertIn("--r: 4px;", html[html.index(":root {") : html.index("* { box-sizing")])
         self.assertNotIn("border-radius: 28px;", html)
         # before any theme arrives (pairing) the panel is already Αφίσα dark, logo inline (offline)
         self.assertIn('<html lang="el" data-preset="afisa" data-mode="dark">', html)
         self.assertIn('class="gate-card"', html)
         self.assertRegex(html, r'class="gate-mark" alt="Arvio" src="data:image/png;base64,[A-Za-z0-9+/=]{2000,}"')
+
+    def test_panel_themes_are_each_their_own(self):
+        """Ten identities: each has its own CSS block, and no two share the same colours."""
+        html = (ROOT / "panel.html").read_text(encoding="utf-8")
+        table = html[html.index("const THEMES = {") : html.index("function hexRgb")]
+        names = re.findall(r"^        (\w+): \{$", table, flags=re.M)
+        self.assertEqual(len(names), 10)
+        for name in names:
+            if name != "afisa":
+                self.assertIn(f'html[data-preset="{name}"] {{', html)
+        palettes = re.findall(r'bg: "(#\w+)", tile: "(#\w+)", ink: "(#\w+)"', table)
+        self.assertEqual(len(palettes), 20)
+        self.assertEqual(len(set(palettes)), 20)
 
     def test_panel_hidden_class_really_hides(self):
         # «Ναι, άνοιξε» once stayed on screen: `.hidden` only hid the ids the rule names, so the

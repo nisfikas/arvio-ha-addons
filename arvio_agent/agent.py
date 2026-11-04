@@ -1439,7 +1439,11 @@ def list_wall_screens() -> dict:
 # restart drops a job, and Partner says «Διακόπηκε» (plan §11 row 14).
 PANEL_ADB = panel_install.Adb(DATA / "adb")
 PANEL_RESTART_TTL_S = 120
-PANEL_FONTS = {f"/panel/fonts/{n}.woff2" for n in ("text-greek", "text-latin", "display-greek", "display-latin")}
+PANEL_FONTS = {
+    f"/panel/fonts/{name}-{subset}.woff2"
+    for name in ("text", "display", "didot", "alegreya", "comfortaa", "firacode", "commissioner", "garamond", "garamond-italic", "firacond")
+    for subset in ("greek", "latin")
+}
 PANEL_JOBS: dict = {"scan": None, "installs": {}}
 PANEL_LOCK = threading.Lock()
 PANEL_CLOSE_TIMERS: dict = {}
