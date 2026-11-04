@@ -3547,6 +3547,21 @@ def flow_dryrun(payload: dict) -> dict:
     return {"ok": True, "result": out}
 
 
+def flow_catalog(_payload: dict | None = None) -> dict:
+    """What only Arvio Core knows: devices that come through the cloud, and buttons."""
+    out = ha_or_raise("/arvio/flows/catalog", timeout=15)
+    return {"ok": True, "cloud": out.get("cloud", []), "buttons": out.get("buttons", [])}
+
+
+def entity_touched(payload: dict) -> dict:
+    """Which automations last commanded this device."""
+    eid = str(payload.get("entity_id") or "").strip()
+    if not re.fullmatch(r"[a-z_]+\.[a-z0-9_]+", eid):
+        raise ValueError("invalid_entity")
+    out = ha_or_raise(f"/arvio/entities/{eid}/touched", timeout=15)
+    return {"ok": True, "touched": out.get("touched", [])}
+
+
 def _resolve_automation_entity(sid: str, entity_id: str = "") -> str:
     """Scenario id → automation entity_id. Config id must be a HA yaml/UI id;
     an explicit automation entity_id is verified via /states (`attributes.id == sid`)
@@ -4701,6 +4716,10 @@ def execute_action(
         return flow_runs(payload)
     if action == "arvio.flow_dryrun":
         return flow_dryrun(payload)
+    if action == "arvio.flow_catalog":
+        return flow_catalog(payload)
+    if action == "arvio.entity_touched":
+        return entity_touched(payload)
     if action == "arvio.trigger_scenario":
         return trigger_scenario(payload, entity_id)
     if action == "arvio.media_art":
@@ -5179,6 +5198,8 @@ AGENT_SERVICE_ALLOWLIST = frozenset(
         "arvio.trigger_scenario",
         "arvio.flow_runs",
         "arvio.flow_dryrun",
+        "arvio.flow_catalog",
+        "arvio.entity_touched",
         "arvio.list_screens",
         "arvio.panel_scan",
         "arvio.panel_install",

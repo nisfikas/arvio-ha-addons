@@ -27,9 +27,22 @@ class FlowReads(unittest.TestCase):
         with self.assertRaises(ValueError):
             agent.flow_dryrun({})
 
+    def test_catalog_and_touched(self):
+        with mock.patch.object(agent, "ha_or_raise", return_value={"cloud": ["a.b"], "buttons": []}):
+            self.assertEqual(agent.flow_catalog({}), {"ok": True, "cloud": ["a.b"], "buttons": []})
+        with mock.patch.object(agent, "ha_or_raise", return_value={"touched": [{"alias": "x"}]}) as ha:
+            self.assertEqual(agent.entity_touched({"entity_id": "light.a"})["touched"], [{"alias": "x"}])
+        self.assertEqual(ha.call_args.args[0], "/arvio/entities/light.a/touched")
+        with self.assertRaises(ValueError):
+            agent.entity_touched({"entity_id": "../states"})
+
     def test_both_are_commands_and_stay_off_the_lan(self):
         self.assertIn("arvio.flow_runs", agent.AGENT_SERVICE_ALLOWLIST)
         self.assertIn("arvio.flow_dryrun", agent.AGENT_SERVICE_ALLOWLIST)
+        self.assertIn("arvio.flow_catalog", agent.AGENT_SERVICE_ALLOWLIST)
+        self.assertIn("arvio.entity_touched", agent.AGENT_SERVICE_ALLOWLIST)
+        self.assertNotIn("arvio.flow_catalog", agent.LAN_ALLOWED_ACTIONS)
+        self.assertNotIn("arvio.entity_touched", agent.LAN_ALLOWED_ACTIONS)
         self.assertNotIn("arvio.flow_runs", agent.LAN_ALLOWED_ACTIONS)
         self.assertNotIn("arvio.flow_dryrun", agent.LAN_ALLOWED_ACTIONS)
 
