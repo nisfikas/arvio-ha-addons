@@ -58,7 +58,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.75"
+AGENT_VERSION = "0.1.76"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -4652,11 +4652,19 @@ def call_service(
         states = _overlay_feed(_read_states_rest(entity_ids), entity_ids, sent_at)
         confirmed = True
     else:
-        ha_context_id = ha_call_service(domain, service, data)
+        pulsed = False
+        try:
+            ha_context_id = ha_call_service(domain, service, data)
+        finally:
+            # Also when the call failed: it may have reached the relay all the same.
+            pulsed = arm_pulses(domain, service, entity_ids)
         if media:
             states = _overlay_feed(_read_states_rest(entity_ids), entity_ids, sent_at)
             if start and domain == "music_assistant":
                 states = _kick_idle_queue(entity_ids, data, states, sent_at)
+            confirmed = True
+        elif pulsed:
+            states = _read_states_rest(entity_ids)  # on or already off again: both are right
             confirmed = True
         else:
             states = wait_for_states(domain, expected, entity_ids, sent_at=sent_at, expected_attrs=expected_attrs)
@@ -5698,23 +5706,98 @@ def door_marks() -> set[str] | None:
     return {str(i) for i in ids} if isinstance(ids, list) else None
 
 
+PULSE_MS_MIN = 200
+PULSE_MS_MAX = 30_000
+PULSE_TIMERS: dict = {}
+PULSE_LOCK = threading.Lock()
+
+
+def door_pulses() -> dict:
+    """entity_id → how long its relay stays on before the hub turns it off (arvio.door_mark)."""
+    try:
+        raw = json.loads(DOOR_MARKS.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    pulses = raw.get("pulses") if isinstance(raw, dict) else None
+    if not isinstance(pulses, dict):
+        return {}
+    return {str(k): v for k, v in pulses.items() if type(v) is int and PULSE_MS_MIN <= v <= PULSE_MS_MAX}
+
+
+def _pulse_off(entity_id: str) -> None:
+    """A relay left on keeps a door open: try again before giving up."""
+    with PULSE_LOCK:
+        PULSE_TIMERS.pop(entity_id, None)
+    for attempt in range(3):
+        try:
+            ha_call_service(entity_id.split(".", 1)[0], "turn_off", {"entity_id": entity_id})
+            return
+        except Exception as e:
+            print(f"pulse: {entity_id} did not turn off ({e}), try {attempt + 1}", flush=True)
+            time.sleep(1)
+
+
+def arm_pulses(domain: str, service: str, entity_ids: list) -> bool:
+    """Whoever turned a pulsed relay on, the hub turns it off. True when one of these has a pulse."""
+    if domain not in ("switch", "light") or service not in ("turn_on", "toggle"):
+        return False
+    pulses = door_pulses()
+    armed = False
+    for entity_id in entity_ids:
+        ms = pulses.get(entity_id)
+        if not ms:
+            continue
+        timer = threading.Timer(ms / 1000, _pulse_off, args=(entity_id,))
+        timer.daemon = True
+        with PULSE_LOCK:
+            old = PULSE_TIMERS.get(entity_id)
+            if old:
+                old.cancel()
+            PULSE_TIMERS[entity_id] = timer
+        timer.start()
+        armed = True
+    return armed
+
+
+def release_pulses_left_on() -> None:
+    """The agent restarted inside a pulse, and its timer went with it."""
+    for entity_id in door_pulses():
+        st = ha(f"/states/{entity_id}")
+        if isinstance(st, dict) and st.get("state") == "on":
+            _pulse_off(entity_id)
+
+
 def door_mark(payload: dict | None = None) -> dict:
     """Set or clear a mark, from the cloud only: the LAN path must not be able to clear one."""
     payload = payload if isinstance(payload, dict) else {}
     entity_id = payload.get("entity_id")
     door = payload.get("door")
+    pulse = payload.get("pulse_ms")
     if not isinstance(entity_id, str) or not DOOR_MARK_RE.fullmatch(entity_id) or not isinstance(door, bool):
+        raise ValueError("invalid_door_mark")
+    if pulse is not None and (
+        type(pulse) is not int
+        or entity_id.startswith("cover.")
+        or (pulse != 0 and not PULSE_MS_MIN <= pulse <= PULSE_MS_MAX)
+    ):
         raise ValueError("invalid_door_mark")
     with DOOR_MARKS_LOCK:
         marks = door_marks() or set()
+        pulses = door_pulses()
         (marks.add if door else marks.discard)(entity_id)
-        write_json_atomic(DOOR_MARKS, {"entity_ids": sorted(marks)})
+        if not door or pulse == 0:
+            pulses.pop(entity_id, None)
+        elif pulse:
+            pulses[entity_id] = pulse
+        write_json_atomic(DOOR_MARKS, {"entity_ids": sorted(marks), "pulses": pulses})
     schedule_registry_refresh("door_mark", delay=0.4)
     return {"ok": True, "entity_id": entity_id, "door": door}
 
 
 def model_entity_door_field(entity_id: str) -> dict:
-    return {"door_marked": True} if entity_id in (door_marks() or ()) else {}
+    out = {"door_marked": True} if entity_id in (door_marks() or ()) else {}
+    pulse = door_pulses().get(entity_id)
+    return {**out, "pulse_ms": pulse} if pulse else out
 
 
 def lan_door_kind(entity_id: str, state: dict | None) -> str | None:
@@ -9507,4 +9590,5 @@ if __name__ == "__main__":
         f"arvio-agent :{PORT} mode={mode} hub={hub_id} ha={core_origin() or 'supervisor'} relay={RELAY_URL or 'off'} token={'yes' if TOKEN else 'NO'}",
         flush=True,
     )
+    threading.Timer(20, release_pulses_left_on).start()
     ThreadingHTTPServer(("0.0.0.0", PORT), H).serve_forever()

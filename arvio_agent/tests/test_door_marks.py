@@ -1,6 +1,9 @@
 """An installer marks what the hub cannot recognise as a door, and a scene cannot carry a door past the rule."""
 import json
+import pathlib
+import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -323,6 +326,65 @@ class ScenesAndScenariosTest(LanServer):
 
     def test_the_cloud_path_runs_them_as_before(self):
         agent.check_command_safety({"action": "scene.turn_on", "entity_id": "scene.with_relay"}, via="relay")
+
+
+
+class PulseTest(unittest.TestCase):
+    """A door that opens on a short press of its relay: one press, and the hub turns it off."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.calls = []
+        for name, value in (
+            ("DOOR_MARKS", pathlib.Path(self.dir.name) / "door_marks.json"),
+            ("ha_call_service", lambda domain, service, data: self.calls.append(f"{domain}.{service}")),
+            ("_read_states_rest", lambda ids: {i: {"state": "on", "attributes": {}} for i in ids}),
+            ("schedule_registry_refresh", lambda *a, **k: None),  # its timer would land in another test
+        ):
+            patcher = mock.patch.object(agent, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_one_press_and_the_relay_turns_off_by_itself(self):
+        agent.door_mark({"entity_id": RELAY, "door": True, "pulse_ms": 200})
+        out = agent.call_service("switch", "turn_on", {"entity_id": RELAY})
+        self.assertTrue(out["ok"], "the state may already be off again: that is no failure")
+        self.assertEqual(self.calls, ["switch.turn_on"])
+        time.sleep(0.4)
+        self.assertEqual(self.calls, ["switch.turn_on", "switch.turn_off"])
+
+    def test_a_failed_call_still_turns_it_off(self):
+        agent.door_mark({"entity_id": RELAY, "door": True, "pulse_ms": 200})
+
+        def fails(domain, service, data):
+            self.calls.append(f"{domain}.{service}")
+            if service == "turn_on":
+                raise RuntimeError("no answer")
+
+        with mock.patch.object(agent, "ha_call_service", fails):
+            with self.assertRaises(RuntimeError):
+                agent.call_service("switch", "turn_on", {"entity_id": RELAY})
+            time.sleep(0.4)
+        self.assertEqual(self.calls, ["switch.turn_on", "switch.turn_off"])
+
+    def test_a_relay_with_no_pulse_is_left_alone(self):
+        agent.door_mark({"entity_id": RELAY, "door": True})
+        self.assertFalse(agent.arm_pulses("switch", "turn_on", [RELAY]))
+
+    def test_it_clears_with_zero_or_with_the_mark(self):
+        agent.door_mark({"entity_id": RELAY, "door": True, "pulse_ms": 1000})
+        self.assertEqual(agent.model_entity_door_field(RELAY), {"door_marked": True, "pulse_ms": 1000})
+        agent.door_mark({"entity_id": RELAY, "door": True, "pulse_ms": 0})
+        self.assertEqual(agent.door_pulses(), {})
+        agent.door_mark({"entity_id": RELAY, "door": True, "pulse_ms": 1000})
+        agent.door_mark({"entity_id": RELAY, "door": False})
+        self.assertEqual(agent.door_pulses(), {})
+
+    def test_it_refuses_what_makes_no_sense(self):
+        for bad in ({"entity_id": RELAY, "door": True, "pulse_ms": 50}, {"entity_id": RELAY, "door": True, "pulse_ms": True}, {"entity_id": "cover.garage", "door": True, "pulse_ms": 1000}):
+            with self.assertRaises(ValueError):
+                agent.door_mark(bad)
 
 
 if __name__ == "__main__":
