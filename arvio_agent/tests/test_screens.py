@@ -608,6 +608,12 @@ class ScreenLanHttpTest(unittest.TestCase):
                 "state": "idle",
                 "attributes": {"friendly_name": "Αυλή"},
             },
+            {
+                "entity_id": "scene.vradi",
+                "state": "unknown",
+                "attributes": {"friendly_name": "Βράδυ", "scene_look": [{"on": True, "pct": 50}]},
+            },
+            {"entity_id": "scene.hue", "state": "unknown", "attributes": {"friendly_name": "Hue"}},
         ]
         with mock.patch.object(agent, "hub_id", "hub_lan"), mock.patch.object(
             agent, "entities", return_value=[lock]
@@ -622,6 +628,9 @@ class ScreenLanHttpTest(unittest.TestCase):
         self.assertEqual(by_id["binary_sensor.door"]["device_class"], "door")
         self.assertEqual(by_id["camera.gate"]["name"], "Αυλή")
         self.assertNotIn("binary_sensor.motion", by_id)
+        self.assertEqual(by_id["scene.vradi"]["name"], "Βράδυ")
+        self.assertEqual(by_id["scene.vradi"]["scene_look"], [{"on": True, "pct": 50}])
+        self.assertNotIn("scene_look", by_id["scene.hue"])
 
     def test_panel_snapshot_includes_hourly_weather(self):
         states = [

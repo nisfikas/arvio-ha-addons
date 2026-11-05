@@ -58,7 +58,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.77"
+AGENT_VERSION = "0.1.78"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -1905,8 +1905,6 @@ def panel_snapshot(screen_id: str | None = None, secret: str | None = None) -> d
                 item["current_position"] = e.get("current_position")
                 if e.get("device_class"):
                     item["device_class"] = e.get("device_class")
-            if domain == "scene" and isinstance(e.get("scene_look"), list):
-                item["scene_look"] = e["scene_look"]
             if domain == "vacuum":
                 for k in (
                     "battery_level", "status", "supported_features", "cleaned_area", "cleaning_time",
@@ -1932,7 +1930,7 @@ def panel_snapshot(screen_id: str | None = None, secret: str | None = None) -> d
                 dc = str(attrs.get("device_class") or "")
                 if dc not in HOME_BINARY_SENSOR_DEVICE_CLASSES:
                     continue
-            elif domain != "camera":
+            elif domain not in ("camera", "scene"):
                 continue
             entities_out.append(
                 {
@@ -1944,6 +1942,9 @@ def panel_snapshot(screen_id: str | None = None, secret: str | None = None) -> d
                     "device_class": attrs.get("device_class"),
                 }
             )
+            # A scene tile's name and lights: `entities()` has no scenes.
+            if isinstance(attrs.get("scene_look"), list):
+                entities_out[-1]["scene_look"] = attrs["scene_look"]
             seen_ids.add(eid)
     except Exception:
         states = []
