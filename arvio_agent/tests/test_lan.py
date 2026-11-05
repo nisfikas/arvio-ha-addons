@@ -1,4 +1,5 @@
 """Unauthenticated LAN command path: explicit allowlist, same-origin only (no CORS grants)."""
+import http.client
 import json
 import threading
 import unittest
@@ -198,6 +199,21 @@ class LanPathTest(unittest.TestCase):
         html = raw.decode()
         self.assertIn(">405421<", html)
         self.assertNotIn("presence_code", html)
+
+    def test_hub_page_names_only_arvio_and_old_pages_lead_to_it(self):
+        with mock.patch.object(agent, "APP", __import__("pathlib").Path(__file__).resolve().parents[1]):
+            status, _headers, raw = self.request("GET", "/")
+        self.assertEqual(status, 200)
+        html = raw.decode()
+        for word in ("Home Assistant", "bootstrap", "add-on", "enroll"):
+            self.assertNotIn(word, html)
+        for path in ("/partner", "/home/", "/remote"):
+            conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+            conn.request("GET", path)
+            res = conn.getresponse()
+            res.read()
+            conn.close()
+            self.assertEqual((res.status, res.getheader("Location")), (302, "/"), path)
 
     def test_lan_allows_shutdown_script_listed_on_a_screen(self):
         if agent.SCREENS.exists():

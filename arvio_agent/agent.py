@@ -9098,7 +9098,7 @@ class H(BaseHTTPRequestHandler):
     """Unauthenticated LAN HTTP on :8099.
 
     Same-origin only: no CORS grants, so a page on another origin cannot drive the hub
-    through the browser. The served ui/home/remote/partner/panel pages fetch relative paths.
+    through the browser. The served ui and panel pages fetch relative paths.
     Commands go through the LAN allowlist (LAN_ALLOWED_ACTIONS). Claim / presence /
     redeem proxies answer 403; the Partner talks to the cloud with a session.
     """
@@ -9158,12 +9158,12 @@ class H(BaseHTTPRequestHandler):
         if not self._lan_ok():
             return
         path = urlparse(self.path).path
-        if path in ("/partner", "/partner/"):
-            return self._file("partner.html", "text/html; charset=utf-8")
-        if path in ("/home", "/home/"):
-            return self._file("home.html", "text/html; charset=utf-8")
-        if path in ("/remote", "/remote/"):
-            return self._file("remote.html", "text/html; charset=utf-8")
+        if path.rstrip("/") in ("/partner", "/home", "/remote"):  # old pages: all of it is on the hub's page now
+            self.send_response(302)
+            self.send_header("Location", "/")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         if path in ("/panel", "/panel/"):
             return self._file("panel.html", "text/html; charset=utf-8")
         # The Arvio Panel app updates itself from its hub, offline (docs/ADR/012). The APK is
@@ -9281,6 +9281,7 @@ class H(BaseHTTPRequestHandler):
                 {
                     "hub_id": hub_id,
                     "serial": SERIAL,
+                    "version": AGENT_VERSION,
                     "ha_ok": ha_ok,
                     "mode": mode,
                     "state": hub_state,

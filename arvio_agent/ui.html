@@ -3,98 +3,376 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Arvio — τοπικό</title>
+    <meta name="color-scheme" content="light dark" />
+    <title>Arvio Hub</title>
+    <link rel="icon" href="/panel/icon.png" />
     <style>
+      /* Αφίσα (arvio docs/brand/README.md): paper, ink, one signal orange; rules, not cards. */
+      @font-face { font-family: "Geologica"; font-weight: 100 900; font-display: swap; src: url("/panel/fonts/text-greek.woff2") format("woff2"); unicode-range: U+0370-0377, U+037A-037F, U+0384-038A, U+038C, U+038E-03A1, U+03A3-03FF; }
+      @font-face { font-family: "Geologica"; font-weight: 100 900; font-display: swap; src: url("/panel/fonts/text-latin.woff2") format("woff2"); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+      @font-face { font-family: "Sofia Sans Extra Condensed"; font-weight: 1 1000; font-display: swap; src: url("/panel/fonts/display-greek.woff2") format("woff2"); unicode-range: U+0370-0377, U+037A-037F, U+0384-038A, U+038C, U+038E-03A1, U+03A3-03FF; }
+      @font-face { font-family: "Sofia Sans Extra Condensed"; font-weight: 1 1000; font-display: swap; src: url("/panel/fonts/display-latin.woff2") format("woff2"); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+
       :root {
-        color-scheme: light;
-        --ink: #1c1916;
-        --muted: #5c564e;
-        --bg: #f3efe6;
-        --panel: #fffaf2;
-        --accent: #0f6a5a;
+        --paper: #eeebe5;
+        --ink: #141414;
+        --muted: #66625b;
+        --rule: rgb(20 20 20 / 0.16);
+        --signal: #c23d14;
+        --display: "Sofia Sans Extra Condensed", "Arial Narrow", sans-serif;
       }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --paper: #141414;
+          --ink: #eeebe5;
+          --muted: #a8a39a;
+          --rule: rgb(238 235 229 / 0.18);
+          --signal: #e4592c;
+        }
+      }
+      * { box-sizing: border-box; }
+      [hidden] { display: none !important; }
+      html { -webkit-text-size-adjust: 100%; }
       body {
-        margin: 0;
-        font-family: "Iowan Old Style", "Palatino Linotype", Palatino, serif;
-        background:
-          radial-gradient(1200px 500px at 10% -10%, #dceee8, transparent),
-          var(--bg);
-        color: var(--ink);
-      }
-      header,
-      main {
-        max-width: 42rem;
         margin: 0 auto;
-        padding: 1.5rem;
+        max-width: 1320px;
+        min-height: 100vh;
+        padding: clamp(16px, 3.5vw, 48px);
+        display: flex;
+        flex-direction: column;
+        gap: clamp(28px, 5vw, 56px);
+        background: var(--paper);
+        color: var(--ink);
+        font: 400 1rem/1.5 "Geologica", system-ui, sans-serif;
       }
+      html { background: var(--paper); }
+      h1, h2, p, dl, dd, ul { margin: 0; padding: 0; }
+      .caps {
+        font-family: var(--display);
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+
+      .bar {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 1rem;
+        border-bottom: 2px solid var(--ink);
+        padding-bottom: 0.5rem;
+      }
+      .bar .word { font-size: 1.9rem; line-height: 1; letter-spacing: 0.02em; }
+      .bar .where { color: var(--muted); font-size: 0.875rem; }
+
+      main { display: grid; gap: clamp(28px, 5vw, 56px); flex: 1; align-content: start; }
+
       h1 {
-        font-size: 2rem;
-        letter-spacing: -0.03em;
-        margin: 0 0 0.35rem;
+        font-family: var(--display);
+        font-weight: 800;
+        text-transform: uppercase;
+        font-size: clamp(4.4rem, 20vw, 10.5rem);
+        line-height: 0.86;
+        letter-spacing: -0.005em;
       }
+      h1 .dot {
+        display: inline-block;
+        width: 0.3em;
+        height: 0.3em;
+        margin-right: 0.14em;
+        vertical-align: 0.1em;
+        border-radius: 4px;
+        background: var(--ink);
+      }
+      h1.warn .dot, h1.wait .dot { background: var(--signal); }
+      h1.wait .dot { animation: beat 1.8s ease-in-out infinite; }
+      .lead { margin-top: 1.25rem; font-size: clamp(1.05rem, 2.2vw, 1.35rem); line-height: 1.4; max-width: 34em; }
+
+      .btn {
+        display: inline-block;
+        margin-top: 1.5rem;
+        padding: 0.9rem 1.25rem;
+        border-radius: 4px;
+        background: var(--ink);
+        color: var(--paper);
+        font-weight: 600;
+        text-decoration: none;
+        transition: background-color 0.15s;
+      }
+      .btn:hover { background: var(--signal); color: #fff; }
+
+      .presence { border-top: 2px solid var(--ink); padding-top: 0.75rem; container-type: inline-size; }
+      .presence .label { font-size: 1.15rem; }
       .code {
-        font-size: 2.4rem;
-        letter-spacing: 0.35em;
-        font-family: ui-monospace, monospace;
-        color: var(--accent);
+        margin-top: 0.35rem;
+        font-family: var(--display);
+        font-weight: 800;
+        font-size: min(33cqw, 10rem);
+        line-height: 0.95;
+        letter-spacing: 0.04em;
+        font-variant-numeric: tabular-nums;
+        color: var(--signal);
       }
-      ul {
-        list-style: none;
-        padding: 0;
+      .code.turned { animation: turned 0.5s ease both; }
+      .presence.quiet .code { font-size: 3rem; color: var(--ink); }
+      .hint { margin-top: 0.5rem; color: var(--muted); font-size: 0.875rem; }
+
+      .facts {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        border-top: 2px solid var(--ink);
       }
-      li {
-        background: var(--panel);
-        margin: 0.4rem 0;
-        padding: 0.7rem 0.9rem;
-        border-left: 4px solid var(--accent);
+      .facts div { padding: 0.75rem 0 0.85rem; border-bottom: 1px solid var(--rule); }
+      .facts dt { color: var(--muted); font-size: 1.05rem; line-height: 1.2; }
+      .facts dd { font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+
+      .devices header {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        border-bottom: 2px solid var(--ink);
+        padding-bottom: 0.35rem;
       }
-      .muted {
-        color: var(--muted);
+      .devices h2 { font-size: clamp(2rem, 6vw, 3rem); line-height: 1; }
+      .devices .count { color: var(--muted); font-size: 1.5rem; line-height: 1; }
+      .msg { margin-top: 0.75rem; color: var(--signal); font-weight: 600; }
+      .list { list-style: none; display: grid; column-gap: 3.5rem; }
+      .row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        column-gap: 1rem;
+        min-height: 3.75rem;
+        padding: 0.5rem 0;
+        border-bottom: 1px solid var(--rule);
+      }
+      .name { font-weight: 500; overflow-wrap: anywhere; }
+      .state { color: var(--muted); font-size: 0.875rem; }
+      .row.on .state { color: var(--ink); }
+      .row.on .state::before {
+        content: "";
+        display: inline-block;
+        width: 0.5rem;
+        height: 0.5rem;
+        margin-right: 0.4rem;
+        border-radius: 2px;
+        background: var(--signal);
+      }
+      .row button {
+        min-width: 5.75rem;
+        min-height: 2.75rem;
+        padding: 0 0.9rem;
+        border: 1.5px solid var(--ink);
+        border-radius: 4px;
+        background: transparent;
+        color: var(--ink);
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background-color 0.15s, color 0.15s;
+      }
+      .row button:hover:not(:disabled) { background: var(--ink); color: var(--paper); }
+      .row button:disabled { opacity: 0.4; cursor: default; }
+      .btn:focus-visible, .row button:focus-visible { outline: 3px solid var(--signal); outline-offset: 2px; }
+      .empty { padding: 1rem 0; color: var(--muted); }
+
+      footer { border-top: 1px solid var(--rule); padding-top: 0.75rem; color: var(--muted); font-size: 0.875rem; }
+
+      .rise { animation: rise 0.55s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+      .rise.d1 { animation-delay: 0.07s; }
+      .rise.d2 { animation-delay: 0.14s; }
+      .rise.d3 { animation-delay: 0.21s; }
+      @keyframes rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+      @keyframes beat { 50% { opacity: 0.25; } }
+      @keyframes turned { from { opacity: 0; transform: translateY(0.12em); } to { opacity: 1; transform: none; } }
+      @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+      @media (min-width: 700px) {
+        .facts { grid-template-columns: repeat(4, minmax(0, 1fr)); column-gap: 1.5rem; }
+      }
+      @media (min-width: 1000px) {
+        main { grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); column-gap: clamp(32px, 5vw, 72px); }
+        .facts, .devices { grid-column: 1 / -1; }
+        .list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       }
     </style>
   </head>
   <body>
-    <header>
-      <h1>Arvio</h1>
-      <p class="muted">Τοπικό περιβάλλον — λειτουργεί χωρίς cloud όταν το LAN είναι ζωντανό.</p>
-      <p>Κωδικός παρουσίας</p>
-      <p class="code" id="code">------</p>
-      <p class="muted" id="meta"></p>
-      <p class="muted" style="margin-top:0.75rem">
-        <a href="/partner" style="color:#0f6a5a">Partner claim</a>
-        ·
-        <a href="/home" style="color:#0f6a5a">Home</a>
-        ·
-        <a href="/remote" style="color:#0f6a5a">Remote</a>
-      </p>
-    </header>
+    <div class="bar">
+      <span class="word caps">Arvio</span>
+      <span class="where">Hub στο τοπικό δίκτυο</span>
+    </div>
     <main>
-      <h2>Συσκευές</h2>
-      <ul id="list"></ul>
+      <section class="rise">
+        <h1 id="title"><span class="dot"></span><span id="title-text">Φόρτωση</span></h1>
+        <p class="lead" id="lead" aria-live="polite"></p>
+        <a class="btn" id="action" hidden>Σύνδεση στο Arvio Partner →</a>
+      </section>
+      <section class="presence rise d1" id="presence">
+        <p class="label caps">Κωδικός παρουσίας</p>
+        <p class="code" id="code">------</p>
+        <p class="hint" id="hint">Αλλάζει κάθε 5 λεπτά. Η σελίδα τον ενημερώνει μόνη της.</p>
+      </section>
+      <dl class="facts rise d2">
+        <div><dt class="caps">Serial</dt><dd id="serial">—</dd></div>
+        <div><dt class="caps">Hub</dt><dd id="hub">—</dd></div>
+        <div><dt class="caps">Cloud</dt><dd id="cloud">—</dd></div>
+        <div><dt class="caps">Έκδοση</dt><dd id="version">—</dd></div>
+      </dl>
+      <section class="devices rise d3">
+        <header>
+          <h2 class="caps">Συσκευές</h2>
+          <span class="count caps" id="count"></span>
+        </header>
+        <p class="msg" id="msg" role="alert" hidden></p>
+        <ul class="list" id="list"></ul>
+      </section>
     </main>
+    <footer>The rhythm of intelligent living</footer>
     <script>
-      async function refresh() {
-        const res = await fetch("/api/status");
-        const data = await res.json();
-        const mode = data.mode === "embedded" ? " · lab embedded" : "";
-        document.getElementById("meta").textContent = data.ha_ok
-          ? "Serial " + data.serial + " · Home Assistant: εντάξει · hub " + (data.hub_id || "εκκρεμεί enroll") + mode
-          : "Home Assistant μη διαθέσιμο: " + (data.error || "");
-        const list = document.getElementById("list");
-        list.innerHTML = "";
-        for (const e of data.entities || []) {
-          const li = document.createElement("li");
-          li.textContent = e.name + " — " + e.state;
-          list.appendChild(li);
-        }
-        if (!(data.entities || []).length) {
-          const li = document.createElement("li");
-          li.textContent = "Δεν βρέθηκαν lights/switches ακόμα.";
-          list.appendChild(li);
+      const $ = (id) => document.getElementById(id);
+      const PARTNER_CLAIM = "https://partner.arvio.systems/app/claim?hub=";
+      const WAITING_FOR_OWNER = ["inventory", "prepared", "assigned"];
+      const CONTROLS = {
+        light: ["Άναψε", "Σβήσε", "turn_on", "turn_off"],
+        switch: ["Άναψε", "Σβήσε", "turn_on", "turn_off"],
+        cover: ["Άνοιξε", "Κλείσε", "open_cover", "close_cover"],
+      };
+      const WORDS = {
+        on: "Αναμμένο", off: "Σβηστό", open: "Ανοιχτό", opening: "Ανοίγει", closed: "Κλειστό", closing: "Κλείνει",
+        idle: "Σε αναμονή", standby: "Σε αναμονή", playing: "Παίζει", paused: "Σε παύση", buffering: "Φορτώνει",
+        heat: "Θέρμανση", cool: "Ψύξη", auto: "Αυτόματο", heat_cool: "Αυτόματο", dry: "Αφύγρανση", fan_only: "Ανεμιστήρας",
+        locked: "Κλειδωμένο", unlocked: "Ξεκλείδωτο", locking: "Κλειδώνει", unlocking: "Ξεκλειδώνει", jammed: "Μπλοκαρισμένο",
+        disarmed: "Αφοπλισμένο", armed_home: "Οπλισμένο εντός", armed_away: "Οπλισμένο", armed_night: "Οπλισμένο νύχτα",
+        arming: "Οπλίζει", pending: "Σε αναμονή", triggered: "Συναγερμός",
+        docked: "Στη βάση", cleaning: "Καθαρίζει", returning: "Επιστρέφει", error: "Σφάλμα",
+        unavailable: "Μη διαθέσιμο", unknown: "Άγνωστο",
+      };
+      const ACTIVE = ["on", "open", "opening", "playing", "heat", "cool", "auto", "heat_cool", "dry", "fan_only", "unlocked", "cleaning", "triggered"];
+
+      function view(d) {
+        if (d.mode === "embedded") return { title: "Τοπική λειτουργία", lead: "Αυτό το hub δουλεύει στο τοπικό δίκτυο, χωρίς cloud.", quiet: true };
+        if (!d.ha_ok) return { title: "Προσοχή", cls: "warn", lead: "Το σύστημα ελέγχου του κουτιού δεν απαντά ακόμα. Αν συνεχιστεί για λίγα λεπτά, επικοινώνησε με τον εγκαταστάτη σου." };
+        if (!d.hub_id && String(d.error).includes("403")) return { title: "Περιμένει", cls: "wait", lead: "Το cloud δεν δέχεται ακόμα αυτό το κουτί. Η SFK πρέπει να γράψει το serial στο Console («Νέο hub»). Μετά συνδέεται μόνο του μέσα σε 30 δευτερόλεπτα." };
+        if (!d.hub_id) return { title: "Χωρίς σύνδεση", cls: "warn", lead: "Το κουτί δεν φτάνει στο cloud. Έλεγξε το καλώδιο δικτύου και το internet. Οι συσκευές δουλεύουν κανονικά στο τοπικό δίκτυο." };
+        if (WAITING_FOR_OWNER.includes(d.state)) return { title: "Έτοιμο", lead: "Στο Arvio Partner γράψε το serial και τον κωδικό παρουσίας, για να συνδέσεις το hub σε μια εγκατάσταση.", claim: true };
+        return { title: "Σε λειτουργία", lead: "Το hub ανήκει σε εγκατάσταση και δουλεύει κανονικά.", quiet: true };
+      }
+
+      function cloudWord(d) {
+        if (d.mode === "embedded") return "Χωρίς cloud";
+        if (!d.hub_id) return "Δεν έχει συνδεθεί";
+        if (String(d.error).startsWith("heartbeat:")) return "Χωρίς σύνδεση";
+        return d.relay_ok ? "Συνδεδεμένο" : "Συνδέεται…";
+      }
+
+      function showError(text) {
+        $("msg").textContent = text;
+        $("msg").hidden = !text;
+      }
+
+      async function run(e, service, button) {
+        button.disabled = true;
+        showError("");
+        try {
+          const res = await fetch("/api/service/" + e.domain + "/" + service, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ entity_id: e.entity_id }),
+          });
+          if (!res.ok) throw new Error(String(res.status));
+          drawn = "";
+          setTimeout(refresh, 400);
+        } catch {
+          button.disabled = false;
+          showError("Η εντολή δεν πέρασε για: " + e.name);
         }
       }
+
+      function row(e) {
+        const on = ACTIVE.includes(e.state);
+        const li = document.createElement("li");
+        li.className = on ? "row on" : "row";
+        const text = document.createElement("div");
+        const name = document.createElement("div");
+        name.className = "name";
+        name.textContent = e.name;
+        const state = document.createElement("div");
+        state.className = "state";
+        state.textContent = WORDS[e.state] || e.state;
+        text.append(name, state);
+        li.append(text);
+        const control = CONTROLS[e.domain];
+        if (control && e.state !== "unavailable" && e.state !== "unknown") {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.textContent = on ? control[1] : control[0];
+          button.setAttribute("aria-label", button.textContent + ": " + e.name);
+          button.onclick = () => run(e, on ? control[3] : control[2], button);
+          li.append(button);
+        }
+        return li;
+      }
+
+      let drawn = "";
+      function drawDevices(entities) {
+        const now = JSON.stringify(entities);
+        if (now === drawn) return;
+        drawn = now;
+        $("count").textContent = entities.length || "";
+        const list = $("list");
+        list.replaceChildren(...entities.map(row));
+        if (!entities.length) {
+          const li = document.createElement("li");
+          li.className = "empty";
+          li.textContent = "Δεν βρέθηκαν συσκευές ακόμα.";
+          list.append(li);
+        }
+      }
+
+      function draw(d) {
+        const v = view(d);
+        $("title").className = v.cls || "";
+        $("title-text").textContent = v.title;
+        $("lead").textContent = v.lead;
+        $("action").hidden = !v.claim;
+        if (v.claim) $("action").href = PARTNER_CLAIM + encodeURIComponent(d.hub_id);
+        $("presence").classList.toggle("quiet", !!v.quiet);
+        $("hint").hidden = !!v.quiet;
+        $("serial").textContent = d.serial || "—";
+        $("hub").textContent = d.hub_id || "—";
+        $("cloud").textContent = cloudWord(d);
+        $("version").textContent = d.version || "—";
+        drawDevices(d.entities || []);
+      }
+
+      async function refresh() {
+        try {
+          draw(await (await fetch("/api/status")).json());
+        } catch {
+          $("title").className = "warn";
+          $("title-text").textContent = "Χωρίς απάντηση";
+          $("lead").textContent = "Η σελίδα δεν φτάνει στο hub. Έλεγξε ότι είσαι στο ίδιο δίκτυο.";
+          $("action").hidden = true;
+        }
+      }
+
+      // The code never travels as JSON: the server paints it into this page, so read it from there.
+      async function refreshCode() {
+        try {
+          const found = (await (await fetch("/")).text()).match(/id="code">(\d{6})</);
+          if (!found || found[1] === $("code").textContent) return;
+          const code = $("code");
+          code.textContent = found[1];
+          code.classList.remove("turned");
+          void code.offsetWidth;
+          code.classList.add("turned");
+        } catch {}
+      }
+
       refresh();
       setInterval(refresh, 5000);
+      setInterval(refreshCode, 15000);
     </script>
   </body>
 </html>

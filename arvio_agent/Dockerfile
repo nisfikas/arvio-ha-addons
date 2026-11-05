@@ -15,9 +15,6 @@ COPY agent.py /app/agent.py
 COPY occupancy.py /app/occupancy.py
 COPY panel_install.py /app/panel_install.py
 COPY ui.html /app/ui.html
-COPY partner.html /app/partner.html
-COPY home.html /app/home.html
-COPY remote.html /app/remote.html
 COPY panel.html /app/panel.html
 COPY panel-app /app/panel-app
 COPY run.sh /run.sh

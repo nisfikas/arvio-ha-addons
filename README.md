@@ -4,10 +4,8 @@
 
 | URL | Role |
 |-----|------|
-| `/` | Hub presence |
-| `/partner` | Claim wizard |
-| `/home` | Local control |
-| `/remote` | Remote command API (relay protocol) |
+| `/` | Hub page: state, serial, presence code, local control |
+| `/panel` | Wall panel |
 
 Options: `cloud_url: embedded`, optional `relay_url` + `relay_token` for outbound relay (ADR-003).
 
