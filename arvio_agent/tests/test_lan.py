@@ -22,6 +22,12 @@ class LanPathTest(unittest.TestCase):
         cls.server.shutdown()
         cls.server.server_close()
 
+    def setUp(self):
+        # About the allowlist and the routes; doors have their own tests (test_lan_doors, test_door_marks).
+        no_door_rule = mock.patch.object(agent, "lan_door_refusal", return_value=None)
+        no_door_rule.start()
+        self.addCleanup(no_door_rule.stop)
+
     def post(self, path, body):
         req = urllib.request.Request(
             f"http://127.0.0.1:{self.port}{path}", data=json.dumps(body).encode(),
@@ -133,9 +139,7 @@ class LanPathTest(unittest.TestCase):
             self.assertEqual(cs.call_count, 1)
             status, _ = self.post("/api/service/script/turn_on", {"entity_id": "script.arvio_nyxta"})
             self.assertEqual(status, 200)
-            blind = {"entity_id": "cover.a", "attributes": {"device_class": "blind"}}
-            with mock.patch.object(agent, "ha", return_value=blind):
-                status, _ = self.post("/api/service/cover/set_cover_position", {"entity_id": "cover.a"})
+            status, _ = self.post("/api/service/cover/set_cover_position", {"entity_id": "cover.a"})
             self.assertEqual(status, 200)
             self.assertEqual(cs.call_count, 3)
 
@@ -165,7 +169,7 @@ class LanPathTest(unittest.TestCase):
         agent.save_hub({"hub_id": "hub_lan", "snapshot_version": 7})
         with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/health", timeout=5) as r:
             body = json.loads(r.read().decode())
-        self.assertEqual(body["agent_version"], "0.1.69")
+        self.assertEqual(body["agent_version"], "0.1.70")
         self.assertIn("ma_available", body)
         self.assertEqual(body["snapshot_version"], 7)
 

@@ -122,6 +122,10 @@ class SafetyTest(unittest.TestCase):
             agent.check_command_safety({"action": "climate.turn_off", "target": {"area_id": "ypno"}})
 
     def test_lan_path_is_an_explicit_allowlist(self):
+        # About the allowlist; doors have their own tests (test_lan_doors, test_door_marks).
+        no_door_rule = mock.patch.object(agent, "lan_door_refusal", return_value=None)
+        no_door_rule.start()
+        self.addCleanup(no_door_rule.stop)
         allowed = {
             "light.turn_on", "light.turn_off", "switch.turn_on", "switch.turn_off",
             "cover.open_cover", "cover.close_cover", "cover.stop_cover", "cover.set_cover_position",

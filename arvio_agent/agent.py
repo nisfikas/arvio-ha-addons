@@ -42,6 +42,7 @@ except OSError:
 STATE = DATA / "hub.json"
 LAB = DATA / "lab_store.json"
 SCREENS = DATA / "screens.json"
+DOOR_MARKS = DATA / "door_marks.json"
 FLOOR_PLANS = DATA / "floor_plans.json"
 OCCUPANCY_PROFILE = DATA / "occupancy_profile.json"
 OCCUPANCY_STATE = DATA / "occupancy_state.json"
@@ -57,7 +58,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.69"
+AGENT_VERSION = "0.1.70"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -4947,6 +4948,8 @@ def execute_action(
         return device_remove(payload, entity_id)
     if action == "arvio.light_group":
         return light_group(payload)
+    if action == "arvio.door_mark":
+        return door_mark(payload)
     if action == "arvio.upsert_scene":
         return upsert_scene(payload)
     if action == "arvio.delete_scene":
@@ -5456,6 +5459,7 @@ AGENT_SERVICE_ALLOWLIST = frozenset(
         "arvio.floor_update",
         "arvio.floor_delete",
         "arvio.device_remove",
+        "arvio.door_mark",
         "arvio.light_group",
         "arvio.upsert_scene",
         "arvio.delete_scene",
@@ -5648,23 +5652,122 @@ def paired_screen_secret_ok(secret: str | None) -> bool:
     )
 
 
-def lan_door_refusal(entity_id: str, screen_secret: str | None) -> str | None:
-    """Why this switch or cover may not move on the LAN path; None when it may."""
+DOOR_MARK_RE = re.compile(r"^(?:switch|cover|light)\.[a-z0-9_]+$")
+DOOR_MARKS_LOCK = threading.Lock()
+# What can carry a door past a check on the entity it is aimed at.
+LAN_CONTAINERS = frozenset({"scene.turn_on", "script.turn_on", "arvio.trigger_scenario"})
+LAN_CONTENT_RE = re.compile(r"\b(?:switch|cover|light|scene)\.[a-z0-9_]+")
+
+
+def door_marks() -> set[str] | None:
+    """What an installer marked as a door. None when the list cannot be read: then nothing is assumed safe."""
+    try:
+        raw = json.loads(DOOR_MARKS.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return set()
+    except (OSError, ValueError):
+        return None
+    ids = raw.get("entity_ids") if isinstance(raw, dict) else None
+    return {str(i) for i in ids} if isinstance(ids, list) else None
+
+
+def door_mark(payload: dict | None = None) -> dict:
+    """Set or clear a mark, from the cloud only: the LAN path must not be able to clear one."""
+    payload = payload if isinstance(payload, dict) else {}
+    entity_id = payload.get("entity_id")
+    door = payload.get("door")
+    if not isinstance(entity_id, str) or not DOOR_MARK_RE.fullmatch(entity_id) or not isinstance(door, bool):
+        raise ValueError("invalid_door_mark")
+    with DOOR_MARKS_LOCK:
+        marks = door_marks() or set()
+        (marks.add if door else marks.discard)(entity_id)
+        write_json_atomic(DOOR_MARKS, {"entity_ids": sorted(marks)})
+    schedule_registry_refresh("door_mark", delay=0.4)
+    return {"ok": True, "entity_id": entity_id, "door": door}
+
+
+def model_entity_door_field(entity_id: str) -> dict:
+    return {"door_marked": True} if entity_id in (door_marks() or ()) else {}
+
+
+def lan_door_kind(entity_id: str, state: dict | None) -> str | None:
+    """"relay": only its doorbell opens it. "door": only a paired panel. None: not a door.
+
+    A mark behaves like a garage door, not like a doorbell's relay. The relay can be shut out because
+    the doorbell is still there to open it; a marked door has nothing else, and a panel's tile for it
+    would be dead.
+    """
+    if entity_id in door_relay_ids():
+        return "relay"
+    marks = door_marks()
+    if marks is not None and entity_id in marks:
+        return "door"
     domain = entity_id.split(".", 1)[0]
     if domain not in ("switch", "cover"):
         return None
-    if entity_id in door_relay_ids():
-        return "a door relay opens only through its doorbell on the LAN path"
-    state = ha(f"/states/{entity_id}", timeout=3)
-    if not isinstance(state, dict):
-        return "cannot tell whether this is a door"
+    if marks is None or not isinstance(state, dict):
+        return "door"  # cannot tell, so it counts as one
     attrs = state.get("attributes") if isinstance(state.get("attributes"), dict) else {}
     device_class = str(attrs.get("device_class") or "")
     if domain == "cover" and device_class:
-        door = device_class in PROTECTED_COVER_CLASSES
+        return "door" if device_class in PROTECTED_COVER_CLASSES else None
+    return "door" if named_like_a_door(f"{attrs.get('friendly_name') or ''} {entity_id}") else None
+
+
+def lan_contained_entities(action: str, entity_id: str, payload: dict) -> set[str] | None:
+    """Everything a scene, script or scenario names, at any depth. None when it cannot be read.
+
+    ponytail: it reads ids. An action aimed at a whole room or at a device id names no entity, so it
+    goes through; resolving those needs the registry and each action's service.
+    """
+    if action == "scene.turn_on":
+        state = ha(f"/states/{entity_id}", timeout=3)
+        attrs = state.get("attributes") if isinstance(state, dict) else None
+        ids = attrs.get("entity_id") if isinstance(attrs, dict) else None
+        return {str(i) for i in ids} if isinstance(ids, list) else None
+    if action == "script.turn_on":
+        path = f"/config/script/config/{quote(entity_id.split('.', 1)[-1], safe='')}"
     else:
-        door = named_like_a_door(f"{attrs.get('friendly_name') or ''} {entity_id}")
-    if door and not paired_screen_secret_ok(screen_secret):
+        sid = str(payload.get("scenario_id") or payload.get("id") or "")
+        if not _is_ha_config_id(sid):
+            return None
+        path = _ha_id_config_path("automation", sid)
+    config = ha(path, timeout=5)
+    return set(LAN_CONTENT_RE.findall(json.dumps(config))) if isinstance(config, dict) else None
+
+
+def lan_door_kinds(action: str, entity_id: str, payload: dict) -> set:
+    if action not in LAN_CONTAINERS:
+        domain = entity_id.split(".", 1)[0]
+        state = ha(f"/states/{entity_id}", timeout=3) if domain in ("switch", "cover") else {}
+        return {lan_door_kind(entity_id, state)}
+    ids = lan_contained_entities(action, entity_id, payload)
+    if ids is None:
+        return {"door"}
+    if not any(i.split(".", 1)[0] in ("switch", "cover", "scene") for i in ids):
+        return {lan_door_kind(i, {}) for i in ids}  # lights: only a mark can make them a door
+    states = ha("/states")
+    if not isinstance(states, list):
+        return {"door"}
+    by_id = {str(st.get("entity_id")): st for st in states if isinstance(st, dict)}
+    kinds: set = set()
+    for scene in [i for i in ids if i.startswith("scene.") and i in by_id]:  # a scenario can fire a scene
+        attrs = by_id[scene].get("attributes")
+        members = attrs.get("entity_id") if isinstance(attrs, dict) else None
+        if isinstance(members, list):
+            ids.update(str(m) for m in members)
+        else:
+            kinds.add("door")
+    # {}: a name that is not an entity (a member that was removed, a service like switch.turn_on)
+    return kinds | {lan_door_kind(i, by_id.get(i, {})) for i in ids}
+
+
+def lan_door_refusal(action: str, entity_id: str, payload: dict, screen_secret: str | None) -> str | None:
+    """Why this may not run on the LAN path; None when it may."""
+    kinds = lan_door_kinds(action, entity_id, payload)
+    if "relay" in kinds:
+        return "a door relay opens only through its doorbell on the LAN path"
+    if "door" in kinds and not paired_screen_secret_ok(screen_secret):
         return "a door needs a paired wall panel on the LAN path"
     return None
 
@@ -6375,6 +6478,7 @@ def entity_model_from_state(
         "floor_id": floor_id,
         "icon": reg.get("icon") or attrs.get("icon"),
         "device_class": device_class,
+        **model_entity_door_field(eid),
         "entity_category": "diagnostic" if doorbell_call else None,
         # Not in EntityModel (ignored by strict readers); §14.3 alarm buttons need it.
         "supported_features": supported_features,
@@ -6745,7 +6849,7 @@ def check_command_safety(
         entity_id = str(cmd.get("entity_id") or "")
         if entity_id and not LAN_ENTITY_RE.fullmatch(entity_id):
             raise CommandRejected("lan_forbidden", "one entity at a time on the LAN path")
-        refusal = lan_door_refusal(entity_id, screen_secret)
+        refusal = lan_door_refusal(action, entity_id, payload, screen_secret)
         if refusal:
             raise CommandRejected("lan_forbidden", refusal)
     status = str(cmd.get("status") or "")

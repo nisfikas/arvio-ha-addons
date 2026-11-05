@@ -224,6 +224,10 @@ class ScreenStoreTest(unittest.TestCase):
         self.assertEqual(tiles[0]["size"], "l")
 
     def test_put_keeps_shutdown_tile_and_watch(self):
+        # About the allowlist; doors have their own tests (test_lan_doors, test_door_marks).
+        no_door_rule = mock.patch.object(agent, "lan_door_refusal", return_value=None)
+        no_door_rule.start()
+        self.addCleanup(no_door_rule.stop)
         tiles = agent.put_wall_screen(
             self._row(
                 pages=[
@@ -317,6 +321,10 @@ class ScreenStoreTest(unittest.TestCase):
         self.assertEqual(agent.list_wall_screens()["screens"], [])
 
     def test_lan_list_and_writes_forbidden(self):
+        # About the allowlist; doors have their own tests (test_lan_doors, test_door_marks).
+        no_door_rule = mock.patch.object(agent, "lan_door_refusal", return_value=None)
+        no_door_rule.start()
+        self.addCleanup(no_door_rule.stop)
         # 0.1.50: listing every screen id + doorbell config is relay-only.
         with self.assertRaises(agent.CommandRejected) as cm:
             agent.check_command_safety({"action": "arvio.list_screens"}, via="lan")
