@@ -45,6 +45,15 @@ class SceneParseTest(unittest.TestCase):
         self.assertEqual(ents["switch.plug"], {"state": "off"})
         self.assertEqual(ents["cover.rolo"], {"state": "open", "current_position": 50})
 
+    def test_a_scene_arms_an_alarm_but_never_disarms_it(self):
+        base = {"id": "arvio_x", "name": "A"}
+        _, _, _, _, ents = agent.parse_scene_payload({**base, "entities": {"alarm_control_panel.hub": {"state": "armed_away"}, "climate.ac": {"state": "cool", "temperature": 24}, "media_player.tv": {"state": "off"}}})
+        self.assertEqual(ents["alarm_control_panel.hub"], {"state": "armed_away"})
+        self.assertEqual(ents["climate.ac"], {"state": "cool", "temperature": 24})
+        self.assertEqual(ents["media_player.tv"], {"state": "off"})
+        with self.assertRaises(ValueError):
+            agent.parse_scene_payload({**base, "entities": {"alarm_control_panel.hub": {"state": "disarmed"}}})
+
     def test_rejects_locks_foreign_ids_and_bad_values(self):
         base = {"id": "arvio_x", "name": "A"}
         with self.assertRaises(ValueError):

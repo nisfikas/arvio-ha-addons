@@ -3042,11 +3042,13 @@ SCENE_NAME_MAX = 80
 SCENE_MAX_ENTITIES = 80
 SCENE_ICON_RE = re.compile(r"^mdi:[a-z0-9-]{1,64}$")
 SCENE_OPAQUE_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
-SCENE_FORBIDDEN_DOMAINS = {"lock", "alarm_control_panel"}
+SCENE_FORBIDDEN_DOMAINS = {"lock"}
 SCENE_ATTRS = {
     "light": {"state": ("on", "off"), "brightness": (1, 255), "rgb_color": None, "color_temp_kelvin": (1000, 10000)},
     "switch": {"state": ("on", "off")},
     "cover": {"state": ("open", "closed"), "current_position": (0, 100)},
+    # Arming only: anyone a scene is open to could otherwise disarm with no code and no confirmation.
+    "alarm_control_panel": {"state": ("armed_away", "armed_home", "armed_night")},
 }
 
 
@@ -3084,7 +3086,7 @@ def _scene_opaque_entity(st) -> dict:
 
 def parse_scene_payload(payload: dict | None) -> tuple[str, str, str | None, str | None, dict]:
     """Pure: (id, name, area_id, icon, HA `entities` map). Lights/switches/covers
-    are validated; other domains pass through; lock/alarm are refused."""
+    and an alarm's arming are validated; other domains pass through; locks and disarming are refused."""
     payload = payload if isinstance(payload, dict) else {}
     sid = str(payload.get("id") or "").strip()
     if not _is_ha_config_id(sid):

@@ -2,6 +2,7 @@
 
 ## 0.1.79
 
+- Scenes can arm an alarm. Never disarm it, and never touch a lock.
 - Console sees how far an OS update has got: the system version the box runs, the phase, the percentage and how long it has stood still.
 
 ## 0.1.78
