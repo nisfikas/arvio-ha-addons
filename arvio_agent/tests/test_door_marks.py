@@ -88,6 +88,7 @@ class Base(unittest.TestCase):
             ("ha", fake_ha),
             ("hub_id", "hub_lan"),
             ("schedule_registry_refresh", lambda *a, **k: None),
+            ("registries_for_commands", lambda: {}),
         ]
         for target, new in patches:
             p = mock.patch.object(agent, target, new)
@@ -248,6 +249,45 @@ class ScenesAndScenariosTest(LanServer):
         self.assertEqual(self.scene("scene.no_list"), 403)
         self.assertEqual(self.scene("scene.unknown"), 403)
         self.assertEqual(self.scene("scene.no_list", secret=SECRET), 200)
+
+    def regs(self, **platforms):
+        entity_regs = {f"scene.{k}": {"platform": v} for k, v in platforms.items()}
+        p = mock.patch.object(agent, "registries_for_commands", return_value={"entity_regs": entity_regs})
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_a_hue_bridge_scene_only_moves_lights_so_anyone_may_run_it(self):
+        # Κρέσνας: 43 of its 51 scenes. The hub cannot read them, but a bridge's scene holds only its lights.
+        self.regs(no_list="systems.arvio.hue")
+        self.assertEqual(self.scene("scene.no_list"), 200)
+        self.regs(no_list="hue")  # the same scene on a Home Assistant hub
+        self.assertEqual(self.scene("scene.no_list"), 200)
+
+    def test_a_scene_kept_on_another_controller_can_hold_anything(self):
+        self.regs(no_list="systems.arvio.fibaro")
+        self.assertEqual(self.scene("scene.no_list"), 403)
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self.scene("scene.no_list", secret=SECRET), 200)
+
+    def test_with_no_registry_it_does_not_assume_hue(self):
+        self.regs()
+        self.assertEqual(self.scene("scene.no_list"), 403)
+        with mock.patch.object(agent, "registries_for_commands", side_effect=RuntimeError("no hub")):
+            self.assertEqual(self.scene("scene.no_list"), 403)
+
+    def test_a_hue_platform_does_not_excuse_a_scene_that_lists_a_door(self):
+        self.regs(with_mark="systems.arvio.hue", with_relay="systems.arvio.hue")
+        self.assertEqual(self.scene("scene.with_mark"), 403)
+        self.assertEqual(self.scene("scene.with_relay", secret=SECRET), 403)
+
+    def test_a_scenario_that_fires_a_scene_nobody_can_read(self):
+        CONFIGS["/config/automation/config/via_bridge"] = {"action": [{"service": "scene.turn_on", "entity_id": "scene.no_list"}]}
+        self.addCleanup(CONFIGS.pop, "/config/automation/config/via_bridge")
+        self.regs(no_list="systems.arvio.fibaro")
+        self.assertEqual(self.scenario("via_bridge"), 403)
+        self.assertEqual(self.scenario("via_bridge", secret=SECRET), 200)
+        self.regs(no_list="systems.arvio.hue")
+        self.assertEqual(self.scenario("via_bridge"), 200)
 
     def test_scenarios_are_read_however_deep_the_door_is(self):
         self.assertEqual(self.scenario("calm"), 200)

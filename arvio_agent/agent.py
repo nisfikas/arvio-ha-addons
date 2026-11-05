@@ -58,7 +58,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.70"
+AGENT_VERSION = "0.1.71"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -5657,6 +5657,7 @@ DOOR_MARKS_LOCK = threading.Lock()
 # What can carry a door past a check on the entity it is aimed at.
 LAN_CONTAINERS = frozenset({"scene.turn_on", "script.turn_on", "arvio.trigger_scenario"})
 LAN_CONTENT_RE = re.compile(r"\b(?:switch|cover|light|scene)\.[a-z0-9_]+")
+LIGHTS_ONLY_SCENE_PLATFORMS = frozenset({"hue", "systems.arvio.hue"})
 
 
 def door_marks() -> set[str] | None:
@@ -5736,6 +5737,16 @@ def lan_contained_entities(action: str, entity_id: str, payload: dict) -> set[st
     return set(LAN_CONTENT_RE.findall(json.dumps(config))) if isinstance(config, dict) else None
 
 
+def scene_only_moves_lights(entity_id: str) -> bool:
+    """A Hue bridge's scene can only move that bridge's lights, though the hub cannot read which.
+    Nothing else unreadable gets this: a scene kept on a Yubii can hold anything."""
+    try:
+        reg = (registries_for_commands().get("entity_regs") or {}).get(entity_id)
+    except Exception:
+        return False
+    return isinstance(reg, dict) and reg.get("platform") in LIGHTS_ONLY_SCENE_PLATFORMS
+
+
 def lan_door_kinds(action: str, entity_id: str, payload: dict) -> set:
     if action not in LAN_CONTAINERS:
         domain = entity_id.split(".", 1)[0]
@@ -5743,7 +5754,7 @@ def lan_door_kinds(action: str, entity_id: str, payload: dict) -> set:
         return {lan_door_kind(entity_id, state)}
     ids = lan_contained_entities(action, entity_id, payload)
     if ids is None:
-        return {"door"}
+        return set() if action == "scene.turn_on" and scene_only_moves_lights(entity_id) else {"door"}
     if not any(i.split(".", 1)[0] in ("switch", "cover", "scene") for i in ids):
         return {lan_door_kind(i, {}) for i in ids}  # lights: only a mark can make them a door
     states = ha("/states")
@@ -5756,7 +5767,7 @@ def lan_door_kinds(action: str, entity_id: str, payload: dict) -> set:
         members = attrs.get("entity_id") if isinstance(attrs, dict) else None
         if isinstance(members, list):
             ids.update(str(m) for m in members)
-        else:
+        elif not scene_only_moves_lights(scene):
             kinds.add("door")
     # {}: a name that is not an entity (a member that was removed, a service like switch.turn_on)
     return kinds | {lan_door_kind(i, by_id.get(i, {})) for i in ids}
