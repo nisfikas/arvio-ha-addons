@@ -78,7 +78,7 @@
         const data = await res.json();
         const mode = data.mode === "embedded" ? " · lab embedded" : "";
         document.getElementById("meta").textContent = data.ha_ok
-          ? "Home Assistant: εντάξει · hub " + (data.hub_id || "εκκρεμεί enroll") + mode
+          ? "Serial " + data.serial + " · Home Assistant: εντάξει · hub " + (data.hub_id || "εκκρεμεί enroll") + mode
           : "Home Assistant μη διαθέσιμο: " + (data.error || "");
         const list = document.getElementById("list");
         list.innerHTML = "";

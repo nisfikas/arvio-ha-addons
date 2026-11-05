@@ -9274,6 +9274,7 @@ class H(BaseHTTPRequestHandler):
                 200,
                 {
                     "hub_id": hub_id,
+                    "serial": SERIAL,
                     "ha_ok": ha_ok,
                     "mode": mode,
                     "state": hub_state,
