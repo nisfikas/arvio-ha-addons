@@ -133,7 +133,9 @@ class LanPathTest(unittest.TestCase):
             self.assertEqual(cs.call_count, 1)
             status, _ = self.post("/api/service/script/turn_on", {"entity_id": "script.arvio_nyxta"})
             self.assertEqual(status, 200)
-            status, _ = self.post("/api/service/cover/set_cover_position", {"entity_id": "cover.a"})
+            blind = {"entity_id": "cover.a", "attributes": {"device_class": "blind"}}
+            with mock.patch.object(agent, "ha", return_value=blind):
+                status, _ = self.post("/api/service/cover/set_cover_position", {"entity_id": "cover.a"})
             self.assertEqual(status, 200)
             self.assertEqual(cs.call_count, 3)
 
@@ -163,7 +165,7 @@ class LanPathTest(unittest.TestCase):
         agent.save_hub({"hub_id": "hub_lan", "snapshot_version": 7})
         with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/health", timeout=5) as r:
             body = json.loads(r.read().decode())
-        self.assertEqual(body["agent_version"], "0.1.68")
+        self.assertEqual(body["agent_version"], "0.1.69")
         self.assertIn("ma_available", body)
         self.assertEqual(body["snapshot_version"], 7)
 

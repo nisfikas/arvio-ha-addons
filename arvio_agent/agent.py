@@ -17,6 +17,7 @@ import re
 import secrets
 import threading
 import time
+import unicodedata
 import urllib.error
 import urllib.request
 import uuid
@@ -56,7 +57,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.68"
+AGENT_VERSION = "0.1.69"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -1862,6 +1863,7 @@ def panel_snapshot(screen_id: str | None = None, secret: str | None = None) -> d
     areas_out = []
     weather = None
     states = []
+    door_relays = door_relay_ids()  # no tile and no entity: the LAN path refuses them, the doorbell opens them
     try:
         snap = registries_for_commands()
         entity_regs = snap.get("entity_regs") or {}
@@ -1874,7 +1876,7 @@ def panel_snapshot(screen_id: str | None = None, secret: str | None = None) -> d
         ]
         for e in entities():
             eid = str(e.get("entity_id") or "")
-            if not eid:
+            if not eid or eid in door_relays:
                 continue
             domain = str(e.get("domain") or eid.split(".", 1)[0])
             item = {
@@ -1941,6 +1943,10 @@ def panel_snapshot(screen_id: str | None = None, secret: str | None = None) -> d
         states = []
         weather = None
     screens = [public_screen(row)]  # this panel's row only, never its neighbours'
+    screens[0]["pages"] = [
+        {**page, "tiles": [t for t in page.get("tiles") or [] if t.get("ref") not in door_relays]}
+        for page in screens[0]["pages"]
+    ]
     if restart:
         screens[0]["restart"] = True
     attach_doorbell_live(screens, states)
@@ -5141,7 +5147,7 @@ def run_batch(cmd: dict, via: str = "relay") -> dict:
     }
 
 
-def handle_command(cmd: dict, via: str = "relay") -> dict:
+def handle_command(cmd: dict, via: str = "relay", screen_secret: str | None = None) -> dict:
     """Relay / LAN command → HubCommandAck. Safety first (§6.9): dedupe, expiry, allowlist, confirm."""
     cmd = cmd if isinstance(cmd, dict) else {}
     cid = str(cmd.get("command_id") or "")
@@ -5188,7 +5194,7 @@ def handle_command(cmd: dict, via: str = "relay") -> dict:
 
     try:
         try:
-            check_command_safety(cmd, via=via)
+            check_command_safety(cmd, via=via, screen_secret=screen_secret)
         except CommandRejected as e:
             return make_ack(ack_cid, ok=False, error=e.error, error_code=e.code)
 
@@ -5594,6 +5600,73 @@ def lan_script_allowed(entity_id: str) -> bool:
     if eid.startswith(LAN_SCRIPT_PREFIX):
         return True
     return eid in lan_shutdown_scripts()
+
+
+# The LAN path has no login: anyone on the Wi-Fi can call it. Locks and the alarm were never on its
+# allowlist, but a door strike is often a plain switch and a garage door a cover.
+# One id only: Arvio Core and HA read "all" as every entity of the domain, and HA also a comma list.
+LAN_ENTITY_RE = re.compile(r"^[a-z_]+\.[a-z0-9_]+$")
+# Same list as isProtectedCover (packages/domain/src/scenarios.ts).
+PROTECTED_COVER_CLASSES = frozenset({"gate", "garage", "garage_door", "door"})
+# ponytail: a guess from the name, for relays nobody marked. «Ρελέ 1» on a door strike gets through
+# unless it is a doorbell's unlock_entity_id; an installer's own «this is a door» is the way past that.
+DOOR_NAME_RE = re.compile(
+    r"πορτ(?:α|ας|ες|ων)\b|γκαραζ|\bπυλ(?:η|ης|ες|ων)\b|\bθυρ(?:α|ας|ες|ων)\b|θυροτηλεφων|κλειδαρι"
+    r"|(?<![a-z])door(?!bell)|garage|(?<![a-z])gate(?![a-z])|(?<![a-z])strike|(?<![a-z])lock(?![a-z])"
+)
+
+
+def named_like_a_door(name: str) -> bool:
+    plain = "".join(c for c in unicodedata.normalize("NFD", str(name).lower()) if not unicodedata.combining(c))
+    return DOOR_NAME_RE.search(plain) is not None
+
+
+def door_relay_ids() -> set[str]:
+    """What a screen's doorbell opens. That path asks for a recent ring, so nothing else may reach it."""
+    out: set[str] = set()
+    for row in (load_screens().get("screens") or {}).values():
+        try:
+            cfg = parse_screen_doorbell(row.get("doorbell")) if isinstance(row, dict) else None
+        except ValueError:
+            continue
+        if cfg and cfg.get("unlock_entity_id"):
+            out.add(cfg["unlock_entity_id"])
+    return out
+
+
+def paired_screen_secret_ok(secret: str | None) -> bool:
+    """A wall panel paired with a secret. Panels paired before 0.1.50 have none and cannot vouch."""
+    if not secret:
+        return False
+    hashed = hash_screen_secret(secret)
+    rows = (load_screens().get("screens") or {}).values()
+    return any(
+        isinstance(row, dict)
+        and row.get("screen_secret_hash")
+        and hmac.compare_digest(hashed, str(row["screen_secret_hash"]))
+        for row in rows
+    )
+
+
+def lan_door_refusal(entity_id: str, screen_secret: str | None) -> str | None:
+    """Why this switch or cover may not move on the LAN path; None when it may."""
+    domain = entity_id.split(".", 1)[0]
+    if domain not in ("switch", "cover"):
+        return None
+    if entity_id in door_relay_ids():
+        return "a door relay opens only through its doorbell on the LAN path"
+    state = ha(f"/states/{entity_id}", timeout=3)
+    if not isinstance(state, dict):
+        return "cannot tell whether this is a door"
+    attrs = state.get("attributes") if isinstance(state.get("attributes"), dict) else {}
+    device_class = str(attrs.get("device_class") or "")
+    if domain == "cover" and device_class:
+        door = device_class in PROTECTED_COVER_CLASSES
+    else:
+        door = named_like_a_door(f"{attrs.get('friendly_name') or ''} {entity_id}")
+    if door and not paired_screen_secret_ok(screen_secret):
+        return "a door needs a paired wall panel on the LAN path"
+    return None
 
 HA_FLOORS_MIN_VERSION = (2024, 4)
 HA_KELVIN_MIN_VERSION = (2022, 12)
@@ -6648,7 +6721,9 @@ def native_target_data(target: dict, ha_version) -> dict | None:
 # --- pure: command safety (§6.9 / §9.4) ---------------------------------------
 
 
-def check_command_safety(cmd: dict, via: str = "relay", now: float | None = None) -> None:
+def check_command_safety(
+    cmd: dict, via: str = "relay", now: float | None = None, screen_secret: str | None = None
+) -> None:
     """Raise CommandRejected for allowlist / expiry / dangerous-confirm / LAN violations."""
     now = time.time() if now is None else now
     action = str(cmd.get("action") or "")
@@ -6667,6 +6742,12 @@ def check_command_safety(cmd: dict, via: str = "relay", now: float | None = None
             raise CommandRejected("lan_forbidden", f"only {LAN_SCRIPT_PREFIX}* or screen shutdown scripts on the LAN path")
         if isinstance(target, dict):
             raise CommandRejected("lan_forbidden", "target not available on the LAN path")
+        entity_id = str(cmd.get("entity_id") or "")
+        if entity_id and not LAN_ENTITY_RE.fullmatch(entity_id):
+            raise CommandRejected("lan_forbidden", "one entity at a time on the LAN path")
+        refusal = lan_door_refusal(entity_id, screen_secret)
+        if refusal:
+            raise CommandRejected("lan_forbidden", refusal)
     status = str(cmd.get("status") or "")
     if status == "expired":
         raise CommandRejected("expired", "command already expired")
@@ -9156,7 +9237,11 @@ class H(BaseHTTPRequestHandler):
                     raise ValueError("entity_id required")
                 action = f"{parts[2]}.{parts[3]}"
                 try:
-                    check_command_safety({"action": action, "entity_id": eid}, via="lan")
+                    check_command_safety(
+                        {"action": action, "entity_id": eid},
+                        via="lan",
+                        screen_secret=self.headers.get(SCREEN_SECRET_HEADER),
+                    )
                 except CommandRejected as e:
                     raise ValueError(f"Forbidden: {e.error}: {e}") from e
                 return self._j(200, call_service(parts[2], parts[3], {"entity_id": eid}))
@@ -9201,7 +9286,7 @@ class H(BaseHTTPRequestHandler):
                     cmd["payload"] = {
                         k: v for k, v in raw_payload.items() if k in LAN_CLIMATE_PAYLOAD_KEYS
                     }
-                ack = handle_command(cmd, via="lan")
+                ack = handle_command(cmd, via="lan", screen_secret=self.headers.get(SCREEN_SECRET_HEADER))
                 if not ack.get("ok"):
                     msg = str(ack.get("error") or "command failed")
                     code = ack.get("error_code") or ack.get("error")

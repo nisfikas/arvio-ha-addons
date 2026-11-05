@@ -2095,7 +2095,8 @@
         if (!hubId) return;
         const body = { action, entity_id: entityId || "" };
         if (payload) body.payload = payload;
-        fetch("/v1/hubs/" + encodeURIComponent(hubId) + "/commands", {
+        // With the pairing secret: a garage door or a gate moves on the LAN path only for a paired panel.
+        screenFetch("/v1/hubs/" + encodeURIComponent(hubId) + "/commands", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
