@@ -1513,7 +1513,7 @@
       function modeWord(m) {
         return HVAC[m] || String(m || "").replace(/_/g, " ");
       }
-      function chipRow(label, modes, current, kind) {
+      function chipRow(label, modes, current, kind, words) {
         if (!Array.isArray(modes) || !modes.length) return "";
         return (
           '<div class="clima-chips"><span>' +
@@ -1529,7 +1529,7 @@
                 '" data-val="' +
                 esc(m) +
                 '">' +
-                esc(modeWord(m)) +
+                esc((words && words[m]) || modeWord(m)) +
                 "</button>"
               );
             })
@@ -1986,9 +1986,11 @@
         const b = vacuumBattery(e);
         return b ? w + " · " + b : w;
       }
+      const VAC_SUCTION = { quiet: "Αθόρυβη", standard: "Κανονική", strong: "Δυνατή", max: "Μέγιστη" };
+      const VAC_MOP = { gentle: "Απαλό", standard: "Κανονικό", strong: "Δυνατό" };
       function vacuumCaps(e) {
         const f = Number((e && e.supported_features) || 0);
-        return { start: Boolean(f & 8192), pause: Boolean(f & 4), home: Boolean(f & 16), locate: Boolean(f & 512) };
+        return { start: Boolean(f & 8192), pause: Boolean(f & 4), home: Boolean(f & 16), locate: Boolean(f & 512), fan: Boolean(f & 32) };
       }
       function vacuumCommand(e, act) {
         if (!e) return;
@@ -2488,7 +2490,8 @@
           const mins = e && e.cleaning_time != null ? Math.round(Number(e.cleaning_time)) + "′" : "";
           const rows =
             (vacuumBattery(e) ? secRow("Μπαταρία", vacuumBattery(e), "") : "") +
-            (area || mins ? secRow("Τελευταίο καθάρισμα", [area, mins].filter(Boolean).join(" · "), "") : "");
+            (area || mins ? secRow("Τελευταίο καθάρισμα", [area, mins].filter(Boolean).join(" · "), "") : "") +
+            (e && e.mop_fitted === false ? secRow("Σφουγγαρίστρα", "Δεν έχει μπει", "") : "");
           const primary =
             st === "cleaning" && caps.pause
               ? ["pause", "Παύση"]
@@ -2499,6 +2502,8 @@
                   : null;
           sheetBody.innerHTML =
             (rows ? '<div class="sec">' + rows + "</div>" : "") +
+            (caps.fan ? chipRow("Αναρρόφηση", e.fan_speed_list, e.fan_speed, "vac_fan", VAC_SUCTION) : "") +
+            (e && e.mop_fitted !== false ? chipRow("Σφουγγάρισμα", e.mop_level_list, e.mop_level, "vac_mop", VAC_MOP) : "") +
             '<div class="cv-btns">' +
             (primary ? '<button type="button" class="on" data-vac-act="' + primary[0] + '">' + primary[1] + "</button>" : "") +
             (away && caps.home ? '<button type="button" data-vac-act="return_to_base">Βάση</button>' : "") +
@@ -3174,6 +3179,18 @@
           } else if (kind === "swing") {
             setOverlay(sheet.ref, { swing_mode: val });
             cmd("climate.set_swing_mode", sheet.ref, { swing_mode: val });
+          }
+          return;
+        }
+        const vacChip = e.target.closest && e.target.closest('[data-clima^="vac_"]');
+        if (vacChip && sheet && sheet.kind === "vacuum") {
+          const val = vacChip.getAttribute("data-val");
+          if (vacChip.getAttribute("data-clima") === "vac_fan") {
+            setOverlay(sheet.ref, { fan_speed: val });
+            cmd("vacuum.set_fan_speed", sheet.ref, { fan_speed: val });
+          } else {
+            setOverlay(sheet.ref, { mop_level: val });
+            cmd("vacuum.set_mop_level", sheet.ref, { level: val });
           }
           return;
         }

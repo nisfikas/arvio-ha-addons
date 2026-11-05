@@ -58,7 +58,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.71"
+AGENT_VERSION = "0.1.72"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -1906,7 +1906,10 @@ def panel_snapshot(screen_id: str | None = None, secret: str | None = None) -> d
                 if e.get("device_class"):
                     item["device_class"] = e.get("device_class")
             if domain == "vacuum":
-                for k in ("battery_level", "status", "supported_features", "cleaned_area", "cleaning_time"):
+                for k in (
+                    "battery_level", "status", "supported_features", "cleaned_area", "cleaning_time",
+                    "fan_speed", "fan_speed_list", "mop_fitted", "mop_level", "mop_level_list",
+                ):
                     item[k] = e.get(k)
             entities_out.append(item)
         states = ha("/states") or []
@@ -4732,6 +4735,14 @@ def build_service_data(action: str, entity_id: str, payload: dict, ha_version=No
         data["swing_mode"] = str(payload.get("swing_mode") or "")
     elif action == "cover.set_cover_position":
         data["position"] = int(payload.get("position") or 0)
+    elif action == "vacuum.set_fan_speed":
+        if not payload.get("fan_speed"):
+            raise ValueError("fan_speed required")
+        data["fan_speed"] = str(payload["fan_speed"])[:40]
+    elif action == "vacuum.set_mop_level":
+        if not payload.get("level"):
+            raise ValueError("level required")
+        data["level"] = str(payload["level"])[:40]
     elif action in ("lock.lock", "lock.unlock", "lock.open") or action.startswith(
         "alarm_control_panel."
     ):
@@ -5294,8 +5305,19 @@ MEDIA_FEATURE = {
 CAMERA_FEATURE = {"ON_OFF": 1, "STREAM": 2}
 # HA VacuumEntityFeature (vacuum card, docs/plans/2026-11-04-vacuum-card.md in the arvio repo).
 VACUUM_FEATURE = {"PAUSE": 4, "STOP": 8, "RETURN_HOME": 16, "FAN_SPEED": 32, "BATTERY": 64, "LOCATE": 512, "STATE": 4096, "START": 8192}
-# The five vacuum services Home, screens and panels may send (domain HOME_VACUUM_ACTIONS).
-VACUUM_ACTIONS = frozenset({"vacuum.start", "vacuum.pause", "vacuum.stop", "vacuum.return_to_base", "vacuum.locate"})
+# The vacuum services Home, screens and panels may send (domain HOME_VACUUM_ACTIONS).
+# `set_mop_level` is Arvio's own (the Imou on Core): HA has no such service, and its vacuums report no `mop_level_list`.
+VACUUM_ACTIONS = frozenset(
+    {
+        "vacuum.start",
+        "vacuum.pause",
+        "vacuum.stop",
+        "vacuum.return_to_base",
+        "vacuum.locate",
+        "vacuum.set_fan_speed",
+        "vacuum.set_mop_level",
+    }
+)
 CAMERA_HANDLERS = frozenset({"onvif", "generic"})
 CAMERA_ENTITY_RE = re.compile(r"^camera\.[a-z0-9_]+$")
 CAMERA_SNAPSHOT_WIDTH_MIN = 96
@@ -5400,6 +5422,7 @@ LAN_MEDIA_PAYLOAD_KEYS = frozenset(
 LAN_SCENARIO_PAYLOAD_KEYS = frozenset({"id", "scenario_id"})
 LAN_CLIMATE_ACTIONS = frozenset({"climate.set_temperature", "climate.set_hvac_mode"})
 LAN_CLIMATE_PAYLOAD_KEYS = frozenset({"temperature", "hvac_mode"})
+LAN_VACUUM_PAYLOAD_KEYS = frozenset({"fan_speed", "level"})
 MEDIA_ART_MAX_PX = 256
 MEDIA_ART_JPEG_QUALITY = 80
 MEDIA_ART_WIRE_MAX_BYTES = 40 * 1024  # hard cap for data_base64's decoded bytes
@@ -6270,6 +6293,7 @@ def entity_capabilities(domain: str, attrs: dict) -> dict:
             "stop": bool(sf & VACUUM_FEATURE["STOP"]),
             "return_home": bool(sf & VACUUM_FEATURE["RETURN_HOME"]),
             "locate": bool(sf & VACUUM_FEATURE["LOCATE"]),
+            "fan_speed": bool(sf & VACUUM_FEATURE["FAN_SPEED"]),
         }
     return {
         "brightness": domain == "light"
@@ -6422,6 +6446,10 @@ def typed_attrs(
         out["fan_speed"] = str(attrs["fan_speed"])[:40] if attrs.get("fan_speed") else None
         speeds = attrs.get("fan_speed_list")
         out["fan_speed_list"] = [str(s)[:40] for s in speeds[:12]] if isinstance(speeds, list) else []
+        out["mop_fitted"] = attrs["mop_fitted"] if isinstance(attrs.get("mop_fitted"), bool) else None
+        out["mop_level"] = str(attrs["mop_level"])[:40] if attrs.get("mop_level") else None
+        levels = attrs.get("mop_level_list")
+        out["mop_level_list"] = [str(s)[:40] for s in levels[:12]] if isinstance(levels, list) else []
         out["cleaned_area"] = _num(attrs.get("cleaned_area"))
         out["cleaning_time"] = _num(attrs.get("cleaning_time"))
         out["supported_features"] = _int_or_none(attrs.get("supported_features"))
@@ -9400,6 +9428,11 @@ class H(BaseHTTPRequestHandler):
                     raw_payload = body.get("payload") if isinstance(body.get("payload"), dict) else {}
                     cmd["payload"] = {
                         k: v for k, v in raw_payload.items() if k in LAN_CLIMATE_PAYLOAD_KEYS
+                    }
+                elif action in VACUUM_ACTIONS:
+                    raw_payload = body.get("payload") if isinstance(body.get("payload"), dict) else {}
+                    cmd["payload"] = {
+                        k: v for k, v in raw_payload.items() if k in LAN_VACUUM_PAYLOAD_KEYS
                     }
                 ack = handle_command(cmd, via="lan", screen_secret=self.headers.get(SCREEN_SECRET_HEADER))
                 if not ack.get("ok"):
