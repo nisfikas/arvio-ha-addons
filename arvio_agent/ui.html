@@ -253,7 +253,7 @@
       function view(d) {
         if (d.mode === "embedded") return { title: "Τοπική λειτουργία", lead: "Αυτό το hub δουλεύει στο τοπικό δίκτυο, χωρίς cloud.", quiet: true };
         if (!d.ha_ok) return { title: "Προσοχή", cls: "warn", lead: "Το σύστημα ελέγχου του κουτιού δεν απαντά ακόμα. Αν συνεχιστεί για λίγα λεπτά, επικοινώνησε με τον εγκαταστάτη σου." };
-        if (!d.hub_id && String(d.error).includes("403")) return { title: "Περιμένει", cls: "wait", lead: "Το cloud δεν δέχεται ακόμα αυτό το κουτί. Η SFK πρέπει να γράψει το serial στο Console («Νέο hub»). Μετά συνδέεται μόνο του μέσα σε 30 δευτερόλεπτα." };
+        if (!d.hub_id && String(d.error).includes("403")) return { title: "Περιμένει", cls: "wait", lead: "Το cloud δεν δέχεται ακόμα αυτό το κουτί. Το serial του πρέπει πρώτα να καταχωριστεί. Μετά συνδέεται μόνο του μέσα σε 30 δευτερόλεπτα." };
         if (!d.hub_id) return { title: "Χωρίς σύνδεση", cls: "warn", lead: "Το κουτί δεν φτάνει στο cloud. Έλεγξε το καλώδιο δικτύου και το internet. Οι συσκευές δουλεύουν κανονικά στο τοπικό δίκτυο." };
         if (WAITING_FOR_OWNER.includes(d.state)) return { title: "Έτοιμο", lead: "Στο Arvio Partner γράψε το serial και τον κωδικό παρουσίας, για να συνδέσεις το hub σε μια εγκατάσταση.", claim: true };
         return { title: "Σε λειτουργία", lead: "Το hub ανήκει σε εγκατάσταση και δουλεύει κανονικά.", quiet: true };
