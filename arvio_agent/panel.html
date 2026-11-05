@@ -175,6 +175,9 @@
         pointer-events: none;
       }
       .tile-ico svg { width: 22px; height: 22px; display: block; }
+      .tile-strip { display: flex; align-items: flex-end; gap: 2px; width: 40px; height: 34px; opacity: 1; }
+      .tile-strip i { flex: 1 1 0; min-width: 0; background: var(--on); box-shadow: 0 0 0 0.5px rgb(128 128 128 / 0.3); }
+      .tile-strip i.off { height: 2px; background: var(--muted); box-shadow: none; }
       .tile.on .tile-ico { color: var(--on); opacity: 1; }
       .tile-ico ~ .name { padding-right: 1.5rem; }
       html[data-icons="filled"] .glyph { stroke-width: 2.25; }
@@ -1640,6 +1643,28 @@
       function tileGlyph(name) {
         return '<span class="tile-ico">' + ico(name) + "</span>";
       }
+      function kelvinCss(k) {
+        const a = [[2000, [255, 180, 107]], [3000, [255, 201, 160]], [4000, [255, 220, 192]], [5000, [255, 234, 220]], [6500, [223, 233, 255]]];
+        const t = Math.max(2000, Math.min(6500, k));
+        for (let i = 1; i < a.length; i++) {
+          if (t > a[i][0]) continue;
+          const f = (t - a[i - 1][0]) / (a[i][0] - a[i - 1][0]);
+          return "rgb(" + a[i][1].map((v, j) => Math.round(a[i - 1][1][j] + (v - a[i - 1][1][j]) * f)).join(",") + ")";
+        }
+        return "rgb(223,233,255)";
+      }
+      /* A scene's lights, as in Home: one bar each in its colour, as tall as it is bright; off = a line. */
+      function sceneStrip(look) {
+        if (!Array.isArray(look) || !look.length) return tileGlyph("scene");
+        const fit = look.length <= 6 ? look : look.filter((b) => b.on).concat(look.filter((b) => !b.on)).slice(0, 6);
+        const bars = fit.map((b) => {
+          if (!b.on) return '<i class="off"></i>';
+          const color = Array.isArray(b.rgb) ? "rgb(" + b.rgb.map(Number).join(",") + ")" : typeof b.k === "number" ? kelvinCss(b.k) : "";
+          const pct = typeof b.pct === "number" ? b.pct : 100;
+          return '<i style="height:' + Math.round(35 + 0.65 * pct) + "%" + (color ? ";background:" + color : "") + '"></i>';
+        });
+        return '<span class="tile-ico tile-strip">' + bars.join("") + "</span>";
+      }
       function hexRgb(hex) {
         const h = String(hex || "").replace("#", "");
         if (h.length !== 6) return "5,5,5";
@@ -2672,7 +2697,7 @@
         }
         if (t.kind === "scene") {
           const e = byId(t.ref);
-          return tileGlyph("scene") + '<span class="kicker">Σκηνή</span><span class="name">' + esc(e ? e.name : t.ref) + "</span>";
+          return sceneStrip(e && e.scene_look) + '<span class="kicker">Σκηνή</span><span class="name">' + esc(e ? e.name : t.ref) + "</span>";
         }
         if (t.kind === "shutdown") {
           return tileGlyph("power") + '<span class="face">' + esc(shutdownFace(t.ref)) + "</span>";

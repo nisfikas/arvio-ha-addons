@@ -84,6 +84,12 @@ class SceneParseTest(unittest.TestCase):
         self.assertEqual(out["scene_entity_ids"], ["light.a"])
         self.assertIsNone(agent.typed_attrs("scene", "unknown", {})["scene_id"])
 
+    def test_typed_attrs_passes_the_look_only_when_the_hub_has_one(self):
+        look = [{"on": True, "pct": 50, "k": 2700}, {"on": False}]
+        self.assertEqual(agent.typed_attrs("scene", "unknown", {"scene_look": look})["scene_look"], look)
+        self.assertNotIn("scene_look", agent.typed_attrs("scene", "unknown", {}))
+        self.assertNotIn("scene_look", agent.typed_attrs("scene", "unknown", {"scene_look": "x"}))
+
 
 class SceneFlowTest(unittest.TestCase):
     def test_upsert_posts_config_then_files_scene_in_room(self):

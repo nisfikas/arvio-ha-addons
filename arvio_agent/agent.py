@@ -1905,6 +1905,8 @@ def panel_snapshot(screen_id: str | None = None, secret: str | None = None) -> d
                 item["current_position"] = e.get("current_position")
                 if e.get("device_class"):
                     item["device_class"] = e.get("device_class")
+            if domain == "scene" and isinstance(e.get("scene_look"), list):
+                item["scene_look"] = e["scene_look"]
             if domain == "vacuum":
                 for k in (
                     "battery_level", "status", "supported_features", "cleaned_area", "cleaning_time",
@@ -6392,6 +6394,9 @@ def typed_attrs(
     elif domain == "scene":
         # Scene entities list their members in the `entity_id` attribute (best-effort).
         out["scene_entity_ids"] = _str_list(attrs.get("entity_id"))
+        # How the scene looks, one bar per light; only Arvio Core knows it.
+        if isinstance(attrs.get("scene_look"), list):
+            out["scene_look"] = attrs["scene_look"]
         # Config id — HA yaml/UI `attributes.id`; Partner edits via scene-config API.
         out["scene_id"] = str(attrs["id"]) if attrs.get("id") not in (None, "") else None
     elif domain == "script":
