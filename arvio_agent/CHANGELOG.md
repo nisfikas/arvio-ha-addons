@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.79
+
+- Console sees how far an OS update has got: the system version the box runs, the phase, the percentage and how long it has stood still.
+
 ## 0.1.78
 
 - Πάνελ τοίχου: τα πλακίδια σκηνής βλέπουν πια τη σκηνή, με το όνομά της και τη λωρίδα των φώτων της (η 0.1.74 δεν τους έδινε τις σκηνές).

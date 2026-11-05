@@ -58,7 +58,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.78"
+AGENT_VERSION = "0.1.79"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -4158,7 +4158,9 @@ def os_status() -> dict:
     out = core_v1("/v1/update")
     os_state = out.get("os") if isinstance(out.get("os"), dict) else {}
     last = os_state.get("last") if isinstance(os_state.get("last"), dict) else None
-    return {"ok": True, "last": last, "version": os_state.get("version"), "slot": os_state.get("slot")}
+    image = os_state.get("image") if isinstance(os_state.get("image"), dict) else {}
+    progress = os_state.get("progress") if isinstance(os_state.get("progress"), dict) else None
+    return {"ok": True, "last": last, "version": image.get("VERSION"), "progress": progress}
 
 
 def apply_agent_update(payload: dict) -> dict:
