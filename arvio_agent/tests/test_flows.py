@@ -30,6 +30,13 @@ class FlowReads(unittest.TestCase):
     def test_catalog_and_touched(self):
         with mock.patch.object(agent, "ha_or_raise", return_value={"cloud": ["a.b"], "buttons": []}):
             self.assertEqual(agent.flow_catalog({}), {"ok": True, "cloud": ["a.b"], "buttons": []})
+        # All of it goes through: the variables, and whatever Core adds next without a new agent.
+        variables = [{"id": "x", "name": "Χ", "type": "number", "value": 1, "entity_id": "sensor.var_x"}]
+        with mock.patch.object(agent, "ha_or_raise", return_value={"cloud": [], "buttons": [], "variables": variables, "next": 1}):
+            self.assertEqual(agent.flow_catalog({}), {"ok": True, "cloud": [], "buttons": [], "variables": variables, "next": 1})
+        # A Core from before any of this still gives the two lists the screens expect.
+        with mock.patch.object(agent, "ha_or_raise", return_value={}):
+            self.assertEqual(agent.flow_catalog({}), {"ok": True, "cloud": [], "buttons": []})
         with mock.patch.object(agent, "ha_or_raise", return_value={"touched": [{"alias": "x"}]}) as ha:
             self.assertEqual(agent.entity_touched({"entity_id": "light.a"})["touched"], [{"alias": "x"}])
         self.assertEqual(ha.call_args.args[0], "/arvio/entities/light.a/touched")
