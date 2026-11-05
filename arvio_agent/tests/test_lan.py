@@ -170,7 +170,7 @@ class LanPathTest(unittest.TestCase):
         agent.save_hub({"hub_id": "hub_lan", "snapshot_version": 7})
         with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/health", timeout=5) as r:
             body = json.loads(r.read().decode())
-        self.assertEqual(body["agent_version"], "0.1.76")
+        self.assertEqual(body["agent_version"], "0.1.77")
         self.assertIn("ma_available", body)
         self.assertEqual(body["snapshot_version"], 7)
 
@@ -199,6 +199,23 @@ class LanPathTest(unittest.TestCase):
         html = raw.decode()
         self.assertIn(">405421<", html)
         self.assertNotIn("presence_code", html)
+
+    def test_the_lan_cannot_send_an_os_update(self):
+        for action in ("arvio.os_update", "arvio.os_status"):
+            self.assertNotIn(action, agent.LAN_ALLOWED_ACTIONS)
+            with mock.patch.object(agent, "hub_id", "hub_lan"), mock.patch.object(agent, "execute_action") as run:
+                status, _headers, raw = self.request("POST", "/v1/hubs/hub_lan/commands", {"action": action, "payload": {"request": "x", "signature": "y"}})
+            self.assertEqual(status, 403, (action, raw[:120]))
+            run.assert_not_called()
+
+    def test_an_os_update_passes_on_what_the_core_says(self):
+        with mock.patch.object(agent, "core_v1", return_value={"status": "staged", "id": "os-1"}) as core:
+            self.assertEqual(agent.os_update({"request": "r", "signature": "s"}), {"ok": True, "status": "staged", "id": "os-1"})
+        core.assert_called_once_with("/v1/update/os", "POST", {"request": "r", "signature": "s"})
+        with mock.patch.object(agent, "core_v1", return_value={"status": "rejected", "reason": "bad_signature"}):
+            self.assertEqual(agent.os_update({"request": "r", "signature": "s"}), {"ok": False, "error": "bad_signature"})
+        with self.assertRaises(ValueError):
+            agent.os_update({"request": "r"})
 
     def test_hub_page_names_only_arvio_and_old_pages_lead_to_it(self):
         with mock.patch.object(agent, "APP", __import__("pathlib").Path(__file__).resolve().parents[1]):

@@ -58,7 +58,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.76"
+AGENT_VERSION = "0.1.77"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -4119,6 +4119,47 @@ def standalone_trial_ok() -> None:
     STANDALONE_TRIAL.unlink(missing_ok=True)
 
 
+def core_v1(path: str, method: str = "GET", body: dict | None = None) -> dict:
+    """Arvio Core's own API. A refusal is an answer: its JSON says why."""
+    origin = core_origin()
+    if not origin:
+        raise RuntimeError("not_arvio_core")
+    data = None if body is None else json.dumps(body).encode()
+    req = urllib.request.Request(
+        origin + path,
+        data=data,
+        method=method,
+        headers={"Authorization": f"Bearer {TOKEN or read_token()}", "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.loads(r.read().decode() or "{}")
+    except urllib.error.HTTPError as e:
+        try:
+            return json.loads(e.read().decode() or "{}")
+        except ValueError:
+            return {"status": "rejected", "reason": f"http_{e.code}"}
+
+
+def os_update(payload: dict | None = None) -> dict:
+    """A signed OS version, from the cloud only. The core and then its root helper each check the signature."""
+    payload = payload if isinstance(payload, dict) else {}
+    request, signature = payload.get("request"), payload.get("signature")
+    if not isinstance(request, str) or not isinstance(signature, str) or len(request) > 8192 or len(signature) > 1024:
+        raise ValueError("bad_request")
+    out = core_v1("/v1/update/os", "POST", {"request": request, "signature": signature})
+    if out.get("status") == "staged":
+        return {"ok": True, "status": "staged", "id": out.get("id")}
+    return {"ok": False, "error": str(out.get("reason") or out.get("error") or "rejected")[:80]}
+
+
+def os_status() -> dict:
+    out = core_v1("/v1/update")
+    os_state = out.get("os") if isinstance(out.get("os"), dict) else {}
+    last = os_state.get("last") if isinstance(os_state.get("last"), dict) else None
+    return {"ok": True, "last": last, "version": os_state.get("version"), "slot": os_state.get("slot")}
+
+
 def apply_agent_update(payload: dict) -> dict:
     """
     Remote Agent OTA (ARV-060).
@@ -5069,6 +5110,10 @@ def execute_action(
         return out
     if action == "agent.update":
         return apply_agent_update(payload)
+    if action == "arvio.os_update":
+        return os_update(payload)
+    if action == "arvio.os_status":
+        return os_status()
     if "." not in action:
         raise ValueError("action must be domain.service")
     domain, _service = action.split(".", 1)
@@ -5531,6 +5576,8 @@ AGENT_SERVICE_ALLOWLIST = frozenset(
         "arvio.venue_end_session",
         "backup.create",
         "agent.update",
+        "arvio.os_update",
+        "arvio.os_status",
     }
     | MEDIA_ACTIONS
     | TODO_AGENT_ACTIONS
