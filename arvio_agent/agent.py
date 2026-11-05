@@ -58,7 +58,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.72"
+AGENT_VERSION = "0.1.73"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -3797,9 +3797,10 @@ def flow_dryrun(payload: dict) -> dict:
 
 
 def flow_catalog(_payload: dict | None = None) -> dict:
-    """What only Arvio Core knows: devices that come through the cloud, and buttons."""
+    """What only Arvio Core knows: devices that come through the cloud, buttons, variables. All of it
+    goes through, so what Core adds to the canvas's list next does not wait for a new agent."""
     out = ha_or_raise("/arvio/flows/catalog", timeout=15)
-    return {"ok": True, "cloud": out.get("cloud", []), "buttons": out.get("buttons", [])}
+    return {"cloud": [], "buttons": [], **out, "ok": True}
 
 
 def entity_touched(payload: dict) -> dict:
