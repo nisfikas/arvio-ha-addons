@@ -58,7 +58,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.79"
+AGENT_VERSION = "0.1.80"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -4162,7 +4162,37 @@ def os_status() -> dict:
     last = os_state.get("last") if isinstance(os_state.get("last"), dict) else None
     image = os_state.get("image") if isinstance(os_state.get("image"), dict) else {}
     progress = os_state.get("progress") if isinstance(os_state.get("progress"), dict) else None
-    return {"ok": True, "last": last, "version": image.get("VERSION"), "progress": progress}
+    # image: a core before builds had a number reports only /etc/arvio-os, whose keys it lower-cases.
+    return {"ok": True, "last": last, "version": os_state.get("version") or image.get("version"), "progress": progress}
+
+
+HA_VERSION_TTL_S = 600.0
+ha_version_cache: tuple[float, str | None] = (0.0, None)
+
+
+def system_telemetry() -> dict:
+    """What this box runs, for Console's fleet: an image, Core in a container, or Home Assistant. Never fails a heartbeat."""
+    global ha_version_cache
+    try:
+        out = core_v1("/v1/update") if core_origin() else {}
+        os_state = out.get("os") if isinstance(out.get("os"), dict) else None
+        if os_state is not None:
+            image = os_state.get("image") if isinstance(os_state.get("image"), dict) else None
+            return {
+                # A core from before it said its kind: an image if it has one, otherwise nothing Console can update.
+                "system_kind": os_state.get("kind") or ("arvio_os" if image else "core_other"),
+                "system_version": os_state.get("version") or (image or {}).get("version"),
+                "system_usb": os_state.get("usb") is True,
+                "system_update": os_state.get("last") if isinstance(os_state.get("last"), dict) else None,
+                "system_progress": os_state.get("progress") if isinstance(os_state.get("progress"), dict) else None,
+            }
+        now = time.monotonic()
+        if ha_version_cache[1] is None or now - ha_version_cache[0] > HA_VERSION_TTL_S:
+            config = ha("/config")
+            ha_version_cache = (now, str(config.get("version")) if isinstance(config, dict) and config.get("version") else None)
+        return {"system_kind": "home_assistant", "system_version": ha_version_cache[1]}
+    except Exception:
+        return {}
 
 
 def apply_agent_update(payload: dict) -> dict:
@@ -4405,6 +4435,7 @@ def enroll_remote() -> None:
             "snapshot_version": get_snapshot_version(),
         }
         payload.update(backup_telemetry())
+        payload.update(system_telemetry())
         # Accept target pin from cloud response for agent.update follow-up.
         req = urllib.request.Request(
             f"{CLOUD}/v1/hubs/{hub_id}/heartbeat",

@@ -170,7 +170,7 @@ class LanPathTest(unittest.TestCase):
         agent.save_hub({"hub_id": "hub_lan", "snapshot_version": 7})
         with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/health", timeout=5) as r:
             body = json.loads(r.read().decode())
-        self.assertEqual(body["agent_version"], "0.1.79")
+        self.assertEqual(body["agent_version"], "0.1.80")
         self.assertIn("ma_available", body)
         self.assertEqual(body["snapshot_version"], 7)
 
@@ -218,7 +218,7 @@ class LanPathTest(unittest.TestCase):
             agent.os_update({"request": "r"})
 
     def test_os_status_says_what_runs_and_how_far_an_update_has_got(self):
-        os_part = {"image": {"BOARD": "x86", "VERSION": "2026.11.05.2"}, "last": {"status": "applied"}, "progress": {"phase": "download", "percent": 42, "idle_s": 3}}
+        os_part = {"image": {"board": "x86", "version": "2026.11.05.2"}, "last": {"status": "applied"}, "progress": {"phase": "download", "percent": 42, "idle_s": 3}}
         with mock.patch.object(agent, "core_v1", return_value={"os": os_part}):
             self.assertEqual(agent.os_status(), {"ok": True, "last": {"status": "applied"}, "version": "2026.11.05.2", "progress": {"phase": "download", "percent": 42, "idle_s": 3}})
         with mock.patch.object(agent, "core_v1", return_value={"os": {"last": None}}):

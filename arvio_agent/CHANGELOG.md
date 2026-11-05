@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.80
+
+- The heartbeat says what the box runs (Arvio OS image, Core in a container, or Home Assistant, and which version), so Console can show it for the whole fleet and keep a history.
+- It also says when the system runs from a USB stick instead of the box's own disk.
+- Console's «Τρέχει τώρα» works: it read a key the core never sent.
+
 ## 0.1.79
 
 - Scenes can arm an alarm. Never disarm it, and never touch a lock.
