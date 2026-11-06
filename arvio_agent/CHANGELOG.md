@@ -1,13 +1,10 @@
 # Changelog
 
-## Επόμενη έκδοση
+## 0.1.80
 
 - Εικονίδιο για κάθε συσκευή και δωμάτιο, από το Partner (`arvio.icon_set`, μόνο από το cloud, στο `icons.json`). Το βλέπουν Home, εφαρμογή και πάνελ τοίχου. Οι κλειδαριές και οι συναγερμοί κρατούν το δικό τους, γιατί δείχνει την κατάστασή τους.
 - Το hub μαθαίνει από το cloud πού είναι και τη ζώνη ώρας του (`arvio.site_config`): ανατολή, δύση και ώρες στους αυτοματισμούς. Οι τιμές στο hub μένουν σε °C.
 - Το πάνελ δείχνει θερμοκρασία σε °C ή °F και ώρα σε 24ωρο ή 12ωρο, όπως ορίστηκε στα «Στοιχεία».
-
-## 0.1.80
-
 - The heartbeat says what the box runs (Arvio OS image, Core in a container, or Home Assistant, and which version), so Console can show it for the whole fleet and keep a history.
 - It also says when the system runs from a USB stick instead of the box's own disk.
 - Console's «Τρέχει τώρα» works: it read a key the core never sent.
