@@ -20,7 +20,7 @@ import urllib.request
 from http.server import ThreadingHTTPServer
 from unittest import mock
 
-from helpers import ROOT, agent
+from helpers import ROOT, agent, signed
 
 
 JPEG = bytes([0xFF, 0xD8, 0xFF]) + b"\x11" * 80 + bytes([0xFF, 0xD9])
@@ -443,7 +443,7 @@ class ScreenLanHttpTest(unittest.TestCase):
         data = None if body is None else json.dumps(body).encode()
         headers = {"Content-Type": "application/json"} if body is not None else {}
         if secret is not None:
-            headers["X-Arvio-Screen-Secret"] = secret
+            headers.update(signed(method, path, data or b"", secret=secret))
         req = urllib.request.Request(
             f"http://127.0.0.1:{self.port}{path}", data=data, headers=headers, method=method
         )
@@ -1256,9 +1256,10 @@ class ScreenLanHttpTest(unittest.TestCase):
         # an agent update reaches the screen: the app itself loads the page only once
         self.assertIn("(v && v !== pageVersion)) location.reload();", html)
 
-    def test_panel_sends_the_secret_as_a_header_only(self):
+    def test_panel_never_sends_its_secret(self):
         html = (ROOT / "panel.html").read_text(encoding="utf-8")
-        self.assertIn('headers["X-Arvio-Screen-Secret"] = secret', html)
+        self.assertIn('"X-Arvio-Lan-Sig": signature', html)
+        self.assertNotIn("X-Arvio-Screen-Secret", html)
         self.assertIn("localStorage.setItem(SECRET_KEY, body.screen_secret)", html)
         # every /api/screens* request goes through screenFetch: no bare fetch, no <img src>, no CSS url()
         self.assertEqual(re.findall(r'(?<![A-Za-z])fetch\(\s*"/api/screens', html), [])

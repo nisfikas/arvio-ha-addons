@@ -14,6 +14,19 @@ if str(ROOT) not in sys.path:
 
 import agent  # noqa: E402
 
+
+def signed(method: str, path: str, body: bytes = b"", secret: str | None = None, token: str | None = None) -> dict:
+    """The headers a paired panel (its secret) or a signed-in app (its token) sends: never the key itself."""
+    nonce = agent.lan_nonce_new()
+    headers = {agent.LAN_NONCE_HEADER: nonce}
+    if token is not None:
+        app_id, _, key = token.partition(".")
+        headers[agent.LAN_ID_HEADER] = app_id
+    else:
+        key = agent.hash_screen_secret(secret or "")
+    headers[agent.LAN_SIG_HEADER] = agent.lan_signature(key.encode(), nonce, method, path, body)
+    return headers
+
 FLOORS = [
     {"floor_id": "isogeio", "name": "Ισόγειο", "level": 0, "icon": "mdi:home-floor-0", "aliases": []},
     {"floor_id": "orofos1", "name": "1ος", "level": 1, "icon": None, "aliases": []},

@@ -10,7 +10,7 @@ import urllib.request
 from http.server import ThreadingHTTPServer
 from unittest import mock
 
-from helpers import agent
+from helpers import agent, signed
 
 SECRET = "panel-secret"
 RELAY = "switch.front_door_relay"
@@ -156,12 +156,11 @@ class LanServer(Base):
         cls.server.server_close()
 
     def post(self, path, body, secret=None):
+        data = json.dumps(body).encode()
         headers = {"Content-Type": "application/json"}
         if secret is not None:
-            headers[agent.SCREEN_SECRET_HEADER] = secret
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{self.port}{path}", data=json.dumps(body).encode(), headers=headers, method="POST"
-        )
+            headers.update(signed("POST", path, data, secret=secret))
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", data=data, headers=headers, method="POST")
         try:
             with urllib.request.urlopen(req, timeout=5) as r:
                 return r.status

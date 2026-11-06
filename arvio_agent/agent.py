@@ -60,7 +60,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.83"
+AGENT_VERSION = "0.1.84"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -274,8 +274,12 @@ DOORBELL_LATCH_S = 45.0
 # call sensor → monotonic deadline (ring + 45 s). Written where the agent sees the ring
 # (note_doorbell_ring); the panel's ringing flag and the door-unlock window both read it.
 DOORBELL_LATCH: dict[str, float] = {}
-SCREEN_SECRET_HEADER = "X-Arvio-Screen-Secret"
-LAN_TOKEN_HEADER = "X-Arvio-Lan-Token"
+# How a caller proves itself on the LAN path without sending its key (ADR 017). A panel page from
+# before 0.1.84 still sends its secret in this header for up to a minute after an update.
+OLD_PANEL_HEADER = "X-Arvio-Screen-Secret"
+LAN_NONCE_HEADER = "X-Arvio-Lan-Nonce"
+LAN_SIG_HEADER = "X-Arvio-Lan-Sig"
+LAN_ID_HEADER = "X-Arvio-Lan-Id"
 PAIR_FAIL_MAX = 10
 PAIR_LOCK_S = 15 * 60
 # ponytail: one hub-wide counter (the LAN is one network): 10 wrong codes in 15 min lock
@@ -301,7 +305,13 @@ def hash_screen_pairing(code: str, site_id: str, screen_id: str) -> str:
     ).hexdigest()
 
 
+class SignedPanel(str):
+    """The stored hash of the secret a panel just proved it holds, by signing with it (`lan_signer`)."""
+
+
 def hash_screen_secret(secret: str) -> str:
+    if isinstance(secret, SignedPanel):
+        return str(secret)
     return hashlib.sha256(str(secret or "").encode("utf-8")).hexdigest()
 
 
@@ -5284,9 +5294,7 @@ def run_batch(cmd: dict, via: str = "relay") -> dict:
     }
 
 
-def handle_command(
-    cmd: dict, via: str = "relay", screen_secret: str | None = None, lan_token: str | None = None
-) -> dict:
+def handle_command(cmd: dict, via: str = "relay", screen_secret: str | None = None, lan_app: bool = False) -> dict:
     """Relay / LAN command → HubCommandAck. Safety first (§6.9): dedupe, expiry, allowlist, confirm."""
     cmd = cmd if isinstance(cmd, dict) else {}
     cid = str(cmd.get("command_id") or "")
@@ -5333,7 +5341,7 @@ def handle_command(
 
     try:
         try:
-            check_command_safety(cmd, via=via, screen_secret=screen_secret, lan_token=lan_token)
+            check_command_safety(cmd, via=via, screen_secret=screen_secret, lan_app=lan_app)
         except CommandRejected as e:
             return make_ack(ack_cid, ok=False, error=e.error, error_code=e.code)
 
@@ -5807,22 +5815,42 @@ def paired_screen_secret_ok(secret: str | None) -> bool:
     )
 
 
-def lan_token_ok(token: str | None, now: float | None = None) -> bool:
-    """A signed-in person's key, from the cloud's POST /v1/home/hubs/{hub}/lan-token (ADR 017).
+LAN_NONCE_TTL_S = 60.0
+LAN_NONCE_MAX = 512
+LAN_NONCES: "OrderedDict[str, float]" = OrderedDict()
+LAN_NONCES_LOCK = threading.Lock()
 
-    Both sides derive the signing key from what only they know: the hub its relay token, the cloud
-    that token's hash. No relay token, no key: the hash of an empty string is public.
 
-    ponytail: it travels in the clear on the LAN path, so someone who can read this Wi-Fi's traffic
-    can copy it until it expires, with no more than its owner could do here. TLS on the LAN closes that.
-    """
-    if not token or not RELAY_TOKEN or not hub_id:
-        return False
-    body, _, sig = str(token).partition(".")
+def lan_nonce_new() -> str:
+    """One use, a minute at most, so a request read off the Wi-Fi cannot be sent again. No clock is
+    compared: a hub without internet may not know the time, and that is when this path matters."""
+    nonce = secrets.token_hex(16)
+    with LAN_NONCES_LOCK:
+        LAN_NONCES[nonce] = time.monotonic() + LAN_NONCE_TTL_S
+        while len(LAN_NONCES) > LAN_NONCE_MAX:
+            LAN_NONCES.popitem(last=False)
+    return nonce
+
+
+def lan_nonce_spend(nonce: str) -> bool:
+    with LAN_NONCES_LOCK:
+        expires = LAN_NONCES.pop(str(nonce), None)
+    return expires is not None and time.monotonic() < expires
+
+
+def lan_signature(key: bytes, nonce: str, method: str, target: str, body: bytes) -> str:
+    message = "\n".join((nonce, method, target, hashlib.sha256(body).hexdigest()))
+    return hmac.new(key, message.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def lan_app_key(body: str) -> str:
+    """The second half of a signed-in person's token (POST /v1/home/hubs/{hub}/lan-token). The phone
+    has it from the cloud; this hub works it out from the first half, and it never crosses the Wi-Fi."""
     key = hmac.new(sha(RELAY_TOKEN).encode(), b"arvio-lan-token-v1", hashlib.sha256).digest()
-    expected = base64.urlsafe_b64encode(hmac.new(key, body.encode(), hashlib.sha256).digest()).rstrip(b"=")
-    if not hmac.compare_digest(expected, sig.encode()):
-        return False
+    return base64.urlsafe_b64encode(hmac.new(key, body.encode(), hashlib.sha256).digest()).rstrip(b"=").decode()
+
+
+def lan_app_claims_ok(body: str, now: float | None = None) -> bool:
     try:
         claims = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
     except ValueError:
@@ -5835,9 +5863,29 @@ def lan_token_ok(token: str | None, now: float | None = None) -> bool:
     return (time.time() if now is None else now) < expires
 
 
-def lan_caller_ok(screen_secret: str | None, lan_token: str | None) -> bool:
+def lan_signer(nonce: str, method: str, target: str, body: bytes, signature: str, app_id: str | None):
+    """Who signed this request: a `SignedPanel`, True for a signed-in app, None for nobody.
+
+    ponytail: only the key is protected. What moves and what the hub answers can still be read off the
+    Wi-Fi, and a panel's secret crosses it once, when it pairs. TLS on the LAN would close both.
+    """
+    def signed_with(key: str) -> bool:
+        expected = lan_signature(key.encode(), nonce, method, target, body)
+        return hmac.compare_digest(expected.encode(), str(signature).encode())
+
+    if app_id:
+        # No relay token, no key: the hash of an empty string is public.
+        return True if RELAY_TOKEN and hub_id and signed_with(lan_app_key(app_id)) and lan_app_claims_ok(app_id) else None
+    for row in (load_screens().get("screens") or {}).values():
+        stored = str(row.get("screen_secret_hash") or "") if isinstance(row, dict) else ""
+        if stored and signed_with(stored):
+            return SignedPanel(stored)
+    return None
+
+
+def lan_caller_ok(screen_secret: str | None, lan_app: bool = False) -> bool:
     """A paired panel or a signed-in app. A box with no cloud has nobody to ask, so its page stays its remote."""
-    return mode == "embedded" or paired_screen_secret_ok(screen_secret) or lan_token_ok(lan_token)
+    return mode == "embedded" or lan_app or paired_screen_secret_ok(screen_secret)
 
 
 DOOR_MARK_RE = re.compile(r"^(?:switch|cover|light)\.[a-z0-9_]+$")
@@ -7223,7 +7271,7 @@ def check_command_safety(
     via: str = "relay",
     now: float | None = None,
     screen_secret: str | None = None,
-    lan_token: str | None = None,
+    lan_app: bool = False,
 ) -> None:
     """Raise CommandRejected for allowlist / expiry / dangerous-confirm / LAN violations."""
     now = time.time() if now is None else now
@@ -7236,7 +7284,7 @@ def check_command_safety(
             "action_not_allowed", f"action not allowed: {action}", error=f"unknown action: {action}"
         )
     if via == "lan":
-        if not lan_caller_ok(screen_secret, lan_token):
+        if not lan_caller_ok(screen_secret, lan_app):
             raise CommandRejected("lan_forbidden", "the LAN path needs a paired panel or a signed-in app")
         # Explicit allowlist (not a denylist): anything not listed is forbidden locally.
         if action not in LAN_ALLOWED_ACTIONS:
@@ -9454,7 +9502,7 @@ class H(BaseHTTPRequestHandler):
 
     Same-origin only: no CORS grants, so a page on another origin cannot drive the hub
     through the browser. The served ui and panel pages fetch relative paths.
-    Commands and device names need a caller (`lan_caller_ok`), then go through the LAN allowlist
+    Commands and device names need a caller who signs (`lan_signer`), then go through the LAN allowlist
     (LAN_ALLOWED_ACTIONS). Claim / presence / redeem proxies answer 403; the Partner talks to the
     cloud with a session. What stays open names no device: this page, /health, /api/venue/wall,
     and the keypad and pairing routes, which each ask for their own code and lock after wrong tries.
@@ -9467,11 +9515,15 @@ class H(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _raw_body(self) -> bytes:
+        if self._body is None:
+            n = int(self.headers.get("Content-Length") or 0)
+            self._body = self.rfile.read(n) if n > 0 else b""
+        return self._body
+
     def _read_json(self) -> dict:
-        n = int(self.headers.get("Content-Length") or 0)
-        if n <= 0:
-            return {}
-        return json.loads(self.rfile.read(n).decode() or "{}")
+        raw = self._raw_body()
+        return json.loads(raw.decode() or "{}") if raw else {}
 
     def _file(self, name: str, ctype: str) -> None:
         path = APP / name
@@ -9507,19 +9559,47 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Allow", "GET, POST, OPTIONS")
         self.end_headers()
 
+    def _panel(self) -> str | None:
+        return self._signed if isinstance(self._signed, SignedPanel) else None
+
+    def _app(self) -> bool:
+        return self._signed is True
+
     def _caller_ok(self) -> bool:
-        return lan_caller_ok(self.headers.get(SCREEN_SECRET_HEADER), self.headers.get(LAN_TOKEN_HEADER))
+        return lan_caller_ok(self._panel(), self._app())
 
     def _lan_ok(self) -> bool:
-        if lan_request_ok(self.headers.get("Host") or "", self.headers.get("Origin")):
-            return True
-        self._j(403, {"ok": False, "error": "forbidden_origin"})
-        return False
+        self._body = None
+        self._signed = None
+        if not lan_request_ok(self.headers.get("Host") or "", self.headers.get("Origin")):
+            self._j(403, {"ok": False, "error": "forbidden_origin"})
+            return False
+        # Not 403: a panel that gets three of those forgets its pairing. Each of these clears by itself,
+        # the old page within a minute when it sees the new version on /health.
+        if self.headers.get(OLD_PANEL_HEADER):
+            self._j(426, {"ok": False, "error": "reload_the_page"})
+            return False
+        nonce, signature = self.headers.get(LAN_NONCE_HEADER), self.headers.get(LAN_SIG_HEADER)
+        if nonce and signature:
+            if not lan_nonce_spend(nonce):
+                self._j(409, {"ok": False, "error": "nonce_expired"})
+                return False
+            self._signed = lan_signer(nonce, self.command, self.path, self._raw_body(), signature, self.headers.get(LAN_ID_HEADER))
+        return True
 
     def do_GET(self) -> None:  # noqa: N802
         if not self._lan_ok():
             return
         path = urlparse(self.path).path
+        if path == "/v1/lan/nonce":
+            data = json.dumps({"nonce": lan_nonce_new()}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if path.rstrip("/") in ("/partner", "/home", "/remote"):  # old pages: all of it is on the hub's page now
             self.send_response(302)
             self.send_header("Location", "/")
@@ -9566,7 +9646,7 @@ class H(BaseHTTPRequestHandler):
             if not isinstance(doc["screens"].get(sid), dict):
                 return self._j(404, {"error": "not_found"})
             try:
-                check_screen_secret(doc["screens"][sid], self.headers.get(SCREEN_SECRET_HEADER))
+                check_screen_secret(doc["screens"][sid], self._panel())
             except ScreenDenied as e:
                 return self._j(403, {"ok": False, "error": str(e)})
             path_file = wallpaper_file(sid)
@@ -9592,7 +9672,7 @@ class H(BaseHTTPRequestHandler):
             except (TypeError, ValueError):
                 w = 720
             try:
-                data, mime = doorbell_jpeg(sid, w, self.headers.get(SCREEN_SECRET_HEADER))
+                data, mime = doorbell_jpeg(sid, w, self._panel())
             except ScreenDenied as e:
                 return self._j(403, {"ok": False, "error": str(e)})
             except ValueError:
@@ -9610,7 +9690,7 @@ class H(BaseHTTPRequestHandler):
             qs = parse_qs(urlparse(self.path).query)
             sid = (qs.get("screen_id") or [None])[0]
             try:
-                return self._j(200, panel_snapshot(sid, self.headers.get(SCREEN_SECRET_HEADER)))
+                return self._j(200, panel_snapshot(sid, self._panel()))
             except ScreenDenied as e:
                 return self._j(403, {"ok": False, "error": str(e)})
             except ValueError:
@@ -9720,7 +9800,7 @@ class H(BaseHTTPRequestHandler):
                 body = self._read_json()
                 sid = str(body.get("screen_id") or "")
                 try:
-                    out = doorbell_unlock(sid, self.headers.get(SCREEN_SECRET_HEADER))
+                    out = doorbell_unlock(sid, self._panel())
                 except ScreenDenied as e:
                     return self._j(403, {"ok": False, "error": str(e)})
                 except ValueError:
@@ -9752,8 +9832,8 @@ class H(BaseHTTPRequestHandler):
                     check_command_safety(
                         {"action": action, "entity_id": eid},
                         via="lan",
-                        screen_secret=self.headers.get(SCREEN_SECRET_HEADER),
-                        lan_token=self.headers.get(LAN_TOKEN_HEADER),
+                        screen_secret=self._panel(),
+                        lan_app=self._app(),
                     )
                 except CommandRejected as e:
                     raise ValueError(f"Forbidden: {e.error}: {e}") from e
@@ -9804,12 +9884,7 @@ class H(BaseHTTPRequestHandler):
                     cmd["payload"] = {
                         k: v for k, v in raw_payload.items() if k in LAN_VACUUM_PAYLOAD_KEYS
                     }
-                ack = handle_command(
-                    cmd,
-                    via="lan",
-                    screen_secret=self.headers.get(SCREEN_SECRET_HEADER),
-                    lan_token=self.headers.get(LAN_TOKEN_HEADER),
-                )
+                ack = handle_command(cmd, via="lan", screen_secret=self._panel(), lan_app=self._app())
                 if not ack.get("ok"):
                     msg = str(ack.get("error") or "command failed")
                     code = ack.get("error_code") or ack.get("error")

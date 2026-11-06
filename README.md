@@ -7,7 +7,7 @@
 | `/` | Hub page: state and serial. The presence code only while the hub has no owner |
 | `/panel` | Wall panel |
 
-Anyone on the network reaches this port, so commands and device names need a paired panel (`X-Arvio-Screen-Secret`) or a signed-in app's key (`X-Arvio-Lan-Token`, from the cloud). A box with `cloud_url: embedded` has nobody to ask: its page lists and controls the devices, doors excepted. See `docs/ADR/017-lan-path-needs-a-caller.md` in the arvio repo.
+Anyone on the network reaches this port, so commands and device names need a paired panel or a signed-in app. Neither sends its key: each request signs a one-time code from `GET /v1/lan/nonce` (`X-Arvio-Lan-Nonce`, `X-Arvio-Lan-Sig`, and `X-Arvio-Lan-Id` for the app). A box with `cloud_url: embedded` has nobody to ask: its page lists and controls the devices, doors excepted. See `docs/ADR/017-lan-path-needs-a-caller.md` in the arvio repo.
 
 Options: `cloud_url: embedded`, optional `relay_url` + `relay_token` for outbound relay (ADR-003).
 
