@@ -60,7 +60,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.85"
+AGENT_VERSION = "0.1.86"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -751,11 +751,21 @@ def post_hub_notify(body: dict) -> None:
         print(f"notify: not sent ({type(e).__name__})", flush=True)
 
 
-# ---- What this box reports by itself: smoke, water, gas, a flat battery, a device gone ----
+# ---- What this box reports by itself: the alarm, smoke, water, gas, a flat battery, a device gone ----
 
 HOME_EVENT_DANGER = {"smoke": "smoke", "gas": "gas", "carbon_monoxide": "co", "moisture": "leak"}
 # As Partner's LOW_BATTERY.
 HOME_EVENT_LOW_BATTERY = 20.0
+# Documented alarm_control_panel states. Vacation counts as away, a custom bypass as part of the house.
+HOME_EVENT_ALARM = {
+    "armed_away": "armed_away",
+    "armed_vacation": "armed_away",
+    "armed_home": "armed_home",
+    "armed_custom_bypass": "armed_home",
+    "armed_night": "armed_night",
+    "disarmed": "disarmed",
+    "triggered": "alarm",
+}
 HOME_EVENT_NAME_MAX = 80
 DEVICE_WATCH_FILE = DATA / "device_watch.json"
 DEVICE_WATCH_EVERY_S = 300
@@ -772,6 +782,10 @@ def home_event_code(entity_id: str, new_state, old_state) -> str | None:
     attrs = new_state.get("attributes") if isinstance(new_state.get("attributes"), dict) else {}
     device_class = str(attrs.get("device_class") or "")
     state, old = str(new_state.get("state") or ""), str(old_state.get("state") or "")
+    if domain == "alarm_control_panel":
+        if state == old or old in ("unavailable", "unknown", ""):
+            return None
+        return HOME_EVENT_ALARM.get(state)
     if domain == "binary_sensor" and state == "on" and old == "off":
         return HOME_EVENT_DANGER.get(device_class) or ("battery_low" if device_class == "battery" else None)
     if domain == "sensor" and device_class == "battery":
@@ -821,6 +835,126 @@ def post_hub_event(code: str, entity_id: str, name: str, sleep=time.sleep) -> No
             return
         except Exception as e:
             print(f"event: not sent ({type(e).__name__})", flush=True)
+
+
+# ---- What the devices did, on this box, for the installer's log (monorepo services/api/src/partner-log.ts) ----
+
+ACTIVITY_FILE = DATA / "activity.jsonl"
+ACTIVITY_MAX_LINES = 5000
+ACTIVITY_MAX_AGE_S = 30 * 86400
+ACTIVITY_READ_MAX = 300
+ACTIVITY_FLUSH_S = 60
+ACTIVITY_DOMAINS = frozenset(
+    {"light", "switch", "cover", "climate", "lock", "alarm_control_panel", "fan", "vacuum", "media_player", "binary_sensor", "siren", "valve"}
+)
+# Someone moving through their own house is not the installer's business: it says when people were home.
+ACTIVITY_PRIVATE_CLASSES = frozenset({"motion", "occupancy", "presence", "moving", "sound", "vibration"})
+_activity_pending: list[str] = []
+_activity_lock = threading.Lock()
+
+
+def activity_row(entity_id: str, new_state, old_state, now: datetime | None = None) -> dict | None:
+    """A change of state and nothing more: never a song's title, a brightness or who is at home."""
+    if not isinstance(new_state, dict) or entity_id.split(".", 1)[0] not in ACTIVITY_DOMAINS:
+        return None
+    attrs = new_state.get("attributes") if isinstance(new_state.get("attributes"), dict) else {}
+    if str(attrs.get("device_class") or "") in ACTIVITY_PRIVATE_CLASSES:
+        return None
+    state = str(new_state.get("state") or "")
+    old = str(old_state.get("state") or "") if isinstance(old_state, dict) else ""
+    if not state or state == old:
+        return None
+    ctx = new_state.get("context") if isinstance(new_state.get("context"), dict) else {}
+    # Documented: a user's id means a person through the API; a parent means something else set it off.
+    via = "user" if ctx.get("user_id") else ("automation" if ctx.get("parent_id") else None)
+    at = (now or datetime.now(timezone.utc)).isoformat()
+    row = {"t": at, "e": entity_id, "n": home_event_name(new_state), "s": state, "o": old}
+    if via:
+        row["v"] = via
+    return row
+
+
+def activity_note(entity_id: str, new_state, old_state) -> None:
+    row = activity_row(entity_id, new_state, old_state)
+    if row:
+        with _activity_lock:
+            _activity_pending.append(json.dumps(row, ensure_ascii=False))
+
+
+def activity_note_system(what: str) -> None:
+    """Something the box itself did, on the same timeline as its devices."""
+    with _activity_lock:
+        _activity_pending.append(json.dumps({"t": datetime.now(timezone.utc).isoformat(), "s": what}, ensure_ascii=False))
+
+
+def activity_flush(path=None) -> None:
+    """Once a minute, so a house's every switch is not a write to the SD card. Twice the limit, then cut."""
+    path = path or ACTIVITY_FILE
+    with _activity_lock:
+        lines = list(_activity_pending)
+        _activity_pending.clear()
+    if not lines:
+        return
+    with open(path, "a", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    os.chmod(path, 0o600)
+    if path.stat().st_size > ACTIVITY_MAX_LINES * 2 * 120:
+        keep = activity_lines(path)[-ACTIVITY_MAX_LINES:]
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text("\n".join(keep) + "\n", encoding="utf-8")
+        tmp.replace(path)
+
+
+def activity_lines(path=None) -> list[str]:
+    """Oldest first, and nothing older than the limit, whether or not the file has been cut yet."""
+    path = path or ACTIVITY_FILE
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        lines = []
+    with _activity_lock:
+        lines += _activity_pending
+    cutoff = time.time() - ACTIVITY_MAX_AGE_S
+    keep = []
+    for line in lines:
+        try:
+            if _activity_ts(json.loads(line)) >= cutoff:
+                keep.append(line)
+        except ValueError:
+            continue
+    return keep
+
+
+def activity_log(payload: dict | None = None, path=None) -> dict:
+    """arvio.activity: newest first, up to `limit`, older than `before`. Only ever asked, never sent."""
+    payload = payload if isinstance(payload, dict) else {}
+    limit = max(1, min(int(payload.get("limit") or 100), ACTIVITY_READ_MAX))
+    before = str(payload.get("before") or "")
+    rows: list[dict] = []
+    for line in reversed(activity_lines(path)):
+        row = json.loads(line)
+        if before and _activity_ts(row) >= _activity_ts({"t": before}):
+            continue
+        rows.append(row)
+        if len(rows) >= limit:
+            break
+    return {"ok": True, "rows": rows}
+
+
+def _activity_ts(row: dict) -> float:
+    try:
+        return datetime.fromisoformat(str(row.get("t")).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def activity_flush_loop() -> None:
+    while True:
+        time.sleep(ACTIVITY_FLUSH_S)
+        try:
+            activity_flush()
+        except OSError as e:
+            print(f"activity: not written ({type(e).__name__})", flush=True)
 
 
 def _unavailable_since(state: dict, now: float) -> bool:
@@ -5362,6 +5496,8 @@ def execute_action(
         return integration_discovery(payload)
     if action == "arvio.integration_handlers":
         return integration_handlers(payload)
+    if action == "arvio.activity":
+        return activity_log(payload)
     if action == "arvio.ring_photo":
         return ring_photo(payload)
     if action == "arvio.ring_photos":
@@ -5719,7 +5855,7 @@ MEDIA_AGENT_ACTIONS = frozenset({"arvio.media_art", "arvio.media_browse", "arvio
 # the list must not be readable or writable by anything on the network (audit 2026-09-10 #2).
 TODO_AGENT_ACTIONS = frozenset({"arvio.todo"})
 CAMERA_AGENT_ACTIONS = frozenset(
-    {"arvio.camera_setup", "arvio.camera_snapshot", "arvio.camera_stream", "arvio.ring_photo", "arvio.ring_photos"}
+    {"arvio.camera_setup", "arvio.camera_snapshot", "arvio.camera_stream", "arvio.ring_photo", "arvio.ring_photos", "arvio.activity"}
 )
 INTEGRATION_AGENT_ACTIONS = frozenset(
     {
@@ -8954,6 +9090,7 @@ def handle_ha_event(event: dict) -> None:
         if isinstance(new_state, dict):
             note_doorbell_ring(eid, new_state, watched)
             note_home_event(eid, new_state, data.get("old_state"))
+            activity_note(eid, new_state, data.get("old_state"))
         if eid.split(".", 1)[0] not in HOME_ENTITY_DOMAINS:
             return
         if isinstance(new_state, dict):
@@ -10175,6 +10312,8 @@ if __name__ == "__main__":
     threading.Thread(target=venue_loop, daemon=True).start()
     threading.Thread(target=panel_watch_loop, daemon=True).start()
     threading.Thread(target=device_watch_loop, daemon=True).start()
+    activity_note_system(f"agent {AGENT_VERSION} started")
+    threading.Thread(target=activity_flush_loop, daemon=True).start()
     threading.Thread(target=standalone_trial_ok, daemon=True).start()
     print(
         f"arvio-agent :{PORT} mode={mode} hub={hub_id} ha={core_origin() or 'supervisor'} relay={RELAY_URL or 'off'} token={'yes' if TOKEN else 'NO'}",

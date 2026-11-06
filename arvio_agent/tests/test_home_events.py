@@ -46,9 +46,99 @@ class HomeEventCodeTest(unittest.TestCase):
         self.assertIsNone(self.code("sensor.a_battery", "unavailable", "21", "battery"))
         self.assertIsNone(self.code("sensor.temp", "10", "30", "temperature"))
 
+    def test_arming_from_anywhere(self):
+        panel = "alarm_control_panel.spiti"
+        self.assertEqual(self.code(panel, "armed_away", "arming"), "armed_away")
+        self.assertEqual(self.code(panel, "armed_away", "disarmed"), "armed_away")
+        self.assertEqual(self.code(panel, "armed_vacation", "disarmed"), "armed_away")
+        self.assertEqual(self.code(panel, "armed_home", "disarmed"), "armed_home")
+        self.assertEqual(self.code(panel, "armed_night", "disarmed"), "armed_night")
+        self.assertEqual(self.code(panel, "disarmed", "armed_away"), "disarmed")
+        self.assertEqual(self.code(panel, "disarmed", "triggered"), "disarmed")
+
+    def test_the_alarm_going_off(self):
+        self.assertEqual(self.code("alarm_control_panel.spiti", "triggered", "armed_away"), "alarm")
+        self.assertEqual(self.code("alarm_control_panel.spiti", "triggered", "pending"), "alarm")
+
+    def test_a_restart_or_a_step_on_the_way_says_nothing(self):
+        panel = "alarm_control_panel.spiti"
+        self.assertIsNone(self.code(panel, "armed_away", "unavailable"))
+        self.assertIsNone(self.code(panel, "disarmed", "unknown"))
+        self.assertIsNone(self.code(panel, "arming", "disarmed"))
+        self.assertIsNone(self.code(panel, "pending", "armed_away"))
+        self.assertIsNone(self.code(panel, "armed_away", "armed_away"))
+
     def test_the_name_is_clean_and_short(self):
         self.assertEqual(agent.home_event_name(state("a.b", "on", name="  Κουζίνα \n πάνω ")), "Κουζίνα πάνω")
         self.assertEqual(len(agent.home_event_name(state("a.b", "on", name="x" * 300))), agent.HOME_EVENT_NAME_MAX)
+
+
+class ActivityLogTest(unittest.TestCase):
+    def setUp(self):
+        self.path = pathlib.Path(tempfile.mkdtemp()) / "activity.jsonl"
+        agent._activity_pending.clear()
+        self.addCleanup(agent._activity_pending.clear)
+
+    def note(self, entity_id, new, old, device_class=None, context=None):
+        new_state = state(entity_id, new, device_class)
+        if context:
+            new_state["context"] = context
+        agent.activity_note(entity_id, new_state, state(entity_id, old, device_class))
+
+    def test_a_change_and_nothing_more(self):
+        self.note("cover.garage", "open", "closed", context={"user_id": "u1"})
+        self.note("light.a", "on", "off", context={"parent_id": "p1"})
+        agent.activity_flush(self.path)
+        rows = agent.activity_log({}, self.path)["rows"]
+        self.assertEqual([(r["e"], r["o"], r["s"], r.get("v")) for r in rows], [("light.a", "off", "on", "automation"), ("cover.garage", "closed", "open", "user")])
+        self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+
+    def test_who_is_at_home_is_not_the_installers_business(self):
+        for device_class in ("motion", "occupancy", "presence"):
+            self.note("binary_sensor.a", "on", "off", device_class)
+        self.note("person.maria", "home", "not_home")
+        self.note("device_tracker.phone", "home", "not_home")
+        self.note("sensor.temp", "21", "20", "temperature")
+        self.assertEqual(agent.activity_log({}, self.path)["rows"], [])
+
+    def test_a_door_contact_is_a_device_like_any_other(self):
+        self.note("binary_sensor.porta", "on", "off", "door")
+        self.assertEqual(len(agent.activity_log({}, self.path)["rows"]), 1)
+
+    def test_an_attribute_changing_is_not_a_row(self):
+        self.note("light.a", "on", "on")
+        self.assertEqual(agent.activity_log({}, self.path)["rows"], [])
+
+    def test_never_a_songs_title(self):
+        new = state("media_player.a", "playing")
+        new["attributes"]["media_title"] = "Μυστικό"
+        row = agent.activity_row("media_player.a", new, state("media_player.a", "idle"))
+        self.assertNotIn("Μυστικό", json.dumps(row, ensure_ascii=False))
+
+    def test_pages_walk_back_and_are_bounded(self):
+        for i in range(5):
+            agent._activity_pending.append(json.dumps({"t": f"2026-11-07T10:0{i}:00+00:00", "e": "light.a", "s": str(i)}))
+        with mock.patch.object(agent.time, "time", return_value=1_794_000_000.0):
+            first = agent.activity_log({"limit": 2}, self.path)["rows"]
+            self.assertEqual([r["s"] for r in first], ["4", "3"])
+            older = agent.activity_log({"limit": 2, "before": first[-1]["t"]}, self.path)["rows"]
+        self.assertEqual([r["s"] for r in older], ["2", "1"])
+
+    def test_old_rows_go_and_the_file_stays_small(self):
+        agent._activity_pending.append(json.dumps({"t": "2020-01-01T00:00:00+00:00", "e": "light.old", "s": "on"}))
+        for i in range(4):
+            self.note(f"light.new{i}", "on", "off")
+        with mock.patch.object(agent, "ACTIVITY_MAX_LINES", 1):
+            agent.activity_flush(self.path)
+        self.assertEqual([r["e"] for r in agent.activity_log({}, self.path)["rows"]], ["light.new3"])
+        self.assertEqual(len(self.path.read_text().splitlines()), 1)
+
+    def test_the_box_notes_itself(self):
+        agent.activity_note_system("agent 0.1.86 started")
+        self.assertEqual(agent.activity_log({}, self.path)["rows"][0]["s"], "agent 0.1.86 started")
+
+    def test_the_cloud_may_ask(self):
+        self.assertIn("arvio.activity", agent.CAMERA_AGENT_ACTIONS)
 
 
 class RingPhotosTest(unittest.TestCase):
