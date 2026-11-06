@@ -60,7 +60,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.84"
+AGENT_VERSION = "0.1.85"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -585,7 +585,8 @@ def note_doorbell_ring(entity_id: str, new_state, watched: set[str] | None = Non
 
 
 def post_doorbell_ring(call_entity_id: str) -> None:
-    """Tell the cloud so Home PWAs (iPhone/iPad included) get a Web Push."""
+    """Tell the cloud so Home PWAs (iPhone/iPad included) get a Web Push. The photo comes after the
+    ring is out: a slow camera never delays a doorbell."""
     if os.environ.get("ARVIO_AGENT_TEST") == "1":
         return
     st = load_hub()
@@ -593,10 +594,12 @@ def post_doorbell_ring(call_entity_id: str) -> None:
     pk = str(st.get("enroll_public_key") or "").strip()
     if not hid or not pk or not CLOUD:
         return
+    camera = doorbell_camera_for_call(call_entity_id) if ring_photos_enabled() else None
+    ring_id = str(uuid.uuid4())
     try:
         req = urllib.request.Request(
             f"{CLOUD}/v1/hubs/{hid}/doorbell-ring",
-            data=json.dumps({"enroll_public_key": pk, "call_entity_id": call_entity_id}).encode(),
+            data=json.dumps({"enroll_public_key": pk, "call_entity_id": call_entity_id, "ring_id": ring_id, "photo": bool(camera)}).encode(),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
@@ -604,6 +607,104 @@ def post_doorbell_ring(call_entity_id: str) -> None:
             r.read()
     except Exception:
         pass
+    if camera:
+        keep_ring_photo(ring_id, camera)
+
+
+# ---- Ring photos: on this box, never in the cloud (monorepo docs/plans/2026-11-06-notification-center-design.md) ----
+
+RING_PHOTOS_DIR = DATA / "rings"
+# The owner or manager turned them off for this house: a camera that sees the street is their decision.
+RING_PHOTOS_OFF = DATA / "rings.off"
+RING_PHOTO_MAX_AGE_S = 30 * 86400
+RING_PHOTO_MAX_FILES = 300
+RING_ID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def ring_photos_enabled() -> bool:
+    return not RING_PHOTOS_OFF.exists()
+
+
+def doorbell_camera_for_call(call_entity_id: str) -> str | None:
+    """Which camera looks at this doorbell: the wall screen's, or the one the call sensor is named after."""
+    for row in load_screens().get("screens", {}).values():
+        if not isinstance(row, dict):
+            continue
+        try:
+            cfg = parse_screen_doorbell(row.get("doorbell"))
+        except ValueError:
+            continue
+        camera = str((cfg or {}).get("camera_entity_id") or "")
+        if camera and (cfg.get("call_entity_id") == call_entity_id or call_entity_id in doorbell_call_guesses(camera)):
+            return camera
+    for eid in registry_snapshot()["entity_regs"] or ():
+        if str(eid).startswith("camera.") and call_entity_id in doorbell_call_guesses(str(eid)):
+            return str(eid)
+    return None
+
+
+def prune_ring_photos(now: float | None = None) -> None:
+    now = time.time() if now is None else now
+    # Everything here, so a write that failed half way does not stay either.
+    files = sorted(RING_PHOTOS_DIR.glob("*"), key=lambda f: f.stat().st_mtime, reverse=True)
+    for i, f in enumerate(files):
+        if i >= RING_PHOTO_MAX_FILES or now - f.stat().st_mtime > RING_PHOTO_MAX_AGE_S:
+            f.unlink(missing_ok=True)
+
+
+def keep_ring_photo(ring_id: str, camera: str) -> None:
+    """The picture at the moment of the ring. A camera that refuses costs the row its picture, nothing more."""
+    try:
+        raw, mime = fetch_camera_proxy(camera, 720)
+        out, _, _ = resize_art(raw, max_px=720, wire_max=180_000, no_pillow_max=180_000)
+        out = out if out is not None else (raw if len(raw) <= 180_000 else None)
+        if out is None:
+            return
+        RING_PHOTOS_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+        tmp = RING_PHOTOS_DIR / f"{ring_id}.tmp"
+        tmp.touch(mode=0o600)
+        tmp.write_bytes(out)
+        tmp.replace(RING_PHOTOS_DIR / f"{ring_id}.img")
+        prune_ring_photos()
+    except Exception as e:
+        print(f"ring photo: not kept ({type(e).__name__})", flush=True)
+
+
+def ring_photo_mime(raw: bytes) -> str:
+    if raw[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if raw[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/jpeg"
+
+
+def ring_photo(payload: dict | None = None) -> dict:
+    """arvio.ring_photo: one ring's picture, by the id the cloud got with the ring."""
+    ring_id = str((payload or {}).get("ring_id") or "").lower()
+    if not RING_ID_RE.fullmatch(ring_id):
+        raise ValueError("invalid ring_id")
+    try:
+        raw = (RING_PHOTOS_DIR / f"{ring_id}.img").read_bytes()
+    except OSError:
+        return {"ok": False, "mime": None, "data_base64": None, "reason": "not_found"}
+    return {"ok": True, "mime": ring_photo_mime(raw), "data_base64": base64.b64encode(raw).decode("ascii"), "reason": None}
+
+
+def ring_photos(payload: dict | None = None) -> dict:
+    """arvio.ring_photos: does this box keep them. Off erases what is here at once."""
+    payload = payload if isinstance(payload, dict) else {}
+    if payload.get("op") == "set":
+        if not isinstance(payload.get("enabled"), bool):
+            raise ValueError("invalid enabled")
+        if payload["enabled"]:
+            RING_PHOTOS_OFF.unlink(missing_ok=True)
+        else:
+            RING_PHOTOS_OFF.touch(mode=0o600)
+            for f in RING_PHOTOS_DIR.glob("*"):
+                f.unlink(missing_ok=True)
+    return {"ok": True, "enabled": ring_photos_enabled(), "count": sum(1 for _ in RING_PHOTOS_DIR.glob("*.img"))}
 
 
 def notify_body(data) -> dict | None:
@@ -648,6 +749,125 @@ def post_hub_notify(body: dict) -> None:
         print(f"notify: cloud answered {e.code}", flush=True)
     except Exception as e:
         print(f"notify: not sent ({type(e).__name__})", flush=True)
+
+
+# ---- What this box reports by itself: smoke, water, gas, a flat battery, a device gone ----
+
+HOME_EVENT_DANGER = {"smoke": "smoke", "gas": "gas", "carbon_monoxide": "co", "moisture": "leak"}
+# As Partner's LOW_BATTERY.
+HOME_EVENT_LOW_BATTERY = 20.0
+HOME_EVENT_NAME_MAX = 80
+DEVICE_WATCH_FILE = DATA / "device_watch.json"
+DEVICE_WATCH_EVERY_S = 300
+DEVICE_WATCH_AFTER_S = 30 * 60
+# ponytail: a whole integration falling over reports five devices; the rest are marked reported.
+DEVICE_WATCH_PER_TICK = 5
+
+
+def home_event_code(entity_id: str, new_state, old_state) -> str | None:
+    """Only the change itself counts: a restart that reads `on` again from `unknown` must not ring anyone."""
+    if not isinstance(new_state, dict) or not isinstance(old_state, dict):
+        return None
+    domain = entity_id.split(".", 1)[0]
+    attrs = new_state.get("attributes") if isinstance(new_state.get("attributes"), dict) else {}
+    device_class = str(attrs.get("device_class") or "")
+    state, old = str(new_state.get("state") or ""), str(old_state.get("state") or "")
+    if domain == "binary_sensor" and state == "on" and old == "off":
+        return HOME_EVENT_DANGER.get(device_class) or ("battery_low" if device_class == "battery" else None)
+    if domain == "sensor" and device_class == "battery":
+        try:
+            if float(state) <= HOME_EVENT_LOW_BATTERY < float(old):
+                return "battery_low"
+        except ValueError:
+            return None
+    return None
+
+
+def home_event_name(state: dict) -> str:
+    attrs = state.get("attributes") if isinstance(state.get("attributes"), dict) else {}
+    return " ".join(str(attrs.get("friendly_name") or "").split())[:HOME_EVENT_NAME_MAX]
+
+
+def note_home_event(entity_id: str, new_state, old_state) -> None:
+    code = home_event_code(entity_id, new_state, old_state)
+    if code:
+        threading.Thread(target=post_hub_event, args=(code, entity_id, home_event_name(new_state)), daemon=True).start()
+
+
+def post_hub_event(code: str, entity_id: str, name: str, sleep=time.sleep) -> None:
+    """To the cloud, which rings phones for a danger and only notes the rest. A few tries: smoke during a
+    short internet cut still reaches the house's history. The cloud answering at all ends it."""
+    if os.environ.get("ARVIO_AGENT_TEST") == "1":
+        return
+    st = load_hub()
+    hid = str(st.get("hub_id") or hub_id or "").strip()
+    pk = str(st.get("enroll_public_key") or "").strip()
+    if not hid or not pk or not CLOUD:
+        return
+    for wait in (0, 5, 30, 120):
+        sleep(wait)
+        try:
+            req = urllib.request.Request(
+                f"{CLOUD}/v1/hubs/{hid}/events",
+                data=json.dumps({"enroll_public_key": pk, "code": code, "entity_id": entity_id, "name": name}).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=8) as r:
+                r.read()
+            return
+        except urllib.error.HTTPError as e:
+            print(f"event: cloud answered {e.code}", flush=True)
+            return
+        except Exception as e:
+            print(f"event: not sent ({type(e).__name__})", flush=True)
+
+
+def _unavailable_since(state: dict, now: float) -> bool:
+    if state.get("state") != "unavailable":
+        return False
+    try:
+        at = datetime.fromisoformat(str(state.get("last_changed")).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return False
+    return now - at >= DEVICE_WATCH_AFTER_S
+
+
+def device_watch_tick(states, entity_regs, now: float | None = None, path=None) -> list[tuple[str, str]]:
+    """Devices with every home entity unavailable past the limit, once per outage: what has been reported
+    stays on disk, so an agent restart in the middle does not report it again. Returns (entity_id, name)."""
+    now = time.time() if now is None else now
+    path = path or DEVICE_WATCH_FILE
+    groups: dict[str, list[dict]] = {}
+    for state in states or []:
+        eid = str(state.get("entity_id") or "") if isinstance(state, dict) else ""
+        if eid.split(".", 1)[0] not in HOME_ENTITY_DOMAINS:
+            continue
+        reg = entity_regs.get(eid) if entity_regs else None
+        if reg and reg.get("hidden"):
+            continue
+        groups.setdefault(str((reg or {}).get("device_id") or eid), []).append(state)
+    down = {key: rows[0] for key, rows in groups.items() if all(_unavailable_since(r, now) for r in rows)}
+    try:
+        reported = set(json.loads(path.read_text()))
+    except (OSError, ValueError, TypeError):
+        reported = set()
+    fresh = [(str(s["entity_id"]), home_event_name(s)) for key, s in down.items() if key not in reported]
+    if set(down) != reported:
+        path.write_text(json.dumps(sorted(down)))
+    return fresh[:DEVICE_WATCH_PER_TICK]
+
+
+def device_watch_loop() -> None:
+    while True:
+        time.sleep(DEVICE_WATCH_EVERY_S)
+        try:
+            snap = registry_snapshot()
+            if snap["loaded_at"]:
+                for eid, name in device_watch_tick(ha("/states") or [], snap["entity_regs"]):
+                    post_hub_event("unavailable", eid, name)
+        except Exception as e:
+            print(f"device watch: {type(e).__name__}", flush=True)
 
 
 def resolve_doorbell_call(cfg: dict, have: set[str]) -> str | None:
@@ -5142,6 +5362,10 @@ def execute_action(
         return integration_discovery(payload)
     if action == "arvio.integration_handlers":
         return integration_handlers(payload)
+    if action == "arvio.ring_photo":
+        return ring_photo(payload)
+    if action == "arvio.ring_photos":
+        return ring_photos(payload)
     if action == "arvio.camera_snapshot":
         return camera_snapshot(payload, entity_id)
     if action == "arvio.camera_stream":
@@ -5495,7 +5719,7 @@ MEDIA_AGENT_ACTIONS = frozenset({"arvio.media_art", "arvio.media_browse", "arvio
 # the list must not be readable or writable by anything on the network (audit 2026-09-10 #2).
 TODO_AGENT_ACTIONS = frozenset({"arvio.todo"})
 CAMERA_AGENT_ACTIONS = frozenset(
-    {"arvio.camera_setup", "arvio.camera_snapshot", "arvio.camera_stream"}
+    {"arvio.camera_setup", "arvio.camera_snapshot", "arvio.camera_stream", "arvio.ring_photo", "arvio.ring_photos"}
 )
 INTEGRATION_AGENT_ACTIONS = frozenset(
     {
@@ -8729,6 +8953,7 @@ def handle_ha_event(event: dict) -> None:
             watched = doorbell_model_call_ids(entity_regs=regs["entity_regs"])
         if isinstance(new_state, dict):
             note_doorbell_ring(eid, new_state, watched)
+            note_home_event(eid, new_state, data.get("old_state"))
         if eid.split(".", 1)[0] not in HOME_ENTITY_DOMAINS:
             return
         if isinstance(new_state, dict):
@@ -9571,6 +9796,11 @@ class H(BaseHTTPRequestHandler):
     def _lan_ok(self) -> bool:
         self._body = None
         self._signed = None
+        # Read first: answering with the body unread closes the socket on data, the caller gets a reset
+        # instead of the answer, and a 409 or a 426 reads as a hub that went away. Not for anyone's 4 GB.
+        declared = self.headers.get("Content-Length") or "0"
+        if declared.isdecimal() and int(declared) <= 1024 * 1024:
+            self._raw_body()
         if not lan_request_ok(self.headers.get("Host") or "", self.headers.get("Origin")):
             self._j(403, {"ok": False, "error": "forbidden_origin"})
             return False
@@ -9944,6 +10174,7 @@ if __name__ == "__main__":
     threading.Thread(target=occupancy_tick_loop, daemon=True).start()
     threading.Thread(target=venue_loop, daemon=True).start()
     threading.Thread(target=panel_watch_loop, daemon=True).start()
+    threading.Thread(target=device_watch_loop, daemon=True).start()
     threading.Thread(target=standalone_trial_ok, daemon=True).start()
     print(
         f"arvio-agent :{PORT} mode={mode} hub={hub_id} ha={core_origin() or 'supervisor'} relay={RELAY_URL or 'off'} token={'yes' if TOKEN else 'NO'}",
