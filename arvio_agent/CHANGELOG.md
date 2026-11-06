@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.82
+
+- Τηλεχειριστήρια: ένα τηλεχειριστήριο (τύπος `event`, από το Arvio Core ή το Home Assistant) φτάνει πια στο μοντέλο με τα πατήματα που δηλώνει, ώστε το Partner να το δείχνει στις συσκευές. Το Home και τα πάνελ τοίχου δεν το δείχνουν, γιατί δεν έχει τίποτα να ελεγχθεί.
+
 ## 0.1.81
 
 - Partner can read and set the box's network on Arvio OS: DHCP or a static address (`arvio.network_status`, `arvio.network_set`, from the cloud only). Needs an image that has it.

@@ -60,7 +60,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.81"
+AGENT_VERSION = "0.1.82"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -5383,6 +5383,7 @@ HOME_ENTITY_DOMAINS = (
     "todo",
     "camera",
     "vacuum",
+    "event",  # a remote: Partner lists it, Home and panels have nothing to do with it
 )
 HOME_SENSOR_DEVICE_CLASSES = ("temperature", "humidity")
 # §15.2: media_player device_class speaker | tv | receiver | null (HA knows no other today).
@@ -6636,6 +6637,10 @@ def typed_attrs(
     media_player (0.1.21, §15.2): the media fields are not yet in home-model.ts — the cloud
     stream adds them; strict readers ignore them meanwhile."""
     out: dict = {}
+    if domain == "event":
+        presses = attrs.get("event_types")
+        if isinstance(presses, list):
+            out["event_types"] = [str(p) for p in presses]
     if domain == "light":
         brightness = attrs.get("brightness")
         if attrs.get("brightness_pct") is not None:
