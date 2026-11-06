@@ -5534,6 +5534,11 @@ def build_service_data(action: str, entity_id: str, payload: dict) -> tuple[str,
                 data["enqueue"] = str(payload["enqueue"])
         elif service == "shuffle_set":
             data["shuffle"] = bool(payload.get("shuffle", True))
+        elif service == "send_key":
+            key = str(payload.get("key") or "")
+            if key not in MEDIA_REMOTE_KEYS:
+                raise ValueError("key must be up|down|left|right|select|back|home")
+            data["key"] = key
         elif service == "repeat_set":
             repeat = str(payload.get("repeat") or "off")
             if repeat not in MEDIA_REPEAT_MODES:
@@ -6112,8 +6117,11 @@ MEDIA_PLAYER_ACTIONS = frozenset(
         "media_player.turn_off",
         "media_player.shuffle_set",
         "media_player.repeat_set",
+        "media_player.send_key",
     }
 )
+# The TV remote's keys, the same on every TV: each Arvio Core driver turns them into its own.
+MEDIA_REMOTE_KEYS = frozenset({"up", "down", "left", "right", "select", "back", "home"})
 MEDIA_AGENT_ACTIONS = frozenset({"arvio.media_art", "arvio.media_browse", "arvio.media_search"})
 # The shopping list is a read-and-write of the household's own words. It is deliberately NOT
 # part of MEDIA_ACTIONS: that set is what the unauthenticated LAN path (:8099) forwards, and

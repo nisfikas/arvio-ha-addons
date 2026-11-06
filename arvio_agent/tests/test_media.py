@@ -554,7 +554,7 @@ MEDIA_SERVICES = [
     "media_player.media_next_track", "media_player.media_previous_track", "media_player.volume_set",
     "media_player.volume_mute", "media_player.volume_up", "media_player.volume_down", "media_player.select_source",
     "media_player.join", "media_player.unjoin", "media_player.media_seek", "media_player.play_media", "media_player.turn_on",
-    "media_player.turn_off", "media_player.shuffle_set", "media_player.repeat_set",
+    "media_player.turn_off", "media_player.shuffle_set", "media_player.repeat_set", "media_player.send_key",
 ]
 
 
@@ -576,7 +576,7 @@ class MediaAllowlistTest(unittest.TestCase):
             self.assertNotIn(action, agent.HOME_DANGEROUS_ACTIONS)
             self.assertNotIn(action, agent.HOME_SECURITY_ACTIONS)
             self.assertNotIn(action, agent.TARGET_ACTIONS)
-        self.assertEqual(len(agent.MEDIA_PLAYER_ACTIONS), 19)
+        self.assertEqual(len(agent.MEDIA_PLAYER_ACTIONS), 20)
         # not services: media_player.play / toggle stay unknown; no target on media
         for action in ("media_player.play", "media_player.toggle", "music_assistant.play_media"):
             with self.assertRaises(agent.CommandRejected) as cm:
@@ -654,6 +654,13 @@ class MediaServiceDataTest(unittest.TestCase):
         self.assertEqual(self.sd("media_player.repeat_set", {})[1]["repeat"], "off")
         with self.assertRaises(ValueError):
             self.sd("media_player.repeat_set", {"repeat": "forever"})
+
+    def test_send_key_passes_only_the_remote_keys(self):
+        for key in ("up", "down", "left", "right", "select", "back", "home"):
+            self.assertEqual(self.sd("media_player.send_key", {"key": key})[1]["key"], key)
+        for bad in ("", "power", "constructor", None):
+            with self.assertRaises(ValueError):
+                self.sd("media_player.send_key", {"key": bad})
 
     def test_expected_attrs(self):
         self.assertEqual(agent.media_expected_attrs("media_player.volume_set", {"volume_level": 0.4}), {"volume_level": 0.4})
