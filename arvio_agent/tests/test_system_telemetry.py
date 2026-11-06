@@ -45,5 +45,22 @@ class SystemTelemetryTest(unittest.TestCase):
             self.assertEqual(agent.os_status()["version"], "2026.11.05.9")
 
 
+class NetworkTest(unittest.TestCase):
+    def test_status_passes_on_what_the_core_says(self):
+        with mock.patch.object(agent, "core_v1", return_value={"mode": "dhcp", "address": "192.168.1.141"}):
+            self.assertEqual(agent.network_status(), {"ok": True, "mode": "dhcp", "address": "192.168.1.141"})
+
+    def test_an_older_image_says_so(self):
+        with mock.patch.object(agent, "core_v1", return_value={"error": "not_found"}):
+            self.assertEqual(agent.network_status(), {"ok": False, "error": "not_found"})
+
+    def test_set_says_why_it_was_refused(self):
+        with mock.patch.object(agent, "core_v1", return_value={"status": "staged"}) as core:
+            self.assertEqual(agent.network_set({"mode": "dhcp"}), {"ok": True, "status": "staged"})
+            core.assert_called_once_with("/v1/network", "POST", {"mode": "dhcp"})
+        with mock.patch.object(agent, "core_v1", return_value={"status": "rejected", "reason": "bad_gateway"}):
+            self.assertEqual(agent.network_set({"mode": "static"}), {"ok": False, "error": "bad_gateway"})
+
+
 if __name__ == "__main__":
     unittest.main()

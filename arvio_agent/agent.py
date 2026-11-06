@@ -60,7 +60,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.80"
+AGENT_VERSION = "0.1.81"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -4171,6 +4171,22 @@ def os_status() -> dict:
     return {"ok": True, "last": last, "version": os_state.get("version") or image.get("version"), "progress": progress}
 
 
+def network_status() -> dict:
+    """What Arvio OS uses now and how the last change ended. An older image answers not_found."""
+    out = core_v1("/v1/network")
+    if "mode" not in out:
+        return {"ok": False, "error": str(out.get("reason") or out.get("error") or "not_supported")[:80]}
+    return {"ok": True, **out}
+
+
+def network_set(payload: dict | None = None) -> dict:
+    """DHCP or a static address, from the cloud only. The core and then its root helper each check it, and the helper goes back by itself if the box loses the cloud."""
+    out = core_v1("/v1/network", "POST", payload if isinstance(payload, dict) else {})
+    if out.get("status") == "staged":
+        return {"ok": True, "status": "staged"}
+    return {"ok": False, "error": str(out.get("reason") or out.get("error") or "rejected")[:80]}
+
+
 HA_VERSION_TTL_S = 600.0
 ha_version_cache: tuple[float, str | None] = (0.0, None)
 
@@ -5159,6 +5175,10 @@ def execute_action(
         return os_update(payload)
     if action == "arvio.os_status":
         return os_status()
+    if action == "arvio.network_status":
+        return network_status()
+    if action == "arvio.network_set":
+        return network_set(payload)
     if "." not in action:
         raise ValueError("action must be domain.service")
     domain, _service = action.split(".", 1)
@@ -5625,6 +5645,8 @@ AGENT_SERVICE_ALLOWLIST = frozenset(
         "agent.update",
         "arvio.os_update",
         "arvio.os_status",
+        "arvio.network_status",
+        "arvio.network_set",
     }
     | MEDIA_ACTIONS
     | TODO_AGENT_ACTIONS

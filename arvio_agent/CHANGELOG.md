@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.81
+
+- Partner can read and set the box's network on Arvio OS: DHCP or a static address (`arvio.network_status`, `arvio.network_set`, from the cloud only). Needs an image that has it.
+
 ## 0.1.80
 
 - Εικονίδιο για κάθε συσκευή και δωμάτιο, από το Partner (`arvio.icon_set`, μόνο από το cloud, στο `icons.json`). Το βλέπουν Home, εφαρμογή και πάνελ τοίχου. Οι κλειδαριές και οι συναγερμοί κρατούν το δικό τους, γιατί δείχνει την κατάστασή τους.
