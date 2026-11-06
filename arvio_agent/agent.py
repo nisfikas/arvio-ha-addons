@@ -60,7 +60,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.82"
+AGENT_VERSION = "0.1.83"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -275,6 +275,7 @@ DOORBELL_LATCH_S = 45.0
 # (note_doorbell_ring); the panel's ringing flag and the door-unlock window both read it.
 DOORBELL_LATCH: dict[str, float] = {}
 SCREEN_SECRET_HEADER = "X-Arvio-Screen-Secret"
+LAN_TOKEN_HEADER = "X-Arvio-Lan-Token"
 PAIR_FAIL_MAX = 10
 PAIR_LOCK_S = 15 * 60
 # ponytail: one hub-wide counter (the LAN is one network): 10 wrong codes in 15 min lock
@@ -4305,7 +4306,7 @@ def apply_agent_update(payload: dict) -> dict:
 
 def rotate() -> None:
     global code, exp
-    code = f"{random.randint(0, 999999):06d}"
+    code = f"{secrets.randbelow(1000000):06d}"
     exp = time.time() + 300
 
 
@@ -4441,6 +4442,7 @@ def enroll_remote() -> None:
     except Exception as e:
         err = f"enroll:{e}"
         hub_id = st.get("hub_id")
+        hub_state = st.get("state") or hub_state
         return
     if not hub_id:
         return
@@ -5282,7 +5284,9 @@ def run_batch(cmd: dict, via: str = "relay") -> dict:
     }
 
 
-def handle_command(cmd: dict, via: str = "relay", screen_secret: str | None = None) -> dict:
+def handle_command(
+    cmd: dict, via: str = "relay", screen_secret: str | None = None, lan_token: str | None = None
+) -> dict:
     """Relay / LAN command → HubCommandAck. Safety first (§6.9): dedupe, expiry, allowlist, confirm."""
     cmd = cmd if isinstance(cmd, dict) else {}
     cid = str(cmd.get("command_id") or "")
@@ -5329,7 +5333,7 @@ def handle_command(cmd: dict, via: str = "relay", screen_secret: str | None = No
 
     try:
         try:
-            check_command_safety(cmd, via=via, screen_secret=screen_secret)
+            check_command_safety(cmd, via=via, screen_secret=screen_secret, lan_token=lan_token)
         except CommandRejected as e:
             return make_ack(ack_cid, ok=False, error=e.error, error_code=e.code)
 
@@ -5683,7 +5687,7 @@ TARGET_ACTIONS = frozenset(
         "cover.close_cover",
     }
 )
-# The unauthenticated LAN path (:8099, no auth) executes ONLY these; everything else in
+# The LAN path (:8099, a paired panel or a signed-in app) executes ONLY these; everything else in
 # AGENT_SERVICE_ALLOWLIST (security actions, arvio.* writes, arvio.model, arvio.batch,
 # backup.*, agent.*, any `target`) answers 403 `lan_forbidden`. `script.turn_on` is
 # further limited to `script.arvio_*` (LAN_SCRIPT_PREFIX) or shutdown scripts listed
@@ -5801,6 +5805,39 @@ def paired_screen_secret_ok(secret: str | None) -> bool:
         and hmac.compare_digest(hashed, str(row["screen_secret_hash"]))
         for row in rows
     )
+
+
+def lan_token_ok(token: str | None, now: float | None = None) -> bool:
+    """A signed-in person's key, from the cloud's POST /v1/home/hubs/{hub}/lan-token (ADR 017).
+
+    Both sides derive the signing key from what only they know: the hub its relay token, the cloud
+    that token's hash. No relay token, no key: the hash of an empty string is public.
+
+    ponytail: it travels in the clear on the LAN path, so someone who can read this Wi-Fi's traffic
+    can copy it until it expires, with no more than its owner could do here. TLS on the LAN closes that.
+    """
+    if not token or not RELAY_TOKEN or not hub_id:
+        return False
+    body, _, sig = str(token).partition(".")
+    key = hmac.new(sha(RELAY_TOKEN).encode(), b"arvio-lan-token-v1", hashlib.sha256).digest()
+    expected = base64.urlsafe_b64encode(hmac.new(key, body.encode(), hashlib.sha256).digest()).rstrip(b"=")
+    if not hmac.compare_digest(expected, sig.encode()):
+        return False
+    try:
+        claims = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
+    except ValueError:
+        return False
+    if not isinstance(claims, dict) or claims.get("hub") != hub_id:
+        return False
+    expires = claims.get("exp")
+    if isinstance(expires, bool) or not isinstance(expires, (int, float)):
+        return False
+    return (time.time() if now is None else now) < expires
+
+
+def lan_caller_ok(screen_secret: str | None, lan_token: str | None) -> bool:
+    """A paired panel or a signed-in app. A box with no cloud has nobody to ask, so its page stays its remote."""
+    return mode == "embedded" or paired_screen_secret_ok(screen_secret) or lan_token_ok(lan_token)
 
 
 DOOR_MARK_RE = re.compile(r"^(?:switch|cover|light)\.[a-z0-9_]+$")
@@ -7182,7 +7219,11 @@ def native_target_data(target: dict, ha_version) -> dict | None:
 
 
 def check_command_safety(
-    cmd: dict, via: str = "relay", now: float | None = None, screen_secret: str | None = None
+    cmd: dict,
+    via: str = "relay",
+    now: float | None = None,
+    screen_secret: str | None = None,
+    lan_token: str | None = None,
 ) -> None:
     """Raise CommandRejected for allowlist / expiry / dangerous-confirm / LAN violations."""
     now = time.time() if now is None else now
@@ -7195,6 +7236,8 @@ def check_command_safety(
             "action_not_allowed", f"action not allowed: {action}", error=f"unknown action: {action}"
         )
     if via == "lan":
+        if not lan_caller_ok(screen_secret, lan_token):
+            raise CommandRejected("lan_forbidden", "the LAN path needs a paired panel or a signed-in app")
         # Explicit allowlist (not a denylist): anything not listed is forbidden locally.
         if action not in LAN_ALLOWED_ACTIONS:
             raise CommandRejected("lan_forbidden", f"{action} not available on the LAN path")
@@ -9374,6 +9417,7 @@ def redeem_claim(claim_id: str, token: str, site_id: str, actor: dict) -> dict:
 # A hub on the home network answers to its IP, `localhost`, a single-label name, mDNS (`.local`) and
 # the usual private suffixes. Any other name in `Host` is DNS rebinding: a public domain pointed at
 # the hub's LAN address so a web page can read and drive it (security review 2026-11-02).
+HUB_STATES_WITHOUT_OWNER = ("inventory", "prepared", "assigned")
 LAN_HOST_SUFFIXES = (".local", ".lan", ".home.arpa", ".internal", ".ts.net")
 
 
@@ -9406,12 +9450,14 @@ def lan_request_ok(host: str, origin: str | None) -> bool:
 
 
 class H(BaseHTTPRequestHandler):
-    """Unauthenticated LAN HTTP on :8099.
+    """LAN HTTP on :8099. Anyone on the network reaches it: the QR on the hub's screen leads here.
 
     Same-origin only: no CORS grants, so a page on another origin cannot drive the hub
     through the browser. The served ui and panel pages fetch relative paths.
-    Commands go through the LAN allowlist (LAN_ALLOWED_ACTIONS). Claim / presence /
-    redeem proxies answer 403; the Partner talks to the cloud with a session.
+    Commands and device names need a caller (`lan_caller_ok`), then go through the LAN allowlist
+    (LAN_ALLOWED_ACTIONS). Claim / presence / redeem proxies answer 403; the Partner talks to the
+    cloud with a session. What stays open names no device: this page, /health, /api/venue/wall,
+    and the keypad and pairing routes, which each ask for their own code and lock after wrong tries.
     """
 
     def _j(self, status: int, body: dict) -> None:
@@ -9439,13 +9485,15 @@ class H(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _ui(self) -> None:
-        """Hub home page: presence code is painted into the HTML, never returned as JSON."""
+        """Hub home page: the presence code is painted into the HTML, never returned as JSON, and only
+        while the box has no owner. That is all it is for, and anyone on the network reads this page."""
         path = APP / "ui.html"
         if not path.exists():
             self.send_error(404)
             return
         html = path.read_text(encoding="utf-8")
-        html = html.replace('id="code">------', f'id="code">{html_lib.escape(code)}', 1)
+        if not hub_id or hub_state in HUB_STATES_WITHOUT_OWNER:
+            html = html.replace('id="code">------', f'id="code">{html_lib.escape(code)}', 1)
         data = html.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -9458,6 +9506,9 @@ class H(BaseHTTPRequestHandler):
         self.send_response(204)
         self.send_header("Allow", "GET, POST, OPTIONS")
         self.end_headers()
+
+    def _caller_ok(self) -> bool:
+        return lan_caller_ok(self.headers.get(SCREEN_SECRET_HEADER), self.headers.get(LAN_TOKEN_HEADER))
 
     def _lan_ok(self) -> bool:
         if lan_request_ok(self.headers.get("Host") or "", self.headers.get("Origin")):
@@ -9587,26 +9638,25 @@ class H(BaseHTTPRequestHandler):
                 },
             )
         if path.startswith("/api/status"):
-            return self._j(
-                200,
-                {
-                    "hub_id": hub_id,
-                    "serial": SERIAL,
-                    "version": AGENT_VERSION,
-                    "ha_ok": ha_ok,
-                    "mode": mode,
-                    "state": hub_state,
-                    "relay_url": RELAY_URL or None,
-                    "relay_ok": relay_ok,
-                    "entities": entities(),
-                    "error": err,
-                    "lab": {
-                        "bootstrapped": load_lab().get("bootstrapped", False),
-                        "site_id": load_lab().get("site_id"),
-                        "partner_org_id": load_lab().get("partner_org_id"),
-                    },
+            status = {
+                "hub_id": hub_id,
+                "serial": SERIAL,
+                "version": AGENT_VERSION,
+                "ha_ok": ha_ok,
+                "mode": mode,
+                "state": hub_state,
+                "relay_url": RELAY_URL or None,
+                "relay_ok": relay_ok,
+                "error": err,
+                "lab": {
+                    "bootstrapped": load_lab().get("bootstrapped", False),
+                    "site_id": load_lab().get("site_id"),
+                    "partner_org_id": load_lab().get("partner_org_id"),
                 },
-            )
+            }
+            if self._caller_ok():
+                status["entities"] = entities()
+            return self._j(200, status)
         if path == "/v1/hubs" or path.startswith("/v1/hubs/"):
             parts = [p for p in path.split("/") if p]
             if len(parts) == 2:
@@ -9703,6 +9753,7 @@ class H(BaseHTTPRequestHandler):
                         {"action": action, "entity_id": eid},
                         via="lan",
                         screen_secret=self.headers.get(SCREEN_SECRET_HEADER),
+                        lan_token=self.headers.get(LAN_TOKEN_HEADER),
                     )
                 except CommandRejected as e:
                     raise ValueError(f"Forbidden: {e.error}: {e}") from e
@@ -9753,7 +9804,12 @@ class H(BaseHTTPRequestHandler):
                     cmd["payload"] = {
                         k: v for k, v in raw_payload.items() if k in LAN_VACUUM_PAYLOAD_KEYS
                     }
-                ack = handle_command(cmd, via="lan", screen_secret=self.headers.get(SCREEN_SECRET_HEADER))
+                ack = handle_command(
+                    cmd,
+                    via="lan",
+                    screen_secret=self.headers.get(SCREEN_SECRET_HEADER),
+                    lan_token=self.headers.get(LAN_TOKEN_HEADER),
+                )
                 if not ack.get("ok"):
                     msg = str(ack.get("error") or "command failed")
                     code = ack.get("error_code") or ack.get("error")

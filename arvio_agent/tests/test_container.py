@@ -79,10 +79,10 @@ class CoreDirectTest(unittest.TestCase):
         self.assertEqual(agent.read_token(), "llat_test_token")
 
     def test_opts_env_overrides(self):
-        prev = (agent.CLOUD, agent.SERIAL, agent.RELAY_URL)
+        prev = (agent.CLOUD, agent.SERIAL, agent.RELAY_URL, agent.RELAY_TOKEN, agent.mode)
 
         def restore():
-            agent.CLOUD, agent.SERIAL, agent.RELAY_URL = prev
+            agent.CLOUD, agent.SERIAL, agent.RELAY_URL, agent.RELAY_TOKEN, agent.mode = prev
 
         self.addCleanup(restore)
         os.environ["ARVIO_CLOUD_URL"] = "https://cloud.arvio.systems/"
