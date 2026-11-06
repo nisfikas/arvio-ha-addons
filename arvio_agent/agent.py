@@ -43,6 +43,8 @@ STATE = DATA / "hub.json"
 LAB = DATA / "lab_store.json"
 SCREENS = DATA / "screens.json"
 DOOR_MARKS = DATA / "door_marks.json"
+ICONS = DATA / "icons.json"
+SITE_UNITS = DATA / "site_units.json"
 FLOOR_PLANS = DATA / "floor_plans.json"
 OCCUPANCY_PROFILE = DATA / "occupancy_profile.json"
 OCCUPANCY_STATE = DATA / "occupancy_state.json"
@@ -1871,7 +1873,7 @@ def panel_snapshot(screen_id: str | None = None, secret: str | None = None) -> d
         devices = snap.get("devices") or {}
         areas = snap.get("areas") or {}
         areas_out = [
-            {"area_id": a.get("area_id"), "name": a.get("name")}
+            {"area_id": a.get("area_id"), "name": a.get("name"), "icon": picked_icons()["areas"].get(a.get("area_id")) or a.get("icon")}
             for a in areas.values()
             if isinstance(a, dict) and a.get("area_id")
         ]
@@ -1886,6 +1888,7 @@ def panel_snapshot(screen_id: str | None = None, secret: str | None = None) -> d
                 "name": e.get("name"),
                 "domain": domain,
                 "area_id": effective_area_id(entity_regs.get(eid), devices),
+                "icon": picked_icons()["entities"].get(eid) or (entity_regs.get(eid) or {}).get("icon"),
             }
             if domain == "climate":
                 item["current_temperature"] = e.get("current_temperature")
@@ -1940,6 +1943,7 @@ def panel_snapshot(screen_id: str | None = None, secret: str | None = None) -> d
                     "domain": domain,
                     "area_id": effective_area_id(entity_regs.get(eid), devices),
                     "device_class": attrs.get("device_class"),
+                    "icon": picked_icons()["entities"].get(eid) or (entity_regs.get(eid) or {}).get("icon"),
                 }
             )
             # A scene tile's name and lights: `entities()` has no scenes.
@@ -1966,6 +1970,7 @@ def panel_snapshot(screen_id: str | None = None, secret: str | None = None) -> d
         "areas": areas_out,
         "weather": weather,
         "energy": panel_energy(row),
+        "units": site_units(),
         "timezone": HA_INFO.get("time_zone") or "Europe/Athens",
         "floor_plans": [p for p in plans.values() if isinstance(p, dict)],
     }
@@ -5049,6 +5054,10 @@ def execute_action(
         return light_group(payload)
     if action == "arvio.door_mark":
         return door_mark(payload)
+    if action == "arvio.icon_set":
+        return icon_set(payload)
+    if action == "arvio.site_config":
+        return site_config(payload)
     if action == "arvio.upsert_scene":
         return upsert_scene(payload)
     if action == "arvio.delete_scene":
@@ -5575,6 +5584,8 @@ AGENT_SERVICE_ALLOWLIST = frozenset(
         "arvio.floor_delete",
         "arvio.device_remove",
         "arvio.door_mark",
+        "arvio.icon_set",
+        "arvio.site_config",
         "arvio.light_group",
         "arvio.upsert_scene",
         "arvio.delete_scene",
@@ -5875,6 +5886,110 @@ def door_mark(payload: dict | None = None) -> dict:
         write_json_atomic(DOOR_MARKS, {"entity_ids": sorted(marks), "pulses": pulses})
     schedule_registry_refresh("door_mark", delay=0.4)
     return {"ok": True, "entity_id": entity_id, "door": door}
+
+
+ICON_RE = re.compile(r"^mdi:[a-z0-9-]{1,48}$")
+ICON_ENTITY_RE = re.compile(r"^[a-z_]+\.[a-z0-9_]+$")
+ICONS_LOCK = threading.Lock()
+_icons_cache: dict | None = None
+
+
+def picked_icons() -> dict:
+    """What an installer chose: {"entities": {id: mdi}, "areas": {id: mdi}}. Next to the name, so it holds with no cloud."""
+    global _icons_cache
+    if _icons_cache is None:
+        try:
+            raw = json.loads(ICONS.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            raw = {}
+        raw = raw if isinstance(raw, dict) else {}
+        _icons_cache = {k: raw[k] if isinstance(raw.get(k), dict) else {} for k in ("entities", "areas")}
+    return _icons_cache
+
+
+def icon_set(payload: dict | None = None) -> dict:
+    """Give a device or a room an icon, or take it off with icon=None. From the cloud only."""
+    global _icons_cache
+    payload = payload if isinstance(payload, dict) else {}
+    icon = payload.get("icon")
+    if icon is not None and (not isinstance(icon, str) or not ICON_RE.fullmatch(icon)):
+        raise ValueError("invalid_icon")
+    entity_id = payload.get("entity_id")
+    area_id = payload.get("area_id")
+    if isinstance(entity_id, str) and area_id is None:
+        # A lock's and an alarm's icon says whether the house is open.
+        if not ICON_ENTITY_RE.fullmatch(entity_id) or entity_id.split(".", 1)[0] in ("lock", "alarm_control_panel"):
+            raise ValueError("invalid_icon_target")
+        kind, target = "entities", entity_id
+    elif isinstance(area_id, str) and entity_id is None:
+        if not AREA_ID_RE.fullmatch(area_id):
+            raise ValueError("invalid_icon_target")
+        kind, target = "areas", area_id
+    else:
+        raise ValueError("invalid_icon_target")
+    with ICONS_LOCK:
+        doc = {k: dict(v) for k, v in picked_icons().items()}
+        if icon is None:
+            doc[kind].pop(target, None)
+        else:
+            doc[kind][target] = icon
+        write_json_atomic(ICONS, doc)
+        _icons_cache = doc
+    schedule_registry_refresh("icon_set", delay=0.4)
+    return {"ok": True, "icon": icon}
+
+
+SITE_UNITS_DEFAULT = {"temperature": "C", "currency": "EUR", "hours": 24}
+
+
+def site_units() -> dict:
+    """How the wall panel writes numbers. Values on the hub stay in °C whatever this says."""
+    try:
+        raw = json.loads(SITE_UNITS.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return dict(SITE_UNITS_DEFAULT)
+    return {**SITE_UNITS_DEFAULT, **raw} if isinstance(raw, dict) else dict(SITE_UNITS_DEFAULT)
+
+
+def parse_site_config(payload: dict | None) -> tuple[dict, dict]:
+    """Pure: (what the core's config takes, what the panel shows). Raises ValueError."""
+    payload = payload if isinstance(payload, dict) else {}
+    name = payload.get("location_name")
+    zone = payload.get("time_zone")
+    if not isinstance(name, str) or not name.strip() or len(name) > 64:
+        raise ValueError("invalid_site_config")
+    if not isinstance(zone, str) or not re.fullmatch(r"[A-Za-z0-9_+./-]{1,64}", zone):
+        raise ValueError("invalid_time_zone")
+    core = {"location_name": name.strip(), "time_zone": zone}
+    lat = payload.get("latitude")
+    lon = payload.get("longitude")
+    if (lat is None) != (lon is None):
+        raise ValueError("invalid_coordinates")
+    if lat is not None:
+        if type(lat) not in (int, float) or type(lon) not in (int, float) or not -90 <= lat <= 90 or not -180 <= lon <= 180:
+            raise ValueError("invalid_coordinates")
+        core["latitude"] = lat
+        core["longitude"] = lon
+    raw = payload.get("units") if isinstance(payload.get("units"), dict) else {}
+    units = dict(SITE_UNITS_DEFAULT)
+    if raw.get("temperature") in ("C", "F"):
+        units["temperature"] = raw["temperature"]
+    if raw.get("currency") in ("EUR", "USD", "GBP", "CHF"):
+        units["currency"] = raw["currency"]
+    if raw.get("hours") in (24, 12):
+        units["hours"] = raw["hours"]
+    return core, units
+
+
+def site_config(payload: dict | None = None) -> dict:
+    """Where the house is, from the cloud: sun and time triggers run on it. Never `unit_system`, which would change the values."""
+    core, units = parse_site_config(payload)
+    # TODO confirm: config/core/update is frontend-internal but stable. Arvio Core answers the same in compat.ts.
+    ha_ws_command("config/core/update", core)
+    write_json_atomic(SITE_UNITS, units)
+    HA_INFO["time_zone"] = core["time_zone"]
+    schedule_registry_refresh("site_config", delay=0.4)
+    return {"ok": True}
 
 
 def model_entity_door_field(entity_id: str) -> dict:
@@ -6687,7 +6802,7 @@ def entity_model_from_state(
         "device_id": device_id,
         "area_id": area_id,
         "floor_id": floor_id,
-        "icon": reg.get("icon") or attrs.get("icon"),
+        "icon": picked_icons()["entities"].get(eid) or reg.get("icon") or attrs.get("icon"),
         "device_class": device_class,
         **model_entity_door_field(eid),
         "entity_category": "diagnostic" if doorbell_call else None,
@@ -6975,7 +7090,10 @@ def build_hub_model(
         "sun": sun,
         "weather": weather if weather is not None else weather_block(states, None),
         "floors": floors,
-        "areas": sorted(areas.values(), key=lambda a: a["name"]),
+        "areas": [
+            {**a, "icon": picked_icons()["areas"].get(a["area_id"]) or a.get("icon")}
+            for a in sorted(areas.values(), key=lambda a: a["name"])
+        ],
         "devices": sorted(devices.values(), key=lambda d: d["device_id"]),
         "entities": entities[off : off + lim],
         "scenarios": build_scenarios(states, automation_configs or {}),
