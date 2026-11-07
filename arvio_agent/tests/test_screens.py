@@ -1333,6 +1333,16 @@ class ScreenLanHttpTest(unittest.TestCase):
         # an agent update reaches the screen: the app itself loads the page only once
         self.assertIn("(v && v !== pageVersion)) location.reload();", html)
 
+    def test_panel_is_never_a_silent_dark_screen(self):
+        """Paired but not answered yet, the hub away, or a screen with no tiles: the page says which."""
+        html = (ROOT / "panel.html").read_text(encoding="utf-8")
+        self.assertIn('<section id="status" class="notice hidden" role="status"', html)
+        self.assertIn('showStatus("Σύνδεση", "Το πάνελ μιλά με το hub…");', html)
+        self.assertIn('showStatus("Ψάχνω το hub",', html)
+        self.assertIn('showStatus("Το hub δεν απαντά",', html)
+        self.assertIn("Δεν έχει πλακίδια ακόμα.", html)
+        self.assertEqual(html.count("hideStatus();"), 2)
+
     def test_panel_never_sends_its_secret(self):
         html = (ROOT / "panel.html").read_text(encoding="utf-8")
         self.assertIn('"X-Arvio-Lan-Sig": signature', html)

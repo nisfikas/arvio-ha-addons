@@ -109,7 +109,7 @@
         padding: 1.5rem;
         text-align: center;
       }
-      #gate.hidden, #board.hidden, #sheet.hidden, #doorbell.hidden, #doorbell-open.hidden, #doorbell-yes.hidden { display: none; }
+      #gate.hidden, #board.hidden, #status.hidden, #sheet.hidden, #doorbell.hidden, #doorbell-open.hidden, #doorbell-yes.hidden { display: none; }
       h1 { margin: 0; font-size: 1.4rem; font-weight: 600; letter-spacing: -0.03em; }
       p { margin: 0; color: var(--muted); }
       input {
@@ -937,10 +937,10 @@
       #doorbell-bar button { min-height: 72px; border-radius: var(--r, 28px); padding: 0 1.2rem; font-size: 1.1rem; }
       /* Pairing, in the look of Partner's sign-in: a flat card, condensed capitals, one orange
          signal. Orange never carries text here (2.4:1 on ink); the focus ring is paper. */
-      #gate .gate-card { width: min(22rem, 100%); display: flex; flex-direction: column; text-align: left; }
+      #gate .gate-card, .notice .gate-card { width: min(22rem, 100%); display: flex; flex-direction: column; text-align: left; }
       #gate .gate-mark { width: 46px; height: auto; display: block; margin-bottom: 1.1rem; }
-      #gate .gate-kicker { border-top: 1px solid var(--line); padding-top: 0.8rem; font-size: 0.85rem; }
-      #gate h1 {
+      #gate .gate-kicker, .notice .gate-kicker { border-top: 1px solid var(--line); padding-top: 0.8rem; font-size: 0.85rem; }
+      #gate h1, .notice h1 {
         margin: 0.45rem 0 0.6rem;
         font-family: "Sofia Sans Extra Condensed", "Arial Narrow", "Geologica", sans-serif;
         font-size: 3.8rem;
@@ -949,7 +949,7 @@
         letter-spacing: 0;
         text-transform: uppercase;
       }
-      #gate h1::before {
+      #gate h1::before, .notice h1::before {
         content: "";
         display: block;
         width: 2.4rem;
@@ -957,7 +957,11 @@
         margin-bottom: 0.7rem;
         background: #c23d14;
       }
-      #gate .gate-lede { margin-bottom: 1.1rem; }
+      #gate .gate-lede, .notice .gate-lede { margin-bottom: 1.1rem; }
+      /* Never a silent dark screen: while the panel has nothing to show, it says why. */
+      .notice { display: flex; align-items: center; justify-content: center; padding: 1.5rem; }
+      #status { position: absolute; top: 0; right: 0; bottom: 0; left: 0; }
+      .page.notice { display: flex; }
       #gate input {
         width: 100%;
         border-radius: 3px;
@@ -1304,6 +1308,13 @@
         <p class="err" id="gate-err"></p>
       </div>
     </section>
+    <section id="status" class="notice hidden" role="status" aria-live="polite">
+      <div class="gate-card">
+        <p class="gate-kicker">Arvio · Πάνελ τοίχου</p>
+        <h1 id="status-title">Σύνδεση</h1>
+        <p class="gate-lede" id="status-line"></p>
+      </div>
+    </section>
     <main id="board" class="hidden">
       <div class="pages" id="pages"></div>
     </main>
@@ -1537,6 +1548,15 @@
       const board = document.getElementById("board");
       const pagesEl = document.getElementById("pages");
       const gateErr = document.getElementById("gate-err");
+      const statusEl = document.getElementById("status");
+      function showStatus(title, line) {
+        document.getElementById("status-title").textContent = title;
+        document.getElementById("status-line").textContent = line;
+        statusEl.classList.remove("hidden");
+      }
+      function hideStatus() {
+        statusEl.classList.add("hidden");
+      }
       const sheetEl = document.getElementById("sheet");
       const sheetTitle = document.getElementById("sheet-title");
       const sheetSub = document.getElementById("sheet-sub");
@@ -3059,6 +3079,14 @@
         if (!screen) return;
         document.documentElement.dataset.orientation = screen.orientation || "square";
         pagesEl.innerHTML = "";
+        if (!(screen.pages || []).some((p) => (p.tiles || []).length)) {
+          const name = esc(screen.name || "Οθόνη");
+          pagesEl.innerHTML =
+            '<section class="page notice"><div class="gate-card"><p class="gate-kicker">Arvio · Πάνελ τοίχου</p><h1>' + name +
+            '</h1><p class="gate-lede">Δεν έχει πλακίδια ακόμα. Πρόσθεσέ τα στον Partner: Οθόνες → «' + name +
+            "» → Σελίδες. Εμφανίζονται εδώ μόνα τους.</p></div></section>";
+          return;
+        }
         for (const page of screen.pages || []) {
           const el = document.createElement("section");
           el.className = "page";
@@ -3299,6 +3327,7 @@
         const sid = pairing.get(KEY);
         if (!sid) {
           screen = null;
+          hideStatus();
           gate.classList.remove("hidden");
           board.classList.add("hidden");
           applyTheme(null);
@@ -3314,15 +3343,22 @@
             // Screen deleted on the hub, or paired again elsewhere (new secret): after
             // three misses in a row, back to the code field.
             miss += 1;
-            if (miss < 3) return;
+            if (miss < 3) {
+              if (!screen) showStatus("Σύνδεση", "Το πάνελ μιλά με το hub…");
+              return;
+            }
             miss = 0;
             pairing.set(KEY, "");
             pairing.set(SECRET_KEY, "");
             return load(false);
           }
-          if (!r.ok) return;
+          if (!r.ok) {
+            if (!screen) showStatus("Το hub δεν απαντά", "Ξαναδοκιμάζει μόνο του σε λίγα δευτερόλεπτα (" + r.status + ").");
+            return;
+          }
           next = await r.json();
         } catch (e) {
+          if (!screen) showStatus("Ψάχνω το hub", "Το πάνελ δεν βρίσκει το hub στο δίκτυο. Ξαναδοκιμάζει μόνο του.");
           return;
         }
         if (!next || !Array.isArray(next.screens)) return;
@@ -3343,6 +3379,7 @@
         screen = found;
         if (!keepPage) pageIx = 0;
         // Partner issued a new code for this screen: show the code field to pair again.
+        hideStatus();
         gate.classList.toggle("hidden", !found.pairing_pending);
         board.classList.toggle("hidden", !!found.pairing_pending);
         applyTheme(screen);
@@ -3640,6 +3677,7 @@
           (await pairWith({ token: pairToken }, "Η αυτόματη σύζευξη δεν έγινε. Βάλε τον κωδικό από τον Partner."));
         if (!paired && pairing.get(KEY)) {
           gate.classList.add("hidden");
+          showStatus("Σύνδεση", "Το πάνελ μιλά με το hub…");
           await load(true).catch(() => {});
           armHomeIdle();
         }
