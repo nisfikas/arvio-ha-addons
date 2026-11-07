@@ -6673,8 +6673,11 @@ def lan_door_kind(entity_id: str, state: dict | None) -> str | None:
         return "door"  # cannot tell, so it counts as one
     attrs = state.get("attributes") if isinstance(state.get("attributes"), dict) else {}
     device_class = str(attrs.get("device_class") or "")
+    # A driver that knows its relay drives a door says so (Dahua's strike, an Ajax relay in impulse mode).
+    if device_class in PROTECTED_COVER_CLASSES:
+        return "door"
     if domain == "cover" and device_class:
-        return "door" if device_class in PROTECTED_COVER_CLASSES else None
+        return None
     return "door" if named_like_a_door(f"{attrs.get('friendly_name') or ''} {entity_id}") else None
 
 
