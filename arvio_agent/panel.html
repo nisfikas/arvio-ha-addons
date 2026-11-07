@@ -3349,10 +3349,12 @@
         shotBusy = true;
         let body;
         if (!doorbellEl.classList.contains("hidden") || sheet) body = { screen_id: sid, refused: "private" };
-        else if (!(window.ArvioPanel && window.ArvioPanel.screenshot)) body = { screen_id: sid, refused: "no_app" };
         else {
           try {
-            body = { screen_id: sid, image: await nativeShot() };
+            // The app's own pixels when it can (Arvio Panel 0.1.2); else the page draws itself.
+            body = window.ArvioPanel && window.ArvioPanel.screenshot
+              ? { screen_id: sid, image: await nativeShot(), source: "app" }
+              : { screen_id: sid, image: await pageShot(), source: "page" };
           } catch (e) {
             body = { screen_id: sid, refused: "capture_failed" };
           }
@@ -3367,6 +3369,30 @@
           // the order stands until it expires: the next read tries again
         }
         shotBusy = false;
+      }
+      // The page as it stands, through an SVG <foreignObject>: what the WebView shows, without its fonts and
+      // pictures (an SVG image loads nothing), so the type and the wallpaper may differ a little.
+      async function pageShot() {
+        const w = Math.max(1, innerWidth);
+        const h = Math.max(1, innerHeight);
+        const page = document.documentElement.cloneNode(true);
+        page.querySelectorAll("script").forEach((el) => el.remove());
+        const xml = new XMLSerializer().serializeToString(page);
+        const svg =
+          '<svg xmlns="http://www.w3.org/2000/svg" width="' + w + '" height="' + h + '">' +
+          '<foreignObject width="100%" height="100%">' + xml + "</foreignObject></svg>";
+        const img = new Image();
+        img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+        await img.decode();
+        const scale = Math.min(1, 720 / Math.max(w, h));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.round(w * scale);
+        canvas.height = Math.round(h * scale);
+        const ctx = canvas.getContext("2d");
+        ctx.fillStyle = getComputedStyle(document.body).backgroundColor || "#141414";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        return canvas.toDataURL("image/jpeg", 0.75);
       }
       function nativeShot() {
         return new Promise((resolve, reject) => {

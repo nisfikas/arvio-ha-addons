@@ -1210,8 +1210,9 @@ class ScreenLanHttpTest(unittest.TestCase):
         self.assertEqual(put({"image": jpeg}, "someone-else")[0], 403)
         self.assertEqual(put({"image": "data:image/jpeg;base64,iVBORw0KGgo="}, secret), (400, {"ok": False, "error": "invalid_screenshot"}))
         self.assertEqual(put({"refused": "whatever"}, secret)[0], 400)
-        self.assertEqual(put({"image": jpeg}, secret), (200, {"ok": True}))
+        self.assertEqual(put({"image": jpeg, "source": "page"}, secret), (200, {"ok": True}))
         out = get()
+        self.assertEqual(out["source"], "page")
         self.assertEqual(base64.b64decode(out["data_base64"])[:3], b"\xff\xd8\xff")
         self.assertEqual(out["mime"], "image/jpeg")
         self.assertIsNone(out["refused"])
@@ -1235,6 +1236,8 @@ class ScreenLanHttpTest(unittest.TestCase):
         html = (ROOT / "panel.html").read_text(encoding="utf-8")
         self.assertIn("if (found.screenshot) takeScreenshot(sid);", html)
         self.assertIn('body = { screen_id: sid, refused: "private" };', html)
+        # an app without the picture (0.1.1, whose key may be gone) still answers: the page draws itself
+        self.assertIn(': { screen_id: sid, image: await pageShot(), source: "page" };', html)
 
     def test_panel_restart_is_one_order_taken_once(self):
         """Partner's «Επανεκκίνηση»: never a boot loop, never a surprise for a panel back later."""

@@ -1858,7 +1858,9 @@ PANEL_RESTART_TTL_S = 120
 PANEL_SHOT_TTL_S = 120
 PANEL_SHOT_KEEP_S = 600
 PANEL_SHOT_MAX_BYTES = 600_000
-# private: a doorbell's camera or an open sheet is on the screen. no_app: an iPad, a browser, an older app.
+# private: a doorbell's camera or an open sheet is on the screen. capture_failed: neither the Arvio Panel
+# app (0.1.2, its own pixels) nor the page drawing itself (any panel) gave a picture. no_app: kept for pages
+# from before the page could draw itself.
 PANEL_SHOT_REFUSALS = ("private", "no_app", "capture_failed")
 PANEL_SHOTS: dict[str, dict] = {}
 PANEL_FONTS = {
@@ -2088,7 +2090,7 @@ def panel_screenshot_get(payload: dict) -> dict:
     shot = PANEL_SHOTS.get(sid)
     if not shot or time.time() - shot["t"] > PANEL_SHOT_KEEP_S:
         PANEL_SHOTS.pop(sid, None)
-        return {"ok": True, "taken_at": None, "data_base64": None, "refused": None}
+        return {"ok": True, "taken_at": None, "data_base64": None, "refused": None, "source": None}
     data = shot.get("data")
     return {
         "ok": True,
@@ -2096,6 +2098,7 @@ def panel_screenshot_get(payload: dict) -> dict:
         "mime": "image/jpeg" if data else None,
         "data_base64": base64.b64encode(data).decode("ascii") if data else None,
         "refused": shot.get("refused"),
+        "source": shot.get("source"),
     }
 
 
@@ -2126,7 +2129,8 @@ def panel_screenshot_put(screen_id: str, secret: str | None, body: dict) -> dict
                 raise ValueError("invalid_screenshot")
         row.pop("shot_until", None)
         save_screens(doc)
-    PANEL_SHOTS[str(screen_id)] = {"t": time.time(), "at": now_iso(), "data": data, "refused": refused}
+    source = body.get("source") if body.get("source") in ("app", "page") else None
+    PANEL_SHOTS[str(screen_id)] = {"t": time.time(), "at": now_iso(), "data": data, "refused": refused, "source": source}
     return {"ok": True}
 
 
