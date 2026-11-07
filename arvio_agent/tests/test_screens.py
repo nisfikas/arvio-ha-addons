@@ -702,7 +702,7 @@ class ScreenLanHttpTest(unittest.TestCase):
         self.assertIn("function wxScene", html)
         self.assertIn("colon-blink", html)
         self.assertIn('dataset.align', html)
-        self.assertIn("Ο καιρός χρειάζεται τη θέση του σπιτιού στο Home Assistant", html)
+        self.assertIn("Ο καιρός θα φανεί μόλις μπει η διεύθυνση του σπιτιού.", html)
 
     def test_panel_security_is_status_and_room_has_lamps(self):
         html = (ROOT / "panel.html").read_text(encoding="utf-8")
@@ -1342,6 +1342,14 @@ class ScreenLanHttpTest(unittest.TestCase):
         self.assertIn('showStatus("Το hub δεν απαντά",', html)
         self.assertIn("Δεν έχει πλακίδια ακόμα.", html)
         self.assertEqual(html.count("hideStatus();"), 2)
+
+    def test_panel_fits_its_big_numbers_on_an_old_safari(self):
+        """iPad Air 2 on iPadOS 15 (no cqh): the clock overflowed its tile; the weather showed a lone «—»."""
+        html = (ROOT / "panel.html").read_text(encoding="utf-8")
+        self.assertIn('const NO_CQ = !(window.CSS && CSS.supports && CSS.supports("height: 1cqh"));', html)
+        self.assertIn("        fitFaces();\n      }", html)  # at the end of render()
+        self.assertIn("Θα φανεί μόλις μπει η διεύθυνση του σπιτιού.", html)
+        self.assertNotIn("Home Assistant</p>", html)
 
     def test_panel_never_sends_its_secret(self):
         html = (ROOT / "panel.html").read_text(encoding="utf-8")

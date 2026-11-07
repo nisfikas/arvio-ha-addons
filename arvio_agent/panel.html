@@ -2610,7 +2610,7 @@
           sheetTitle.textContent = "Καιρός";
           if (!w) {
             sheetSub.textContent = "";
-            sheetBody.innerHTML = "<p>Ο καιρός χρειάζεται τη θέση του σπιτιού στο Home Assistant</p>";
+            sheetBody.innerHTML = "<p>Ο καιρός θα φανεί μόλις μπει η διεύθυνση του σπιτιού.</p>";
           } else {
             const humidity = weatherHumidity();
             const hours = w.hourly || [];
@@ -2923,6 +2923,10 @@
           return '<span class="kicker">Ενέργεια</span><span class="face">' + esc(energyNowText()) + "</span>";
         }
         if (t.kind === "weather") {
+          // No weather yet: words, not a lone «—» under drawn clouds.
+          if (!snap.weather) {
+            return '<span class="kicker">Καιρός</span><span class="state">Θα φανεί μόλις μπει η διεύθυνση του σπιτιού.</span>';
+          }
           return (
             wxSky(snap.weather && snap.weather.condition) +
             '<span class="kicker">' +
@@ -3143,7 +3147,28 @@
         // scrollIntoView would also scroll the Partner page around the preview.
         if (PREVIEW) pagesEl.scrollLeft = pageIx * pagesEl.clientWidth;
         else if (kids[pageIx]) kids[pageIx].scrollIntoView({ inline: "start", block: "nearest" });
+        fitFaces();
       }
+
+      // Safari before 16 has no container units (cqh): the clock's and the weather's numbers then take
+      // their vw fallback, sized for a square panel, and overflow the short tiles of a landscape iPad
+      // (an iPad Air 2 on iPadOS 15, SFK HQ 2026-11-07). There they shrink until the tile holds them.
+      const NO_CQ = !(window.CSS && CSS.supports && CSS.supports("height: 1cqh"));
+      function fitFaces(force) {
+        if (!NO_CQ && !force) return;
+        pagesEl.querySelectorAll(".tile--clock .face, .tile--weather .face").forEach((face) => {
+          const tile = face.closest(".tile");
+          if (!tile || !tile.clientHeight) return;
+          face.style.fontSize = "";
+          let size = parseFloat(getComputedStyle(face).fontSize) || 0;
+          for (let n = 0; n < 40 && size > 20 && (tile.scrollHeight > tile.clientHeight + 1 || face.scrollWidth > face.clientWidth + 1); n++) {
+            size = Math.floor(size * 0.92);
+            face.style.fontSize = size + "px";
+          }
+        });
+      }
+      window.addEventListener("resize", () => fitFaces());
+      if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => fitFaces());
 
       function paintTime() {
         const rec = timerRec();
