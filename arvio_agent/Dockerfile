@@ -14,8 +14,10 @@ WORKDIR /app
 COPY agent.py /app/agent.py
 COPY occupancy.py /app/occupancy.py
 COPY panel_install.py /app/panel_install.py
+COPY guest_tv.py /app/guest_tv.py
 COPY ui.html /app/ui.html
 COPY panel.html /app/panel.html
+COPY tv.html /app/tv.html
 COPY panel-app /app/panel-app
 COPY run.sh /run.sh
 RUN chmod a+x /run.sh

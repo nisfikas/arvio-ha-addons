@@ -29,6 +29,7 @@ from pathlib import Path
 from types import MappingProxyType
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 
+import guest_tv
 import occupancy
 import panel_install
 
@@ -42,6 +43,8 @@ except OSError:
 STATE = DATA / "hub.json"
 LAB = DATA / "lab_store.json"
 SCREENS = DATA / "screens.json"
+# The house's Guest TV profile, Wi-Fi and logo, from the cloud (`arvio.put_guest_tv`); one per hub.
+GUEST_TV = DATA / "guest-tv.json"
 DOOR_MARKS = DATA / "door_marks.json"
 ICONS = DATA / "icons.json"
 SITE_UNITS = DATA / "site_units.json"
@@ -309,8 +312,20 @@ class SignedPanel(str):
     """The stored hash of the secret a panel just proved it holds, by signing with it (`lan_signer`)."""
 
 
+class SignedGuest(str):
+    """The same for a Guest TV. Not a SignedPanel on purpose: every path that asks for a panel
+    (commands, doors, cameras, /api/screens, /api/status) refuses it without a check of its own."""
+
+
+GUEST_TV_KIND = "guest_tv"
+
+
+def is_guest_tv(row) -> bool:
+    return isinstance(row, dict) and row.get("kind") == GUEST_TV_KIND
+
+
 def hash_screen_secret(secret: str) -> str:
-    if isinstance(secret, SignedPanel):
+    if isinstance(secret, (SignedPanel, SignedGuest)):
         return str(secret)
     return hashlib.sha256(str(secret or "").encode("utf-8")).hexdigest()
 
@@ -1620,6 +1635,10 @@ def public_screen(row: dict) -> dict:
         theme = None
     if theme:
         out["theme"] = theme
+    if is_guest_tv(row):
+        out["kind"] = GUEST_TV_KIND
+        out["stay"] = row.get("stay")
+        out["last_tv_poll_at"] = row.get("last_tv_poll_at")
     device = row.get("device")
     if isinstance(device, dict):
         # What the hub learned when it installed the Arvio Panel app; MAC and serial stay here.
@@ -1762,6 +1781,55 @@ def put_wall_screen(payload: dict | None, entity_id: str = "") -> dict:
         return _put_wall_screen(payload, entity_id)
 
 
+def load_guest_tv() -> dict | None:
+    try:
+        raw = json.loads(GUEST_TV.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
+def put_guest_tv(payload: dict | None) -> dict:
+    """`arvio.put_guest_tv`: the house's Guest TV profile with the Wi-Fi and logo of «Καλωσόρισμα»."""
+    doc = guest_tv.parse_put_guest_tv(payload)
+    tmp = GUEST_TV.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(GUEST_TV)
+    return {"ok": True, "version": guest_tv.tv_version(doc["tv"])}
+
+
+def guest_tv_read(screen_id: str | None, guest: str | None, have: str | None) -> dict:
+    """GET /api/tv: only the TV's own guest key; it marks the poll and takes Partner's orders once."""
+    with SCREENS_LOCK:
+        doc = load_screens()
+        row = doc["screens"].get(str(screen_id or ""))
+        if not isinstance(row, dict):
+            raise ValueError("not_found")
+        if not is_guest_tv(row):
+            raise LookupError("not_guest_screen")
+        if not guest:
+            raise ScreenDenied("bad_screen_secret")
+        check_screen_secret(row, guest)
+        row["last_tv_poll_at"] = row["last_seen_at"] = now_iso()
+        restart = float(row.pop("restart_until", 0) or 0) > time.time()
+        shot = float(row.get("shot_until") or 0) > time.time()
+        save_screens(doc)
+    weather = None
+    try:
+        states = ha("/states") or []
+        states = states if isinstance(states, list) else []
+        daily, hourly = weather_forecasts(states)
+        weather = weather_block(states, daily, hourly)
+    except Exception:
+        weather = None  # the TV shows the rest; weather hides itself
+    out = guest_tv.tv_body(row, load_guest_tv(), have=have, now=now_iso(), tz=HA_INFO.get("time_zone") or "Europe/Athens", weather=weather, hub=hub_id)
+    if restart:
+        out["restart"] = True
+    if shot:
+        out["screenshot"] = True
+    return out
+
+
 def _put_wall_screen(payload: dict | None, entity_id: str = "") -> dict:
     payload = payload if isinstance(payload, dict) else {}
     screen_id = str(payload.get("screen_id") or entity_id or "").strip()
@@ -1776,9 +1844,13 @@ def _put_wall_screen(payload: dict | None, entity_id: str = "") -> dict:
     orientation = str(payload.get("orientation") or "square")
     if orientation not in SCREEN_ORIENTATIONS:
         raise ValueError("invalid_orientation")
-    pages = _parse_screen_pages(payload.get("pages"))
     doc = load_screens()
     prev = doc["screens"].get(screen_id) if isinstance(doc["screens"].get(screen_id), dict) else {}
+    kind = payload.get("kind", prev.get("kind") or "wall")
+    if kind not in ("wall", GUEST_TV_KIND):
+        raise ValueError("invalid_kind")
+    # A Guest TV has no tile pages (docs/plans/2026-11-07-guest-tv.md §2.1).
+    pages = [] if kind == GUEST_TV_KIND and not payload.get("pages") else _parse_screen_pages(payload.get("pages"))
     pairing_hash = str(payload.get("pairing_code_hash") or prev.get("pairing_code_hash") or "")
     used_at = payload.get("pairing_used_at") if "pairing_used_at" in payload else prev.get("pairing_used_at")
     if not used_at and pairing_hash == prev.get("pairing_code_hash"):
@@ -1821,6 +1893,15 @@ def _put_wall_screen(payload: dict | None, entity_id: str = "") -> dict:
             row["theme"] = parsed_theme
     elif prev.get("theme"):
         row["theme"] = prev["theme"]
+    if kind == GUEST_TV_KIND:
+        row["kind"] = kind
+        row["stay"] = guest_tv.parse_guest_stay(payload["stay"] if "stay" in payload else prev.get("stay"))
+        if prev.get("last_tv_poll_at"):
+            row["last_tv_poll_at"] = prev["last_tv_poll_at"]
+    elif is_guest_tv(prev):
+        # A TV's key was a guest key: it never becomes a member's. The screen pairs again.
+        for key in ("screen_secret_hash", "pair_token_hash", "pair_token_expires_at"):
+            row.pop(key, None)
     doc["screens"][screen_id] = row
     save_screens(doc)
     ingest_floor_plans(payload.get("floor_plans"))
@@ -2217,7 +2298,7 @@ def mint_screen_pair_token(screen_id: str) -> str:
         return token
 
 
-def pair_wall_screen(code: str) -> dict:
+def pair_wall_screen(code: str, want_kind: str | None = None) -> dict:
     """One-shot code (6 digits from Partner) or install token → per-screen secret. The plain
     secret leaves the hub once, here; screens.json keeps only its SHA-256. Re-pairing rotates
     it, and any pairing spends whatever code or token was still open for that screen."""
@@ -2244,6 +2325,9 @@ def pair_wall_screen(code: str) -> dict:
                 ok = pairing_open(row) and hmac.compare_digest(
                     hash_screen_pairing(code, site_id, screen_id), str(row["pairing_code_hash"])
                 )
+            if ok and want_kind == GUEST_TV_KIND and not is_guest_tv(row):
+                # The TV page asked: a wall screen's code must not hand a member key to a TV.
+                raise ValueError("wrong_screen_kind")
             if ok:
                 secret = secrets.token_urlsafe(32)
                 row["screen_secret_hash"] = hash_screen_secret(secret)
@@ -5605,6 +5689,8 @@ def execute_action(
         return panel_screenshot_get(payload)
     if action == "arvio.put_screen":
         return put_wall_screen(payload, entity_id)
+    if action == "arvio.put_guest_tv":
+        return put_guest_tv(payload)
     if action == "arvio.put_floor_plan":
         return put_floor_plan(payload, entity_id)
     if action == "arvio.delete_screen":
@@ -6092,6 +6178,7 @@ AGENT_SERVICE_ALLOWLIST = frozenset(
         "arvio.panel_screenshot",
         "arvio.panel_screenshot_get",
         "arvio.put_screen",
+        "arvio.put_guest_tv",
         "arvio.put_floor_plan",
         "arvio.delete_screen",
         "arvio.put_venue",
@@ -6252,6 +6339,7 @@ def paired_screen_secret_ok(secret: str | None) -> bool:
     rows = (load_screens().get("screens") or {}).values()
     return any(
         isinstance(row, dict)
+        and not is_guest_tv(row)
         and row.get("screen_secret_hash")
         and hmac.compare_digest(hashed, str(row["screen_secret_hash"]))
         for row in rows
@@ -6322,7 +6410,7 @@ def lan_signer(nonce: str, method: str, target: str, body: bytes, signature: str
     for row in (load_screens().get("screens") or {}).values():
         stored = str(row.get("screen_secret_hash") or "") if isinstance(row, dict) else ""
         if stored and signed_with(stored):
-            return SignedPanel(stored)
+            return SignedGuest(stored) if is_guest_tv(row) else SignedPanel(stored)
     return None
 
 
@@ -9942,6 +10030,29 @@ def lan_request_ok(host: str, origin: str | None) -> bool:
     return (o.netloc or "").lower() == h or (o.hostname or "").lower() == h.rsplit(":", 1)[0].strip("[]")
 
 
+# What a TV shell may call from its own origin (contract §3.3: a packaged Tizen app hosts tv.html in
+# an srcdoc). Each needs a guest key or a 43-char token, or names nothing; the rest stays same-origin.
+TV_CORS_PATHS = frozenset({"/tv", "/api/tv", "/v1/lan/nonce", "/api/screens/pair", "/api/screens/screenshot"})
+# ponytail: only the two Αφίσα families are inlined (~120 KB); other presets fall back to the TV's fonts.
+TV_FONTS = ("/panel/fonts/text-greek.woff2", "/panel/fonts/text-latin.woff2", "/panel/fonts/display-greek.woff2", "/panel/fonts/display-latin.woff2")
+_TV_PAGE: dict = {}
+
+
+def tv_page() -> tuple[bytes, str]:
+    """tv.html as one file: the fonts go in as data URLs, so a TV can keep the page and draw it with no hub."""
+    path = APP / "tv.html"
+    stamp = path.stat().st_mtime_ns
+    if _TV_PAGE.get("stamp") != stamp:
+        html = path.read_text(encoding="utf-8")
+        for font in TV_FONTS:
+            f = APP / "panel-app" / "fonts" / font.rsplit("/", 1)[1]
+            if f.is_file():
+                html = html.replace(f'"{font}"', '"data:font/woff2;base64,' + base64.b64encode(f.read_bytes()).decode("ascii") + '"')
+        data = html.encode("utf-8")
+        _TV_PAGE.update(stamp=stamp, data=data, etag='"' + hashlib.sha256(data).hexdigest() + '"')
+    return _TV_PAGE["data"], _TV_PAGE["etag"]
+
+
 class H(BaseHTTPRequestHandler):
     """LAN HTTP on :8099. Anyone on the network reaches it: the QR on the hub's screen leads here.
 
@@ -9998,14 +10109,27 @@ class H(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def end_headers(self) -> None:
+        if urlparse(self.path).path in TV_CORS_PATHS:
+            self.send_header("Access-Control-Allow-Origin", "*")
+        super().end_headers()
+
     def do_OPTIONS(self) -> None:  # noqa: N802
-        # Plain OPTIONS answer without CORS grants: a cross-origin preflight fails closed.
+        # Plain OPTIONS answer without CORS grants: a cross-origin preflight fails closed,
+        # except for the TV paths (end_headers adds the origin).
         self.send_response(204)
         self.send_header("Allow", "GET, POST, OPTIONS")
+        if urlparse(self.path).path in TV_CORS_PATHS:
+            self.send_header("Access-Control-Allow-Headers", f"{LAN_NONCE_HEADER}, {LAN_SIG_HEADER}, Content-Type")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST")
+            self.send_header("Access-Control-Max-Age", "600")
         self.end_headers()
 
     def _panel(self) -> str | None:
         return self._signed if isinstance(self._signed, SignedPanel) else None
+
+    def _guest(self) -> str | None:
+        return self._signed if isinstance(self._signed, SignedGuest) else None
 
     def _app(self) -> bool:
         return self._signed is True
@@ -10016,14 +10140,18 @@ class H(BaseHTTPRequestHandler):
     def _lan_ok(self) -> bool:
         self._body = None
         self._signed = None
+        self._cross = False
         # Read first: answering with the body unread closes the socket on data, the caller gets a reset
         # instead of the answer, and a 409 or a 426 reads as a hub that went away. Not for anyone's 4 GB.
         declared = self.headers.get("Content-Length") or "0"
         if declared.isdecimal() and int(declared) <= 1024 * 1024:
             self._raw_body()
         if not lan_request_ok(self.headers.get("Host") or "", self.headers.get("Origin")):
-            self._j(403, {"ok": False, "error": "forbidden_origin"})
-            return False
+            if urlparse(self.path).path in TV_CORS_PATHS and lan_host_ok(self.headers.get("Host") or ""):
+                self._cross = True
+            else:
+                self._j(403, {"ok": False, "error": "forbidden_origin"})
+                return False
         # Not 403: a panel that gets three of those forgets its pairing. Each of these clears by itself,
         # the old page within a minute when it sees the new version on /health.
         if self.headers.get(OLD_PANEL_HEADER):
@@ -10058,6 +10186,36 @@ class H(BaseHTTPRequestHandler):
             return
         if path in ("/panel", "/panel/"):
             return self._file("panel.html", "text/html; charset=utf-8")
+        if path in ("/tv", "/tv/"):
+            try:
+                data, etag = tv_page()
+            except OSError:
+                return self.send_error(404)
+            if self.headers.get("If-None-Match") == etag:
+                self.send_response(304)
+                self.send_header("ETag", etag)
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("X-Arvio-Tv-Page", AGENT_VERSION)
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        if path == "/api/tv":
+            qs = parse_qs(urlparse(self.path).query)
+            try:
+                out = guest_tv_read((qs.get("screen_id") or [None])[0], self._guest(), (qs.get("have") or [None])[0])
+            except ScreenDenied as e:
+                return self._j(403, {"ok": False, "error": str(e)})
+            except LookupError as e:
+                return self._j(422, {"ok": False, "error": str(e)})
+            except ValueError:
+                return self._j(404, {"ok": False, "error": "unknown_screen"})
+            return self._j(200, out)
         # The Arvio Panel app updates itself from its hub, offline (docs/ADR/012). The APK is
         # not secret; Android refuses one that SFK's key did not sign.
         if path == "/panel/app.json":
@@ -10239,8 +10397,12 @@ class H(BaseHTTPRequestHandler):
 
             if path == "/api/screens/pair":
                 body = self._read_json()
+                if self._cross and not body.get("token"):
+                    # From another origin only the 43-char token: any web page a guest opens could guess 6 digits.
+                    return self._j(400, {"ok": False, "error": "token_required"})
+                want = GUEST_TV_KIND if body.get("kind") == GUEST_TV_KIND else None
                 try:
-                    out = pair_wall_screen(str(body.get("token") or body.get("code") or ""))
+                    out = pair_wall_screen(str(body.get("token") or body.get("code") or ""), want)
                 except ValueError as e:
                     status = 429 if str(e) == "pairing_locked" else 400
                     return self._j(status, {"ok": False, "error": str(e)})
@@ -10249,7 +10411,7 @@ class H(BaseHTTPRequestHandler):
             if path == "/api/screens/screenshot":
                 body = self._read_json()
                 try:
-                    out = panel_screenshot_put(str(body.get("screen_id") or ""), self._panel(), body)
+                    out = panel_screenshot_put(str(body.get("screen_id") or ""), self._panel() or self._guest(), body)
                 except ScreenDenied as e:
                     return self._j(403, {"ok": False, "error": str(e)})
                 except ValueError as e:

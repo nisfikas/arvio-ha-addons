@@ -1,0 +1,888 @@
+<!doctype html>
+<html lang="el">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Arvio</title>
+    <!--
+      Guest TV: one page for every TV in a stay (docs/plans/2026-11-07-guest-tv.md in the monorepo, §3).
+      One file: the hub inlines the fonts below when it serves /tv, so a TV can keep this page and draw
+      it with no hub. Chromium M56 (2018 Samsung sets): no grid, gap, clamp/min/max, aspect-ratio, inset,
+      :is, :focus-visible, #rrggbbaa; no spread, ?. ??, padStart (polyfilled for the signing block),
+      finally, flat, globalThis. tests/test_guest_tv.py checks the list.
+    -->
+    <style>
+      @font-face { font-family: "Geologica"; font-weight: 100 900; font-display: swap; src: url("/panel/fonts/text-greek.woff2") format("woff2"); unicode-range: U+0370-03FF; }
+      @font-face { font-family: "Geologica"; font-weight: 100 900; font-display: swap; src: url("/panel/fonts/text-latin.woff2") format("woff2"); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02C6, U+02DA, U+02DC, U+2000-206F, U+20AC, U+2122, U+2212; }
+      @font-face { font-family: "Sofia Sans Extra Condensed"; font-weight: 1 1000; font-display: swap; src: url("/panel/fonts/display-greek.woff2") format("woff2"); unicode-range: U+0370-03FF; }
+      @font-face { font-family: "Sofia Sans Extra Condensed"; font-weight: 1 1000; font-display: swap; src: url("/panel/fonts/display-latin.woff2") format("woff2"); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02C6, U+02DA, U+02DC, U+2000-206F, U+20AC, U+2122, U+2212; }
+      :root { --bg: #141414; --tile: #1c1b1a; --ink: #eeebe5; --muted: #b5b0a6; --line: rgba(238, 235, 229, 0.12); --accent: #fddfbe; --signal: #c23d14; }
+      html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--ink); font-family: "Geologica", sans-serif; }
+      #stage { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; transform-origin: 0 0; background: var(--bg); }
+      .safe { position: absolute; left: 96px; top: 54px; right: 96px; bottom: 54px; }
+      .display { font-family: "Sofia Sans Extra Condensed", "Roboto Condensed", sans-serif; font-weight: 800; text-transform: uppercase; letter-spacing: 0.01em; line-height: 0.92; }
+      .kicker { font-size: 26px; color: var(--muted); letter-spacing: 0.04em; text-transform: uppercase; }
+      .bar { width: 64px; height: 6px; background: var(--signal); margin: 18px 0 20px; }
+      /* the app's own card before content: Αφίσα, as the panel's «ΣΥΝΔΕΣΗ» (docs/brand) */
+      #cover { position: absolute; left: 0; right: 0; top: 0; bottom: 0; display: flex; align-items: center; justify-content: center; }
+      #cover .card { width: 900px; border-top: 2px solid var(--line); padding-top: 28px; }
+      #cover h1 { font-size: 132px; margin: 0; }
+      #cover p { font-size: 34px; color: var(--muted); margin: 24px 0 0; line-height: 1.35; }
+      #digits { display: flex; margin-top: 40px; }
+      #digits button { width: 110px; height: 140px; margin-right: 18px; font-size: 88px; padding: 0; }
+      #gateErr { color: var(--ink); border-left: 6px solid var(--signal); padding-left: 18px; }
+      header { display: flex; align-items: flex-end; justify-content: space-between; height: 190px; border-bottom: 2px solid var(--line); }
+      .head-left { display: flex; align-items: flex-end; }
+      #logo { max-height: 150px; max-width: 360px; margin: 0 48px 22px 0; }
+      #title { font-size: 112px; margin: 6px 0 0; }
+      #welcomeText { font-size: 30px; color: var(--muted); margin: 10px 0 22px; max-width: 1100px; line-height: 1.3; }
+      .head-right { text-align: right; padding-bottom: 22px; }
+      #clock { font-size: 104px; }
+      #date, #weather { font-size: 28px; color: var(--muted); margin-top: 6px; }
+      #cols { position: absolute; left: 0; right: 0; top: 230px; bottom: 170px; overflow: hidden; }
+      #flow { height: 100%; -webkit-columns: 3; columns: 3; -webkit-column-gap: 64px; column-gap: 64px; -webkit-column-fill: auto; column-fill: auto; transition: transform 0.6s ease; }
+      .card { -webkit-column-break-inside: avoid; break-inside: avoid; page-break-inside: avoid; border-top: 2px solid var(--line); padding: 22px 0 40px; }
+      .card h2 { font-size: 52px; margin: 8px 0 14px; }
+      .card p, .card li { font-size: 30px; line-height: 1.38; margin: 0 0 8px; }
+      .card ul { margin: 0; padding-left: 30px; }
+      .row { display: flex; justify-content: space-between; font-size: 32px; padding: 6px 0; }
+      .row b { font-weight: 600; }
+      .today { border-left: 6px solid var(--signal); padding-left: 16px; margin-top: 12px; font-size: 32px; }
+      .qr { display: flex; align-items: center; }
+      .qr svg { width: 230px; height: 230px; background: #fff; padding: 12px; margin-right: 30px; flex: none; }
+      .mono { font-family: "Geologica", monospace; font-weight: 600; font-size: 34px; word-break: break-all; }
+      .phone { white-space: nowrap; word-break: normal; margin-bottom: 18px; }
+      footer { position: absolute; left: 0; right: 0; bottom: 0; height: 130px; display: flex; align-items: center; justify-content: space-between; border-top: 2px solid var(--line); }
+      #apps, #pager { display: flex; align-items: center; }
+      button { font-family: "Sofia Sans Extra Condensed", sans-serif; font-weight: 800; text-transform: uppercase; color: var(--ink); background: var(--tile); border: 4px solid transparent; border-radius: 4px; height: 96px; padding: 0 40px; margin-right: 22px; font-size: 44px; cursor: pointer; transition: transform 0.12s ease; }
+      button:focus, button.at { outline: none; border-color: var(--accent); -webkit-transform: scale(1.06); transform: scale(1.06); }
+      #pager button { padding: 0 26px; font-size: 36px; height: 72px; margin-right: 0; margin-left: 14px; }
+      #pager button.on { background: var(--ink); color: var(--bg); }
+      [hidden] { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <div id="stage">
+      <div class="safe">
+        <div id="cover">
+          <div class="card">
+            <div class="kicker">Arvio · <span id="coverKicker">Τηλεόραση</span></div>
+            <div class="bar"></div>
+            <h1 class="display" id="coverTitle">ΑΝΑΜΟΝΗ</h1>
+            <p id="coverBody"></p>
+            <div id="gate" hidden>
+              <div id="digits"></div>
+              <p id="gateErr" hidden></p>
+            </div>
+          </div>
+        </div>
+        <div id="main" hidden>
+          <header>
+            <div class="head-left">
+              <img id="logo" alt="" hidden />
+              <div>
+                <div class="kicker" id="room"></div>
+                <h1 class="display" id="title"></h1>
+                <p id="welcomeText" hidden></p>
+              </div>
+            </div>
+            <div class="head-right">
+              <div class="display" id="clock" hidden></div>
+              <div id="date" hidden></div>
+              <div id="weather" hidden></div>
+            </div>
+          </header>
+          <div id="cols"><div id="flow"></div></div>
+          <footer>
+            <div id="apps"></div>
+            <div id="pager"></div>
+          </footer>
+        </div>
+      </div>
+    </div>
+    <script>
+      /* qrcode 1.5.4 (MIT, Ryan Day, github.com/soldair/node-qrcode): lib/core/qrcode.js `create`, built in the
+         monorepo with: NODE_PATH=node_modules node_modules/.bin/esbuild entry.js --bundle --format=iife
+         --global-name=arvioQr --minify --target=chrome56, where entry.js is
+         module.exports = require("qrcode/lib/core/qrcode.js").create; */
+      /* qr:start */
+var arvioQr=(()=>{var g=(n,t)=>()=>(t||n((t={exports:{}}).exports,t),t.exports);var B=g(I=>{var rt,we=[0,26,44,70,100,134,172,196,242,292,346,404,466,532,581,655,733,815,901,991,1085,1156,1258,1364,1474,1588,1706,1828,1921,2051,2185,2323,2465,2611,2761,2876,3034,3196,3362,3532,3706];I.getSymbolSize=function(t){if(!t)throw new Error('"version" cannot be null or undefined');if(t<1||t>40)throw new Error('"version" should be in range from 1 to 40');return t*4+17};I.getSymbolTotalCodewords=function(t){return we[t]};I.getBCHDigit=function(n){let t=0;for(;n!==0;)t++,n>>>=1;return t};I.setToSJISFunction=function(t){if(typeof t!="function")throw new Error('"toSJISFunc" is not a valid function.');rt=t};I.isKanjiModeEnabled=function(){return typeof rt<"u"};I.toSJIS=function(t){return rt(t)}});var Y=g(w=>{w.L={bit:1};w.M={bit:0};w.Q={bit:3};w.H={bit:2};function Ee(n){if(typeof n!="string")throw new Error("Param is not a string");switch(n.toLowerCase()){case"l":case"low":return w.L;case"m":case"medium":return w.M;case"q":case"quartile":return w.Q;case"h":case"high":return w.H;default:throw new Error("Unknown EC Level: "+n)}}w.isValid=function(t){return t&&typeof t.bit<"u"&&t.bit>=0&&t.bit<4};w.from=function(t,e){if(w.isValid(t))return t;try{return Ee(t)}catch(r){return e}}});var It=g((cn,Tt)=>{function Nt(){this.buffer=[],this.length=0}Nt.prototype={get:function(n){let t=Math.floor(n/8);return(this.buffer[t]>>>7-n%8&1)===1},put:function(n,t){for(let e=0;e<t;e++)this.putBit((n>>>t-e-1&1)===1)},getLengthInBits:function(){return this.length},putBit:function(n){let t=Math.floor(this.length/8);this.buffer.length<=t&&this.buffer.push(0),n&&(this.buffer[t]|=128>>>this.length%8),this.length++}};Tt.exports=Nt});var St=g((an,Mt)=>{function D(n){if(!n||n<1)throw new Error("BitMatrix size must be defined and greater than 0");this.size=n,this.data=new Uint8Array(n*n),this.reservedBit=new Uint8Array(n*n)}D.prototype.set=function(n,t,e,r){let o=n*this.size+t;this.data[o]=e,r&&(this.reservedBit[o]=!0)};D.prototype.get=function(n,t){return this.data[n*this.size+t]};D.prototype.xor=function(n,t,e){this.data[n*this.size+t]^=e};D.prototype.isReserved=function(n,t){return this.reservedBit[n*this.size+t]};Mt.exports=D});var Pt=g(G=>{var Ce=B().getSymbolSize;G.getRowColCoords=function(t){if(t===1)return[];let e=Math.floor(t/7)+2,r=Ce(t),o=r===145?26:Math.ceil((r-13)/(2*e-2))*2,i=[r-7];for(let s=1;s<e-1;s++)i[s]=i[s-1]-o;return i.push(6),i.reverse()};G.getPositions=function(t){let e=[],r=G.getRowColCoords(t),o=r.length;for(let i=0;i<o;i++)for(let s=0;s<o;s++)i===0&&s===0||i===0&&s===o-1||i===o-1&&s===0||e.push([r[i],r[s]]);return e}});var Lt=g(Rt=>{var me=B().getSymbolSize,bt=7;Rt.getPositions=function(t){let e=me(t);return[[0,0],[e-bt,0],[0,e-bt]]}});var _t=g(f=>{f.Patterns={PATTERN000:0,PATTERN001:1,PATTERN010:2,PATTERN011:3,PATTERN100:4,PATTERN101:5,PATTERN110:6,PATTERN111:7};var M={N1:3,N2:3,N3:40,N4:10};f.isValid=function(t){return t!=null&&t!==""&&!isNaN(t)&&t>=0&&t<=7};f.from=function(t){return f.isValid(t)?parseInt(t,10):void 0};f.getPenaltyN1=function(t){let e=t.size,r=0,o=0,i=0,s=null,u=null;for(let c=0;c<e;c++){o=i=0,s=u=null;for(let l=0;l<e;l++){let d=t.get(c,l);d===s?o++:(o>=5&&(r+=M.N1+(o-5)),s=d,o=1),d=t.get(l,c),d===u?i++:(i>=5&&(r+=M.N1+(i-5)),u=d,i=1)}o>=5&&(r+=M.N1+(o-5)),i>=5&&(r+=M.N1+(i-5))}return r};f.getPenaltyN2=function(t){let e=t.size,r=0;for(let o=0;o<e-1;o++)for(let i=0;i<e-1;i++){let s=t.get(o,i)+t.get(o,i+1)+t.get(o+1,i)+t.get(o+1,i+1);(s===4||s===0)&&r++}return r*M.N2};f.getPenaltyN3=function(t){let e=t.size,r=0,o=0,i=0;for(let s=0;s<e;s++){o=i=0;for(let u=0;u<e;u++)o=o<<1&2047|t.get(s,u),u>=10&&(o===1488||o===93)&&r++,i=i<<1&2047|t.get(u,s),u>=10&&(i===1488||i===93)&&r++}return r*M.N3};f.getPenaltyN4=function(t){let e=0,r=t.data.length;for(let i=0;i<r;i++)e+=t.data[i];return Math.abs(Math.ceil(e*100/r/5)-10)*M.N4};function ye(n,t,e){switch(n){case f.Patterns.PATTERN000:return(t+e)%2===0;case f.Patterns.PATTERN001:return t%2===0;case f.Patterns.PATTERN010:return e%3===0;case f.Patterns.PATTERN011:return(t+e)%3===0;case f.Patterns.PATTERN100:return(Math.floor(t/2)+Math.floor(e/3))%2===0;case f.Patterns.PATTERN101:return t*e%2+t*e%3===0;case f.Patterns.PATTERN110:return(t*e%2+t*e%3)%2===0;case f.Patterns.PATTERN111:return(t*e%3+(t+e)%2)%2===0;default:throw new Error("bad maskPattern:"+n)}}f.applyMask=function(t,e){let r=e.size;for(let o=0;o<r;o++)for(let i=0;i<r;i++)e.isReserved(i,o)||e.xor(i,o,ye(t,i,o))};f.getBestMask=function(t,e){let r=Object.keys(f.Patterns).length,o=0,i=1/0;for(let s=0;s<r;s++){e(s),f.applyMask(s,t);let u=f.getPenaltyN1(t)+f.getPenaltyN2(t)+f.getPenaltyN3(t)+f.getPenaltyN4(t);f.applyMask(s,t),u<i&&(i=u,o=s)}return o}});var it=g(ot=>{var A=Y(),O=[1,1,1,1,1,1,1,1,1,1,2,2,1,2,2,4,1,2,4,4,2,4,4,4,2,4,6,5,2,4,6,6,2,5,8,8,4,5,8,8,4,5,8,11,4,8,10,11,4,9,12,16,4,9,16,16,6,10,12,18,6,10,17,16,6,11,16,19,6,13,18,21,7,14,21,25,8,16,20,25,8,17,23,25,9,17,23,34,9,18,25,30,10,20,27,32,12,21,29,35,12,23,34,37,12,25,34,40,13,26,35,42,14,28,38,45,15,29,40,48,16,31,43,51,17,33,45,54,18,35,48,57,19,37,51,60,19,38,53,63,20,40,56,66,21,43,59,70,22,45,62,74,24,47,65,77,25,49,68,81],Q=[7,10,13,17,10,16,22,28,15,26,36,44,20,36,52,64,26,48,72,88,36,64,96,112,40,72,108,130,48,88,132,156,60,110,160,192,72,130,192,224,80,150,224,264,96,176,260,308,104,198,288,352,120,216,320,384,132,240,360,432,144,280,408,480,168,308,448,532,180,338,504,588,196,364,546,650,224,416,600,700,224,442,644,750,252,476,690,816,270,504,750,900,300,560,810,960,312,588,870,1050,336,644,952,1110,360,700,1020,1200,390,728,1050,1260,420,784,1140,1350,450,812,1200,1440,480,868,1290,1530,510,924,1350,1620,540,980,1440,1710,570,1036,1530,1800,570,1064,1590,1890,600,1120,1680,1980,630,1204,1770,2100,660,1260,1860,2220,720,1316,1950,2310,750,1372,2040,2430];ot.getBlocksCount=function(t,e){switch(e){case A.L:return O[(t-1)*4+0];case A.M:return O[(t-1)*4+1];case A.Q:return O[(t-1)*4+2];case A.H:return O[(t-1)*4+3];default:return}};ot.getTotalCodewordsCount=function(t,e){switch(e){case A.L:return Q[(t-1)*4+0];case A.M:return Q[(t-1)*4+1];case A.Q:return Q[(t-1)*4+2];case A.H:return Q[(t-1)*4+3];default:return}}});var xt=g($=>{var F=new Uint8Array(512),j=new Uint8Array(256);(function(){let t=1;for(let e=0;e<255;e++)F[e]=t,j[t]=e,t<<=1,t&256&&(t^=285);for(let e=255;e<512;e++)F[e]=F[e-255]})();$.log=function(t){if(t<1)throw new Error("log("+t+")");return j[t]};$.exp=function(t){return F[t]};$.mul=function(t,e){return t===0||e===0?0:F[j[t]+j[e]]}});var Ut=g(k=>{var st=xt();k.mul=function(t,e){let r=new Uint8Array(t.length+e.length-1);for(let o=0;o<t.length;o++)for(let i=0;i<e.length;i++)r[o+i]^=st.mul(t[o],e[i]);return r};k.mod=function(t,e){let r=new Uint8Array(t);for(;r.length-e.length>=0;){let o=r[0];for(let s=0;s<e.length;s++)r[s]^=st.mul(e[s],o);let i=0;for(;i<r.length&&r[i]===0;)i++;r=r.slice(i)}return r};k.generateECPolynomial=function(t){let e=new Uint8Array([1]);for(let r=0;r<t;r++)e=k.mul(e,new Uint8Array([1,st.exp(r)]));return e}});var Ft=g((wn,Dt)=>{var qt=Ut();function ut(n){this.genPoly=void 0,this.degree=n,this.degree&&this.initialize(this.degree)}ut.prototype.initialize=function(t){this.degree=t,this.genPoly=qt.generateECPolynomial(this.degree)};ut.prototype.encode=function(t){if(!this.genPoly)throw new Error("Encoder not initialized");let e=new Uint8Array(t.length+this.degree);e.set(t);let r=qt.mod(e,this.genPoly),o=this.degree-r.length;if(o>0){let i=new Uint8Array(this.degree);return i.set(r,o),i}return r};Dt.exports=ut});var ct=g(kt=>{kt.isValid=function(t){return!isNaN(t)&&t>=1&&t<=40}});var at=g(m=>{var zt="[0-9]+",Be="[A-Z $%*+\\-./:]+",z="(?:[u3000-u303F]|[u3040-u309F]|[u30A0-u30FF]|[uFF00-uFFEF]|[u4E00-u9FAF]|[u2605-u2606]|[u2190-u2195]|u203B|[u2010u2015u2018u2019u2025u2026u201Cu201Du2225u2260]|[u0391-u0451]|[u00A7u00A8u00B1u00B4u00D7u00F7])+";z=z.replace(/u/g,"\\u");var Ae="(?:(?![A-Z0-9 $%*+\\-./:]|"+z+")(?:.|[\r\n]))+";m.KANJI=new RegExp(z,"g");m.BYTE_KANJI=new RegExp("[^A-Z0-9 $%*+\\-./:]+","g");m.BYTE=new RegExp(Ae,"g");m.NUMERIC=new RegExp(zt,"g");m.ALPHANUMERIC=new RegExp(Be,"g");var Ne=new RegExp("^"+z+"$"),Te=new RegExp("^"+zt+"$"),Ie=new RegExp("^[A-Z0-9 $%*+\\-./:]+$");m.testKanji=function(t){return Ne.test(t)};m.testNumeric=function(t){return Te.test(t)};m.testAlphanumeric=function(t){return Ie.test(t)}});var N=g(h=>{var Me=ct(),lt=at();h.NUMERIC={id:"Numeric",bit:1,ccBits:[10,12,14]};h.ALPHANUMERIC={id:"Alphanumeric",bit:2,ccBits:[9,11,13]};h.BYTE={id:"Byte",bit:4,ccBits:[8,16,16]};h.KANJI={id:"Kanji",bit:8,ccBits:[8,10,12]};h.MIXED={bit:-1};h.getCharCountIndicator=function(t,e){if(!t.ccBits)throw new Error("Invalid mode: "+t);if(!Me.isValid(e))throw new Error("Invalid version: "+e);return e>=1&&e<10?t.ccBits[0]:e<27?t.ccBits[1]:t.ccBits[2]};h.getBestModeForData=function(t){return lt.testNumeric(t)?h.NUMERIC:lt.testAlphanumeric(t)?h.ALPHANUMERIC:lt.testKanji(t)?h.KANJI:h.BYTE};h.toString=function(t){if(t&&t.id)return t.id;throw new Error("Invalid mode")};h.isValid=function(t){return t&&t.bit&&t.ccBits};function Se(n){if(typeof n!="string")throw new Error("Param is not a string");switch(n.toLowerCase()){case"numeric":return h.NUMERIC;case"alphanumeric":return h.ALPHANUMERIC;case"kanji":return h.KANJI;case"byte":return h.BYTE;default:throw new Error("Unknown mode: "+n)}}h.from=function(t,e){if(h.isValid(t))return t;try{return Se(t)}catch(r){return e}}});var Yt=g(S=>{var Z=B(),Pe=it(),Vt=Y(),T=N(),ft=ct(),Kt=7973,Ht=Z.getBCHDigit(Kt);function be(n,t,e){for(let r=1;r<=40;r++)if(t<=S.getCapacity(r,e,n))return r}function Jt(n,t){return T.getCharCountIndicator(n,t)+4}function Re(n,t){let e=0;return n.forEach(function(r){let o=Jt(r.mode,t);e+=o+r.getBitsLength()}),e}function Le(n,t){for(let e=1;e<=40;e++)if(Re(n,e)<=S.getCapacity(e,t,T.MIXED))return e}S.from=function(t,e){return ft.isValid(t)?parseInt(t,10):e};S.getCapacity=function(t,e,r){if(!ft.isValid(t))throw new Error("Invalid QR Code version");typeof r>"u"&&(r=T.BYTE);let o=Z.getSymbolTotalCodewords(t),i=Pe.getTotalCodewordsCount(t,e),s=(o-i)*8;if(r===T.MIXED)return s;let u=s-Jt(r,t);switch(r){case T.NUMERIC:return Math.floor(u/10*3);case T.ALPHANUMERIC:return Math.floor(u/11*2);case T.KANJI:return Math.floor(u/13);case T.BYTE:default:return Math.floor(u/8)}};S.getBestVersionForData=function(t,e){let r,o=Vt.from(e,Vt.M);if(Array.isArray(t)){if(t.length>1)return Le(t,o);if(t.length===0)return 1;r=t[0]}else r=t;return be(r.mode,r.getLength(),o)};S.getEncodedBits=function(t){if(!ft.isValid(t)||t<7)throw new Error("Invalid QR Code version");let e=t<<12;for(;Z.getBCHDigit(e)-Ht>=0;)e^=Kt<<Z.getBCHDigit(e)-Ht;return t<<12|e}});var jt=g(Qt=>{var gt=B(),Ot=1335,_e=21522,Gt=gt.getBCHDigit(Ot);Qt.getEncodedBits=function(t,e){let r=t.bit<<3|e,o=r<<10;for(;gt.getBCHDigit(o)-Gt>=0;)o^=Ot<<gt.getBCHDigit(o)-Gt;return(r<<10|o)^_e}});var Zt=g((An,$t)=>{var xe=N();function L(n){this.mode=xe.NUMERIC,this.data=n.toString()}L.getBitsLength=function(t){return 10*Math.floor(t/3)+(t%3?t%3*3+1:0)};L.prototype.getLength=function(){return this.data.length};L.prototype.getBitsLength=function(){return L.getBitsLength(this.data.length)};L.prototype.write=function(t){let e,r,o;for(e=0;e+3<=this.data.length;e+=3)r=this.data.substr(e,3),o=parseInt(r,10),t.put(o,10);let i=this.data.length-e;i>0&&(r=this.data.substr(e),o=parseInt(r,10),t.put(o,i*3+1))};$t.exports=L});var vt=g((Nn,Xt)=>{var Ue=N(),dt=["0","1","2","3","4","5","6","7","8","9","A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R","S","T","U","V","W","X","Y","Z"," ","$","%","*","+","-",".","/",":"];function _(n){this.mode=Ue.ALPHANUMERIC,this.data=n}_.getBitsLength=function(t){return 11*Math.floor(t/2)+6*(t%2)};_.prototype.getLength=function(){return this.data.length};_.prototype.getBitsLength=function(){return _.getBitsLength(this.data.length)};_.prototype.write=function(t){let e;for(e=0;e+2<=this.data.length;e+=2){let r=dt.indexOf(this.data[e])*45;r+=dt.indexOf(this.data[e+1]),t.put(r,11)}this.data.length%2&&t.put(dt.indexOf(this.data[e]),6)};Xt.exports=_});var te=g((Tn,Wt)=>{var qe=N();function x(n){this.mode=qe.BYTE,typeof n=="string"?this.data=new TextEncoder().encode(n):this.data=new Uint8Array(n)}x.getBitsLength=function(t){return t*8};x.prototype.getLength=function(){return this.data.length};x.prototype.getBitsLength=function(){return x.getBitsLength(this.data.length)};x.prototype.write=function(n){for(let t=0,e=this.data.length;t<e;t++)n.put(this.data[t],8)};Wt.exports=x});var ne=g((In,ee)=>{var De=N(),Fe=B();function U(n){this.mode=De.KANJI,this.data=n}U.getBitsLength=function(t){return t*13};U.prototype.getLength=function(){return this.data.length};U.prototype.getBitsLength=function(){return U.getBitsLength(this.data.length)};U.prototype.write=function(n){let t;for(t=0;t<this.data.length;t++){let e=Fe.toSJIS(this.data[t]);if(e>=33088&&e<=40956)e-=33088;else if(e>=57408&&e<=60351)e-=49472;else throw new Error("Invalid SJIS character: "+this.data[t]+"\nMake sure your charset is UTF-8");e=(e>>>8&255)*192+(e&255),n.put(e,13)}};ee.exports=U});var re=g((Mn,ht)=>{"use strict";var V={single_source_shortest_paths:function(n,t,e){var r={},o={};o[t]=0;var i=V.PriorityQueue.make();i.push(t,0);for(var s,u,c,l,d,y,p,J,P;!i.empty();){s=i.pop(),u=s.value,l=s.cost,d=n[u]||{};for(c in d)d.hasOwnProperty(c)&&(y=d[c],p=l+y,J=o[c],P=typeof o[c]>"u",(P||J>p)&&(o[c]=p,i.push(c,p),r[c]=u))}if(typeof e<"u"&&typeof o[e]>"u"){var b=["Could not find a path from ",t," to ",e,"."].join("");throw new Error(b)}return r},extract_shortest_path_from_predecessor_list:function(n,t){for(var e=[],r=t,o;r;)e.push(r),o=n[r],r=n[r];return e.reverse(),e},find_path:function(n,t,e){var r=V.single_source_shortest_paths(n,t,e);return V.extract_shortest_path_from_predecessor_list(r,e)},PriorityQueue:{make:function(n){var t=V.PriorityQueue,e={},r;n=n||{};for(r in t)t.hasOwnProperty(r)&&(e[r]=t[r]);return e.queue=[],e.sorter=n.sorter||t.default_sorter,e},default_sorter:function(n,t){return n.cost-t.cost},push:function(n,t){var e={value:n,cost:t};this.queue.push(e),this.queue.sort(this.sorter)},pop:function(){return this.queue.shift()},empty:function(){return this.queue.length===0}}};typeof ht<"u"&&(ht.exports=V)});var fe=g(q=>{var a=N(),se=Zt(),ue=vt(),ce=te(),ae=ne(),H=at(),X=B(),ke=re();function oe(n){return unescape(encodeURIComponent(n)).length}function K(n,t,e){let r=[],o;for(;(o=n.exec(e))!==null;)r.push({data:o[0],index:o.index,mode:t,length:o[0].length});return r}function le(n){let t=K(H.NUMERIC,a.NUMERIC,n),e=K(H.ALPHANUMERIC,a.ALPHANUMERIC,n),r,o;return X.isKanjiModeEnabled()?(r=K(H.BYTE,a.BYTE,n),o=K(H.KANJI,a.KANJI,n)):(r=K(H.BYTE_KANJI,a.BYTE,n),o=[]),t.concat(e,r,o).sort(function(s,u){return s.index-u.index}).map(function(s){return{data:s.data,mode:s.mode,length:s.length}})}function pt(n,t){switch(t){case a.NUMERIC:return se.getBitsLength(n);case a.ALPHANUMERIC:return ue.getBitsLength(n);case a.KANJI:return ae.getBitsLength(n);case a.BYTE:return ce.getBitsLength(n)}}function ze(n){return n.reduce(function(t,e){let r=t.length-1>=0?t[t.length-1]:null;return r&&r.mode===e.mode?(t[t.length-1].data+=e.data,t):(t.push(e),t)},[])}function Ve(n){let t=[];for(let e=0;e<n.length;e++){let r=n[e];switch(r.mode){case a.NUMERIC:t.push([r,{data:r.data,mode:a.ALPHANUMERIC,length:r.length},{data:r.data,mode:a.BYTE,length:r.length}]);break;case a.ALPHANUMERIC:t.push([r,{data:r.data,mode:a.BYTE,length:r.length}]);break;case a.KANJI:t.push([r,{data:r.data,mode:a.BYTE,length:oe(r.data)}]);break;case a.BYTE:t.push([{data:r.data,mode:a.BYTE,length:oe(r.data)}])}}return t}function He(n,t){let e={},r={start:{}},o=["start"];for(let i=0;i<n.length;i++){let s=n[i],u=[];for(let c=0;c<s.length;c++){let l=s[c],d=""+i+c;u.push(d),e[d]={node:l,lastCount:0},r[d]={};for(let y=0;y<o.length;y++){let p=o[y];e[p]&&e[p].node.mode===l.mode?(r[p][d]=pt(e[p].lastCount+l.length,l.mode)-pt(e[p].lastCount,l.mode),e[p].lastCount+=l.length):(e[p]&&(e[p].lastCount=l.length),r[p][d]=pt(l.length,l.mode)+4+a.getCharCountIndicator(l.mode,t))}}o=u}for(let i=0;i<o.length;i++)r[o[i]].end=0;return{map:r,table:e}}function ie(n,t){let e,r=a.getBestModeForData(n);if(e=a.from(t,r),e!==a.BYTE&&e.bit<r.bit)throw new Error('"'+n+'" cannot be encoded with mode '+a.toString(e)+".\n Suggested mode is: "+a.toString(r));switch(e===a.KANJI&&!X.isKanjiModeEnabled()&&(e=a.BYTE),e){case a.NUMERIC:return new se(n);case a.ALPHANUMERIC:return new ue(n);case a.KANJI:return new ae(n);case a.BYTE:return new ce(n)}}q.fromArray=function(t){return t.reduce(function(e,r){return typeof r=="string"?e.push(ie(r,null)):r.data&&e.push(ie(r.data,r.mode)),e},[])};q.fromString=function(t,e){let r=le(t,X.isKanjiModeEnabled()),o=Ve(r),i=He(o,e),s=ke.find_path(i.map,"start","end"),u=[];for(let c=1;c<s.length-1;c++)u.push(i.table[s[c]].node);return q.fromArray(ze(u))};q.rawSplit=function(t){return q.fromArray(le(t,X.isKanjiModeEnabled()))}});var de=g(ge=>{var W=B(),wt=Y(),Ke=It(),Je=St(),Ye=Pt(),Ge=Lt(),mt=_t(),yt=it(),Oe=Ft(),v=Yt(),Qe=jt(),je=N(),Et=fe();function $e(n,t){let e=n.size,r=Ge.getPositions(t);for(let o=0;o<r.length;o++){let i=r[o][0],s=r[o][1];for(let u=-1;u<=7;u++)if(!(i+u<=-1||e<=i+u))for(let c=-1;c<=7;c++)s+c<=-1||e<=s+c||(u>=0&&u<=6&&(c===0||c===6)||c>=0&&c<=6&&(u===0||u===6)||u>=2&&u<=4&&c>=2&&c<=4?n.set(i+u,s+c,!0,!0):n.set(i+u,s+c,!1,!0))}}function Ze(n){let t=n.size;for(let e=8;e<t-8;e++){let r=e%2===0;n.set(e,6,r,!0),n.set(6,e,r,!0)}}function Xe(n,t){let e=Ye.getPositions(t);for(let r=0;r<e.length;r++){let o=e[r][0],i=e[r][1];for(let s=-2;s<=2;s++)for(let u=-2;u<=2;u++)s===-2||s===2||u===-2||u===2||s===0&&u===0?n.set(o+s,i+u,!0,!0):n.set(o+s,i+u,!1,!0)}}function ve(n,t){let e=n.size,r=v.getEncodedBits(t),o,i,s;for(let u=0;u<18;u++)o=Math.floor(u/3),i=u%3+e-8-3,s=(r>>u&1)===1,n.set(o,i,s,!0),n.set(i,o,s,!0)}function Ct(n,t,e){let r=n.size,o=Qe.getEncodedBits(t,e),i,s;for(i=0;i<15;i++)s=(o>>i&1)===1,i<6?n.set(i,8,s,!0):i<8?n.set(i+1,8,s,!0):n.set(r-15+i,8,s,!0),i<8?n.set(8,r-i-1,s,!0):i<9?n.set(8,15-i-1+1,s,!0):n.set(8,15-i-1,s,!0);n.set(r-8,8,1,!0)}function We(n,t){let e=n.size,r=-1,o=e-1,i=7,s=0;for(let u=e-1;u>0;u-=2)for(u===6&&u--;;){for(let c=0;c<2;c++)if(!n.isReserved(o,u-c)){let l=!1;s<t.length&&(l=(t[s]>>>i&1)===1),n.set(o,u-c,l),i--,i===-1&&(s++,i=7)}if(o+=r,o<0||e<=o){o-=r,r=-r;break}}}function tn(n,t,e){let r=new Ke;e.forEach(function(c){r.put(c.mode.bit,4),r.put(c.getLength(),je.getCharCountIndicator(c.mode,n)),c.write(r)});let o=W.getSymbolTotalCodewords(n),i=yt.getTotalCodewordsCount(n,t),s=(o-i)*8;for(r.getLengthInBits()+4<=s&&r.put(0,4);r.getLengthInBits()%8!==0;)r.putBit(0);let u=(s-r.getLengthInBits())/8;for(let c=0;c<u;c++)r.put(c%2?17:236,8);return en(r,n,t)}function en(n,t,e){let r=W.getSymbolTotalCodewords(t),o=yt.getTotalCodewordsCount(t,e),i=r-o,s=yt.getBlocksCount(t,e),u=r%s,c=s-u,l=Math.floor(r/s),d=Math.floor(i/s),y=d+1,p=l-d,J=new Oe(p),P=0,b=new Array(s),Bt=new Array(s),tt=0,pe=new Uint8Array(n.buffer);for(let R=0;R<s;R++){let nt=R<c?d:y;b[R]=pe.slice(P,P+nt),Bt[R]=J.encode(b[R]),P+=nt,tt=Math.max(tt,nt)}let et=new Uint8Array(r),At=0,E,C;for(E=0;E<tt;E++)for(C=0;C<s;C++)E<b[C].length&&(et[At++]=b[C][E]);for(E=0;E<p;E++)for(C=0;C<s;C++)et[At++]=Bt[C][E];return et}function nn(n,t,e,r){let o;if(Array.isArray(n))o=Et.fromArray(n);else if(typeof n=="string"){let l=t;if(!l){let d=Et.rawSplit(n);l=v.getBestVersionForData(d,e)}o=Et.fromString(n,l||40)}else throw new Error("Invalid data");let i=v.getBestVersionForData(o,e);if(!i)throw new Error("The amount of data is too big to be stored in a QR Code");if(!t)t=i;else if(t<i)throw new Error("\nThe chosen QR Code version cannot contain this amount of data.\nMinimum version required to store current data is: "+i+".\n");let s=tn(t,e,o),u=W.getSymbolSize(t),c=new Je(u);return $e(c,t),Ze(c),Xe(c,t),Ct(c,e,0),t>=7&&ve(c,t),We(c,s),isNaN(r)&&(r=mt.getBestMask(c,Ct.bind(null,c,e))),mt.applyMask(r,c),Ct(c,e,r),{modules:c,version:t,errorCorrectionLevel:e,maskPattern:r,segments:o}}ge.create=function(t,e){if(typeof t>"u"||t==="")throw new Error("No input text");let r=wt.M,o,i;return typeof e<"u"&&(r=wt.from(e.errorCorrectionLevel,wt.M),o=v.from(e.version),i=mt.from(e.maskPattern),e.toSJISFunc&&W.setToSJISFunction(e.toSJISFunc)),nn(t,o,r,i)}});var rn=g((bn,he)=>{he.exports=de().create});return rn();})();
+      /* qr:end */
+    </script>
+    <script>
+      (function () {
+        "use strict";
+        if (!String.prototype.padStart) {
+          // M56 has no padStart; the signing block below is the wall panel's, byte for byte.
+          String.prototype.padStart = function (n, c) {
+            var s = String(this);
+            while (s.length < n) s = c + s;
+            return s;
+          };
+        }
+        var BUILD = Date.parse("2026-11-07T00:00:00Z"); // a clock before this is not a clock
+        var POLL_MS = 30000;
+        var PAGE_MS = 20000;
+        var WEATHER_STALE_MS = 3 * 3600 * 1000;
+        var bridge = window.ArvioTV || null;
+
+        // ---- words the page itself says (Greek and English; test_guest_tv checks both have every key)
+        var S = {
+          el: {
+            tv: "Τηλεόραση", waiting: "ΑΝΑΜΟΝΗ", waiting_body: "Ο εγκαταστάτης ετοιμάζει την τηλεόραση.",
+            pairing: "ΣΥΖΕΥΞΗ", pairing_body: "Γράψτε τον κωδικό από τον Partner: αριθμοί, ή ▲ ▼ και OK.",
+            pair_wrong: "Λάθος κωδικός.", pair_locked: "Πολλές λάθος προσπάθειες. Ξανά σε 15 λεπτά.",
+            pair_kind: "Ο κωδικός είναι για πάνελ τοίχου, όχι για τηλεόραση.", pair_token: "Η σύζευξη γίνεται από την εγκατάσταση.",
+            not_tv: "ΟΧΙ ΤΗΛΕΟΡΑΣΗ", not_tv_body: "Αυτή η οθόνη δεν είναι τηλεόραση επισκεπτών.",
+            welcome: "Καλώς ήρθατε", stay: "Η διαμονή σας", check_in: "Άφιξη", check_out: "Αναχώρηση",
+            today: "Αναχώρηση σήμερα στις {}", wifi: "Wi-Fi", network: "Δίκτυο", password: "Κωδικός",
+            scan: "Σκανάρετε με την κάμερα του κινητού.", pass: "Το σπίτι από το κινητό σας",
+            pass_body: "Φώτα, κλίμα και μουσική του δωματίου, χωρίς εφαρμογή. Λήγει στην αναχώρηση.",
+            rules: "Κανόνες", contacts: "Επικοινωνία", lang: "ENGLISH",
+            app_live_tv: "Τηλεόραση", app_browser: "Περιήγηση",
+          },
+          en: {
+            tv: "TV", waiting: "WAITING", waiting_body: "The installer is setting up this TV.",
+            pairing: "PAIRING", pairing_body: "Type the code from Partner: digits, or ▲ ▼ and OK.",
+            pair_wrong: "Wrong code.", pair_locked: "Too many wrong tries. Again in 15 minutes.",
+            pair_kind: "This code is for a wall panel, not a TV.", pair_token: "Pairing happens during the install.",
+            not_tv: "NOT A TV", not_tv_body: "This screen is not a guest TV.",
+            welcome: "Welcome", stay: "Your stay", check_in: "Check-in", check_out: "Check-out",
+            today: "Check-out today at {}", wifi: "Wi-Fi", network: "Network", password: "Password",
+            scan: "Scan with your phone's camera.", pass: "The room on your phone",
+            pass_body: "Lights, climate and music of your room, no app needed. Ends at check-out.",
+            rules: "House rules", contacts: "Contact", lang: "ΕΛΛΗΝΙΚΑ",
+            app_live_tv: "TV", app_browser: "Browser",
+          },
+        };
+        var APP_LABELS = { hdmi: "HDMI", netflix: "Netflix", youtube: "YouTube", prime_video: "Prime Video", disney_plus: "Disney+", spotify: "Spotify", plex: "Plex" };
+        var WEATHER = {
+          el: { "clear-night": "Αίθριος", cloudy: "Συννεφιά", fog: "Ομίχλη", hail: "Χαλάζι", lightning: "Καταιγίδα", "lightning-rainy": "Καταιγίδα", partlycloudy: "Λίγα σύννεφα", pouring: "Νεροποντή", rainy: "Βροχή", snowy: "Χιόνι", "snowy-rainy": "Χιονόνερο", sunny: "Λιακάδα", windy: "Αέρας", "windy-variant": "Αέρας", exceptional: "" },
+          en: { "clear-night": "Clear", cloudy: "Cloudy", fog: "Fog", hail: "Hail", lightning: "Storm", "lightning-rainy": "Storm", partlycloudy: "Partly cloudy", pouring: "Pouring", rainy: "Rain", snowy: "Snow", "snowy-rainy": "Sleet", sunny: "Sunny", windy: "Windy", "windy-variant": "Windy", exceptional: "" },
+        };
+
+        // ---- storage: the shell's own when it has one (survives a hub IP change), localStorage otherwise
+        function keep(k, v) {
+          try {
+            if (bridge && bridge.keep) bridge.keep(k, v || "");
+            else if (v) localStorage.setItem("arvio.tv." + k, v);
+            else localStorage.removeItem("arvio.tv." + k);
+          } catch (e) {}
+        }
+        function kept(k) {
+          try {
+            var v = bridge && bridge.kept ? bridge.kept(k) : localStorage.getItem("arvio.tv." + k);
+            return v || null;
+          } catch (e) {
+            return null;
+          }
+        }
+        function keptJson(k) {
+          try {
+            return JSON.parse(kept(k) || "null");
+          } catch (e) {
+            return null;
+          }
+        }
+
+        // lan-sign:start  (compared with node:crypto in Partner's panels.test.ts)
+      // By hand: crypto.subtle does not exist on http://, and a hub on the LAN has nothing else to serve.
+      const SHA_K = [];
+      const SHA_H = [];
+      for (let n = 2, found = 0; found < 64; n++) {
+        let prime = true;
+        for (let d = 2; d * d <= n; d++) if (n % d === 0) prime = false;
+        if (!prime) continue;
+        if (found < 8) SHA_H.push((Math.sqrt(n) % 1) * 4294967296 | 0);
+        SHA_K.push((Math.cbrt(n) % 1) * 4294967296 | 0);
+        found++;
+      }
+      function sha256(bytes) {
+        const rotr = (x, n) => (x >>> n) | (x << (32 - n));
+        const size = ((bytes.length + 72) >> 6) << 6;
+        const padded = new Uint8Array(size);
+        padded.set(bytes);
+        padded[bytes.length] = 0x80;
+        const view = new DataView(padded.buffer);
+        view.setUint32(size - 8, Math.floor(bytes.length / 536870912));
+        view.setUint32(size - 4, bytes.length << 3);
+        const h = SHA_H.slice();
+        const w = new Int32Array(64);
+        for (let at = 0; at < size; at += 64) {
+          for (let t = 0; t < 16; t++) w[t] = view.getInt32(at + t * 4);
+          for (let t = 16; t < 64; t++) {
+            const x = w[t - 15];
+            const y = w[t - 2];
+            w[t] = (w[t - 16] + (rotr(x, 7) ^ rotr(x, 18) ^ (x >>> 3)) + w[t - 7] + (rotr(y, 17) ^ rotr(y, 19) ^ (y >>> 10))) | 0;
+          }
+          let [a, b, c, d, e, f, g, i] = h;
+          for (let t = 0; t < 64; t++) {
+            const one = (i + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + SHA_K[t] + w[t]) | 0;
+            const two = ((rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) | 0;
+            i = g;
+            g = f;
+            f = e;
+            e = (d + one) | 0;
+            d = c;
+            c = b;
+            b = a;
+            a = (one + two) | 0;
+          }
+          [a, b, c, d, e, f, g, i].forEach((v, n) => { h[n] = (h[n] + v) | 0; });
+        }
+        const out = new Uint8Array(32);
+        const outView = new DataView(out.buffer);
+        h.forEach((v, n) => outView.setInt32(n * 4, v));
+        return out;
+      }
+      function hmacSha256(key, message) {
+        const block = new Uint8Array(64);
+        block.set(key.length > 64 ? sha256(key) : key);
+        const inner = new Uint8Array(64 + message.length);
+        const outer = new Uint8Array(96);
+        for (let n = 0; n < 64; n++) {
+          inner[n] = block[n] ^ 0x36;
+          outer[n] = block[n] ^ 0x5c;
+        }
+        inner.set(message, 64);
+        outer.set(sha256(inner), 64);
+        return sha256(outer);
+      }
+      const toHex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+      /** The hub stores the hash of the secret, so the hash is what both sides sign with. */
+      function lanSignature(secret, nonce, method, target, body) {
+        const text = new TextEncoder();
+        const key = text.encode(toHex(sha256(text.encode(secret))));
+        const message = [nonce, method, target, toHex(sha256(text.encode(body)))].join("\n");
+        return toHex(hmacSha256(key, text.encode(message)));
+      }
+      // lan-sign:end
+
+        // ---- state
+        var boot = "";
+        try {
+          boot = bridge && bridge.boot ? String(bridge.boot() || "") : "";
+        } catch (e) {}
+        if (!boot && location.hash.length > 1) {
+          boot = location.hash.slice(1);
+          try {
+            history.replaceState(null, "", location.pathname + location.search);
+          } catch (e) {}
+        }
+        var params = new URLSearchParams(boot);
+        var preview = params.has("preview");
+        var screen = keptJson("screen");
+        var content = keptJson("content");
+        var hubOffset = null;
+        var lang = null; // the guest's choice; null = the stay's language
+        var langFor = null;
+        var fails = 0;
+        var page = 0;
+        var pages = 1;
+        var lastKey = Date.now();
+        var shown = "";
+        var pairBusy = false;
+        var code = [0, 0, 0, 0, 0, 0];
+
+        function $(id) {
+          return document.getElementById(id);
+        }
+        /** The ring follows a class too: back from Netflix, a TV may give the window its focus late. */
+        function focusOn(el) {
+          if (!el) return;
+          var old = document.querySelectorAll("button.at");
+          for (var i = 0; i < old.length; i++) old[i].classList.remove("at");
+          el.classList.add("at");
+          el.focus();
+        }
+        function esc(s) {
+          return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+            return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+          });
+        }
+        function pad2(n) {
+          return n < 10 ? "0" + n : String(n);
+        }
+        function timed(p, ms) {
+          return Promise.race([p, new Promise(function (_, no) { setTimeout(function () { no(new Error("timeout")); }, ms || 15000); })]);
+        }
+
+        // ---- network: relative URLs only (a shell may host this page in an srcdoc with a <base>)
+        async function signedFetch(url, init) {
+          init = init || {};
+          var r = await timed(fetch("/v1/lan/nonce", { cache: "no-store" }));
+          var nonce = (await r.json()).nonce;
+          var at = new URL(url, document.baseURI);
+          var sig = lanSignature(screen.screen_secret, nonce, init.method || "GET", at.pathname + at.search, init.body || "");
+          var headers = Object.assign({}, init.headers || {}, { "X-Arvio-Lan-Nonce": nonce, "X-Arvio-Lan-Sig": sig });
+          return timed(fetch(url, Object.assign({}, init, { headers: headers, cache: "no-store" })));
+        }
+
+        function validTv(tv) {
+          return tv && typeof tv === "object" && Array.isArray(tv.blocks) && tv.theme && typeof tv.theme === "object";
+        }
+
+        async function poll() {
+          if (!screen || preview) return;
+          var path = "/api/tv?screen_id=" + encodeURIComponent(screen.screen_id) + (content && content.version ? "&have=" + encodeURIComponent(content.version) : "");
+          var r;
+          try {
+            r = await signedFetch(path);
+          } catch (e) {
+            return; // the hub is away: the screen stays as it is
+          }
+          if (r.status === 403 || r.status === 404) {
+            if (++fails >= 3) forget();
+            return;
+          }
+          if (r.status === 422) {
+            cover(t("not_tv"), t("not_tv_body"));
+            return;
+          }
+          if (!r.ok) return;
+          var body;
+          try {
+            body = await r.json();
+          } catch (e) {
+            return;
+          }
+          if (!body || body.ok !== true) return;
+          fails = 0;
+          var hubNow = Date.parse(body.now);
+          if (!isNaN(hubNow)) hubOffset = hubNow - Date.now();
+          if (body.same && content) {
+            content.weather = body.weather || null;
+          } else if (validTv(body.tv)) {
+            content = body;
+          } else {
+            return;
+          }
+          content.got = Date.now();
+          content.timezone = body.timezone || content.timezone;
+          keep("content", JSON.stringify(content));
+          if (body.restart) restart();
+          if (body.screenshot) screenshot();
+          render();
+        }
+
+        function forget() {
+          screen = null;
+          content = null;
+          keep("screen", "");
+          keep("content", "");
+          showGate("");
+        }
+
+        function restart() {
+          try {
+            if (bridge && bridge.reboot) return bridge.reboot();
+          } catch (e) {}
+          location.reload();
+        }
+
+        function postShot(body) {
+          var data = JSON.stringify(Object.assign({ screen_id: screen.screen_id }, body));
+          signedFetch("/api/screens/screenshot", { method: "POST", headers: { "Content-Type": "application/json" }, body: data }).catch(function () {});
+        }
+        function screenshot() {
+          if (!bridge || !bridge.screenshot) return postShot({ refused: "no_app" });
+          window.__arvioShot = function (url) {
+            window.__arvioShot = null;
+            postShot(url ? { image: url, source: "app" } : { refused: "capture_failed" });
+          };
+          try {
+            bridge.screenshot();
+          } catch (e) {
+            postShot({ refused: "capture_failed" });
+          }
+        }
+
+        // ---- pairing: the install token, or 6 digits typed with the remote
+        async function pair(payload) {
+          if (pairBusy) return;
+          pairBusy = true;
+          var r, body;
+          try {
+            r = await timed(fetch("/api/screens/pair", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(Object.assign({ kind: "guest_tv" }, payload)) }));
+            body = await r.json();
+          } catch (e) {
+            body = null;
+          }
+          pairBusy = false;
+          if (r && r.ok && body && body.screen_id && body.screen_secret) {
+            screen = { screen_id: body.screen_id, screen_secret: body.screen_secret, hub_id: params.get("hub_id") || null };
+            keep("screen", JSON.stringify(screen));
+            cover(t("waiting"), t("waiting_body"));
+            poll();
+            return;
+          }
+          var err = body && body.error;
+          showGate(err === "pairing_locked" ? t("pair_locked") : err === "wrong_screen_kind" ? t("pair_kind") : err === "token_required" ? t("pair_token") : r ? t("pair_wrong") : "");
+        }
+
+        function showGate(err) {
+          cover(t("pairing"), t("pairing_body"));
+          $("gate").hidden = false;
+          $("gateErr").hidden = !err;
+          $("gateErr").textContent = err || "";
+          var box = $("digits");
+          if (!box.children.length) {
+            for (var i = 0; i < 6; i++) {
+              var b = document.createElement("button");
+              b.setAttribute("data-digit", String(i));
+              b.className = "display";
+              box.appendChild(b);
+            }
+          }
+          for (var j = 0; j < 6; j++) box.children[j].textContent = String(code[j]);
+          if (!box.contains(document.activeElement)) focusOn(box.children[0]);
+        }
+
+        function gateKey(e) {
+          var b = document.activeElement;
+          var i = b && b.getAttribute("data-digit");
+          if (i === null || i === undefined) return false;
+          i = Number(i);
+          var k = e.keyCode;
+          var digit = k >= 48 && k <= 57 ? k - 48 : k >= 96 && k <= 105 ? k - 96 : -1;
+          if (digit >= 0) code[i] = digit;
+          else if (k === 38) code[i] = (code[i] + 1) % 10;
+          else if (k === 40) code[i] = (code[i] + 9) % 10;
+          else if (k === 13 && i === 5) {
+            pair({ code: code.join("") });
+            return true;
+          } else if (k !== 13 && k !== 39 && k !== 37) return false;
+          b.textContent = String(code[i]);
+          var next = k === 37 ? i - 1 : digit >= 0 || k === 39 || k === 13 ? i + 1 : i;
+          if (next >= 0 && next < 6) focusOn($("digits").children[next]);
+          return true;
+        }
+
+        // ---- time and the stay
+        function nowMs() {
+          if (hubOffset !== null) return Date.now() + hubOffset;
+          return Date.now() > BUILD ? Date.now() : null;
+        }
+        function phase(stay, at) {
+          if (!stay) return "none";
+          if (at === null) return "unknown";
+          var a = Date.parse(stay.check_in);
+          var b = Date.parse(stay.check_out);
+          return at < a ? "before" : at < b ? "during" : "after";
+        }
+        /** A stay that has ended gets endStay once, even if the TV was off at check-out (§3.5.8). */
+        function bookStay(stay, ph) {
+          var started = kept("started");
+          var ended = kept("ended");
+          if (stay && ph === "during" && started !== stay.id) {
+            keep("started", stay.id);
+            started = stay.id;
+          }
+          if (started && started !== ended && (!stay || stay.id !== started || ph === "after")) {
+            try {
+              if (bridge && bridge.endStay) bridge.endStay(started);
+            } catch (e) {}
+            keep("ended", started);
+          }
+        }
+        function tz() {
+          return (content && content.timezone) || "Europe/Athens";
+        }
+        function fmt(ms, opts) {
+          try {
+            return new Intl.DateTimeFormat(lang === "el" ? "el-GR" : "en-GB", Object.assign({ timeZone: tz(), hour12: false }, opts)).format(new Date(ms));
+          } catch (e) {
+            var d = new Date(ms);
+            return opts.hour ? pad2(d.getHours()) + ":" + pad2(d.getMinutes()) : d.toDateString();
+          }
+        }
+        function sameDay(a, b) {
+          return fmt(a, { year: "numeric", month: "2-digit", day: "2-digit" }) === fmt(b, { year: "numeric", month: "2-digit", day: "2-digit" });
+        }
+
+        // ---- words
+        /** Before any guest content the installer reads it: Greek. After that, the guest's language. */
+        function t(k) {
+          var s = S[lang === "en" ? "en" : "el"][k];
+          return s === undefined ? "" : s;
+        }
+        function tx(o) {
+          if (!o) return "";
+          if (typeof o === "string") return o;
+          var other = lang === "el" ? "en" : "el";
+          return o[lang === "el" ? "el" : "en"] || o[other] || "";
+        }
+
+        // ---- look: the wall panel's presets (copied with a test), or the partner's own colours
+        // themes:start
+      const THEMES = {
+        afisa: {
+          dark: { bg: "#141414", tile: "#1c1b1a", ink: "#eeebe5", muted: "#b5b0a6", on: "#fddfbe", line: "#eeebe51f", onInk: "#141414" },
+          light: { bg: "#eeebe5", tile: "#f6f4f0", ink: "#141414", muted: "#57534c", on: "#c23d14", line: "#1414141f", onInk: "#f6f4f0" },
+        },
+        grafitis: {
+          dark: { bg: "#000000", tile: "#000000", ink: "#ffffff", muted: "#9a9a9a", on: "#ffffff", line: "#ffffff33", onInk: "#000000" },
+          light: { bg: "#d8dadd", tile: "#d8dadd", ink: "#000000", muted: "#3a3c3f", on: "#000000", line: "#00000040", onInk: "#ffffff" },
+        },
+        penteli: {
+          dark: { bg: "#141c27", tile: "#1c2633", ink: "#f4efe3", muted: "#aeb5bf", on: "#dcbc6b", line: "#f4efe32b", onInk: "#141c27" },
+          light: { bg: "#f6f4ee", tile: "#ffffff", ink: "#18222e", muted: "#58636f", on: "#7f6118", line: "#18222e26", onInk: "#ffffff" },
+        },
+        drys: {
+          dark: { bg: "#24150b", tile: "#3d2613", ink: "#f8e8d0", muted: "#d6b692", on: "#f2a531", line: "#f8e8d024", onInk: "#24150b" },
+          light: { bg: "#e2c8a0", tile: "#f2e2c6", ink: "#2a1707", muted: "#5e4023", on: "#843f06", line: "#2a170733", onInk: "#fff5e6" },
+        },
+        lino: {
+          dark: { bg: "#2a3226", tile: "#3a4435", ink: "#f6f9e9", muted: "#c6cfb6", on: "#b9d48f", line: "#eff2e21f", onInk: "#232a1f" },
+          light: { bg: "#cdd4bb", tile: "#f3f1e4", ink: "#2e3a2a", muted: "#4e5a43", on: "#4c6b37", line: "#2e3a2a1f", onInk: "#f8f7ee" },
+        },
+        beton: {
+          dark: { bg: "#232426", tile: "#2f3032", ink: "#f0f0f0", muted: "#bdbdbd", on: "#ffd400", line: "#f0f0f0", onInk: "#000000" },
+          light: { bg: "#c4c6c8", tile: "#d6d8da", ink: "#000000", muted: "#2b2b2b", on: "#000000", line: "#000000", onInk: "#ffd400" },
+        },
+        aigaio: {
+          dark: { bg: "#072c6e", tile: "#0a3785", ink: "#ffffff", muted: "#d3e3fa", on: "#ffffff", line: "#ffffff38", onInk: "#072c6e" },
+          light: { bg: "#ffffff", tile: "#e6effb", ink: "#0a3a8c", muted: "#2f5a9c", on: "#0a3a8c", line: "#0a3a8c2e", onInk: "#ffffff" },
+        },
+        elia: {
+          dark: { bg: "#1b2410", tile: "#2a3618", ink: "#f0f2d8", muted: "#bcc495", on: "#c8d94a", line: "#f0f2d828", onInk: "#1b2410" },
+          light: { bg: "#cdd2a4", tile: "#e3e6c2", ink: "#1f2810", muted: "#454e2c", on: "#3f5210", line: "#1f281033", onInk: "#f0f2d8" },
+        },
+        vasaltis: {
+          dark: { bg: "#0e0808", tile: "#1b1010", ink: "#f8ece6", muted: "#b9a096", on: "#ff4a24", line: "#ff4a2440", onInk: "#1a0503" },
+          light: { bg: "#cfc8c2", tile: "#e3ddd7", ink: "#140b08", muted: "#4a3d37", on: "#a31405", line: "#140b0840", onInk: "#ffffff" },
+        },
+        galini: {
+          dark: { bg: "#0b2b3a", tile: "#123a4c", ink: "#eaf8fb", muted: "#b1d4de", on: "#8fe9ff", line: "#ffffff2e", onInk: "#062230" },
+          light: { bg: "#fbdcc9", tile: "#fff1e8", ink: "#123645", muted: "#3c6371", on: "#096f89", line: "#ffffff80", onInk: "#ffffff" },
+        },
+      };
+        // themes:end
+        function css(hex) {
+          if (typeof hex !== "string" || hex.length !== 9) return hex;
+          var n = parseInt(hex.slice(1), 16);
+          return "rgba(" + ((n >>> 24) & 255) + "," + ((n >>> 16) & 255) + "," + ((n >>> 8) & 255) + "," + ((n & 255) / 255).toFixed(3) + ")";
+        }
+        function rgba(hex, a) {
+          var n = parseInt(hex.slice(1, 7), 16);
+          return "rgba(" + ((n >> 16) & 255) + "," + ((n >> 8) & 255) + "," + (n & 255) + "," + a + ")";
+        }
+        function applyTheme(theme) {
+          var preset = THEMES[theme && theme.preset] ? theme.preset : "afisa";
+          var mode = theme && theme.mode === "light" ? "light" : "dark";
+          var pal = THEMES[preset][mode];
+          var c = theme && theme.colors;
+          var v = c
+            ? { bg: c.bg, tile: rgba(c.ink, 0.07), ink: c.ink, muted: rgba(c.ink, 0.72), line: rgba(c.ink, 0.14), accent: c.accent }
+            : { bg: pal.bg, tile: pal.tile, ink: pal.ink, muted: pal.muted, line: css(pal.line), accent: pal.on };
+          var root = document.documentElement.style;
+          Object.keys(v).forEach(function (k) {
+            root.setProperty("--" + k, v[k]);
+          });
+        }
+
+        // ---- drawing
+        function qrSvg(text) {
+          var m;
+          try {
+            m = arvioQr(String(text), { errorCorrectionLevel: "M" }).modules;
+          } catch (e) {
+            return "";
+          }
+          var q = 2;
+          var d = "";
+          for (var y = 0; y < m.size; y++) for (var x = 0; x < m.size; x++) if (m.data[y * m.size + x]) d += "M" + (x + q) + " " + (y + q) + "h1v1h-1z";
+          var n = m.size + q * 2;
+          return '<svg viewBox="0 0 ' + n + " " + n + '" shape-rendering="crispEdges" aria-hidden="true"><path fill="#000" d="' + d + '"/></svg>';
+        }
+        function wifiPayload(name, password) {
+          var e = function (s) {
+            return String(s).replace(/([\\;,:"])/g, "\\$1");
+          };
+          return password ? "WIFI:T:WPA;S:" + e(name) + ";P:" + e(password) + ";;" : "WIFI:T:nopass;S:" + e(name) + ";;";
+        }
+        function card(title, inner) {
+          return '<section class="card">' + (title ? '<h2 class="display">' + esc(title) + "</h2>" : "") + inner + "</section>";
+        }
+        function when(ms) {
+          return fmt(ms, { weekday: "short", day: "numeric", month: "short" }) + ", " + fmt(ms, { hour: "2-digit", minute: "2-digit" });
+        }
+
+        function cards(tv, ph, at) {
+          var out = [];
+          var stay = tv.stay;
+          var live = ph === "before" || ph === "during" || ph === "unknown";
+          tv.blocks.forEach(function (b) {
+            if (b.kind === "stay" && stay && live) {
+              var co = Date.parse(stay.check_out);
+              var today = ph === "during" && at !== null && sameDay(at, co) ? '<p class="today">' + esc(t("today").replace("{}", fmt(co, { hour: "2-digit", minute: "2-digit" }))) + "</p>" : "";
+              out.push(card(t("stay"), '<div class="row"><span>' + esc(t("check_in")) + "</span><b>" + esc(when(Date.parse(stay.check_in))) + '</b></div><div class="row"><span>' + esc(t("check_out")) + "</span><b>" + esc(when(co)) + "</b></div>" + today));
+            } else if (b.kind === "wifi" && tv.wifi && tv.wifi.name) {
+              var secret = ph !== "after" && tv.wifi.password;
+              var qr = ph !== "after" ? qrSvg(wifiPayload(tv.wifi.name, tv.wifi.password)) : "";
+              out.push(card(t("wifi"), '<div class="qr">' + qr + "<div><p>" + esc(t("network")) + '</p><p class="mono">' + esc(tv.wifi.name) + "</p>" + (secret ? "<p>" + esc(t("password")) + '</p><p class="mono">' + esc(tv.wifi.password) + "</p>" : "") + (qr ? "<p>" + esc(t("scan")) + "</p>" : "") + "</div></div>"));
+            } else if (b.kind === "guest_pass" && stay && stay.pass_url && live) {
+              out.push(card(t("pass"), '<div class="qr">' + qrSvg(stay.pass_url) + "<p>" + esc(t("pass_body")) + "</p></div>"));
+            } else if (b.kind === "sections") {
+              b.items.forEach(function (s) {
+                out.push(card(tx(s.title), "<p>" + esc(tx(s.text)) + "</p>"));
+              });
+            } else if (b.kind === "rules") {
+              out.push(card(t("rules"), "<ul>" + b.items.map(function (r) { return "<li>" + esc(tx(r)) + "</li>"; }).join("") + "</ul>"));
+            } else if (b.kind === "contacts") {
+              out.push(card(t("contacts"), b.items.map(function (c) {
+                return "<p>" + esc(c.name) + (tx(c.role) ? " · " + esc(tx(c.role)) : "") + '</p><p class="mono phone">' + esc(c.phone) + "</p>";
+              }).join("")));
+            } else if (b.kind === "link" && /^https:\/\//.test(b.url)) {
+              out.push(card(tx(b.caption), '<div class="qr">' + qrSvg(b.url) + "</div>"));
+            } else if (b.kind === "text") {
+              out.push(card("", "<p>" + esc(tx(b.text)) + "</p>"));
+            }
+            // logo, welcome, clock, weather, apps: header and footer. A kind this page does not know: nothing.
+          });
+          return out.join("");
+        }
+
+        function hasBlock(tv, kind) {
+          return tv.blocks.some(function (b) {
+            return b.kind === kind;
+          });
+        }
+
+        function appList(tv) {
+          if (!hasBlock(tv, "apps")) return [];
+          var allowed = tv.apps || [];
+          var list = [];
+          if (bridge && bridge.apps) {
+            try {
+              list = JSON.parse(bridge.apps() || "[]");
+            } catch (e) {
+              list = [];
+            }
+          } else if (preview) {
+            list = allowed.map(function (id) { return { id: id, label: "" }; });
+          }
+          return list.filter(function (a) {
+            return a && typeof a.id === "string" && allowed.indexOf(a.id.split(":")[0]) >= 0;
+          });
+        }
+        function appLabel(a) {
+          var base = a.id.split(":")[0];
+          return a.label || t("app_" + base) || APP_LABELS[base] || base;
+        }
+
+        function cover(title, body) {
+          $("main").hidden = true;
+          $("cover").hidden = false;
+          $("gate").hidden = true;
+          $("coverKicker").textContent = t("tv");
+          $("coverTitle").textContent = title;
+          $("coverBody").textContent = body || "";
+          shown = "";
+        }
+
+        function render() {
+          if (!content || !validTv(content.tv)) {
+            if (preview) return;
+            if (screen) cover(t("waiting"), t("waiting_body"));
+            else showGate("");
+            return;
+          }
+          var tv = content.tv;
+          var at = nowMs();
+          var ph = phase(tv.stay, at);
+          if (!preview) bookStay(tv.stay, ph);
+          var stayId = tv.stay ? tv.stay.id : null;
+          if (langFor !== stayId) {
+            lang = null; // a new guest starts in their own language again
+            langFor = stayId;
+          }
+          if (!lang) lang = tv.stay && ph !== "after" ? tv.stay.language : "en";
+          // <html lang="el"> stays: the partner's Greek keeps its capitals without accents in English too.
+          applyTheme(tv.theme);
+          var apps = appList(tv);
+          var key = JSON.stringify([content.version, ph, lang, apps, preview ? tv : null]);
+          if (key !== shown) {
+            shown = key;
+            var focused = document.activeElement && document.activeElement.getAttribute("data-key");
+            var welcome = null;
+            tv.blocks.forEach(function (b) {
+              if (!welcome && b.kind === "welcome") welcome = b;
+            });
+            var name = tv.stay && tv.stay.guest_name && (ph === "before" || ph === "during") ? tv.stay.guest_name : "";
+            var title = welcome ? tx(welcome.title) : t("welcome");
+            $("title").textContent = name ? title + ", " + name : title;
+            $("room").textContent = tv.name || "";
+            var wt = welcome ? tx(welcome.text) : "";
+            $("welcomeText").hidden = !wt;
+            $("welcomeText").textContent = wt;
+            var logo = $("logo");
+            var hasLogo = hasBlock(tv, "logo") && tv.logo && /^image\/(png|jpeg)$/.test(tv.logo.mime);
+            logo.hidden = !hasLogo;
+            if (hasLogo) logo.src = "data:" + tv.logo.mime + ";base64," + tv.logo.data_base64;
+            $("flow").innerHTML = cards(tv, ph, at);
+            var bar = $("apps");
+            bar.innerHTML = "";
+            apps.forEach(function (a) {
+              var b = document.createElement("button");
+              b.textContent = appLabel(a);
+              b.setAttribute("data-key", "app:" + a.id);
+              b.onclick = function () {
+                try {
+                  if (bridge && bridge.launch) bridge.launch(a.id);
+                } catch (e) {}
+              };
+              bar.appendChild(b);
+            });
+            var lb = document.createElement("button");
+            lb.textContent = t("lang");
+            lb.setAttribute("data-key", "lang");
+            lb.onclick = function () {
+              lang = lang === "el" ? "en" : "el";
+              render();
+            };
+            bar.appendChild(lb);
+            $("cover").hidden = true;
+            $("main").hidden = false;
+            paginate();
+            var again = focused && document.querySelector('[data-key="' + focused + '"]');
+            focusOn(again || bar.querySelector("button"));
+          }
+          tick();
+        }
+
+        function paginate() {
+          var flow = $("flow");
+          flow.style.transform = "";
+          var width = $("cols").clientWidth + 64;
+          pages = Math.max(1, Math.ceil((flow.scrollWidth + 64) / width));
+          if (page >= pages) page = 0;
+          var pager = $("pager");
+          pager.innerHTML = "";
+          if (pages > 1) {
+            for (var i = 0; i < pages; i++) {
+              var b = document.createElement("button");
+              b.textContent = String(i + 1);
+              b.setAttribute("data-key", "page:" + i);
+              b.className = i === page ? "on" : "";
+              b.onclick = (function (n) {
+                return function () {
+                  showPage(n);
+                };
+              })(i);
+              pager.appendChild(b);
+            }
+          }
+          showPage(page);
+        }
+        function showPage(n) {
+          page = n;
+          var width = $("cols").clientWidth + 64;
+          $("flow").style.transform = "translateX(" + -n * width + "px)";
+          var bs = $("pager").children;
+          for (var i = 0; i < bs.length; i++) bs[i].className = i === n ? "on" : "";
+        }
+
+        function tick() {
+          if (!content || !content.tv || $("main").hidden) return;
+          var tv = content.tv;
+          var at = nowMs();
+          var showClock = hasBlock(tv, "clock") && at !== null;
+          $("clock").hidden = $("date").hidden = !showClock;
+          if (showClock) {
+            $("clock").textContent = fmt(at, { hour: "2-digit", minute: "2-digit" });
+            $("date").textContent = fmt(at, { weekday: "long", day: "numeric", month: "long" });
+          }
+          var w = content.weather;
+          var fresh = w && typeof w.temperature === "number" && content.got && Date.now() - content.got < WEATHER_STALE_MS;
+          $("weather").hidden = !(hasBlock(tv, "weather") && fresh);
+          if (fresh) $("weather").textContent = Math.round(w.temperature) + "°" + (WEATHER[lang === "el" ? "el" : "en"][w.condition] ? " · " + WEATHER[lang === "el" ? "el" : "en"][w.condition] : "");
+          if (phase(tv.stay, at) !== JSON.parse(shown || "[0,0]")[1]) render();
+        }
+
+        // ---- the remote: arrows move between buttons by where they are (Tizen and webOS have no spatial navigation)
+        function move(dx, dy) {
+          var all = Array.prototype.slice.call(document.querySelectorAll("button")).filter(function (b) {
+            return b.offsetParent !== null;
+          });
+          var cur = document.activeElement;
+          if (all.indexOf(cur) < 0) {
+            focusOn(all[0]);
+            return;
+          }
+          var a = cur.getBoundingClientRect();
+          var ax = a.left + a.width / 2;
+          var ay = a.top + a.height / 2;
+          var best = null;
+          var bestScore = Infinity;
+          all.forEach(function (b) {
+            if (b === cur) return;
+            var r = b.getBoundingClientRect();
+            var x = r.left + r.width / 2 - ax;
+            var y = r.top + r.height / 2 - ay;
+            var along = dx ? x * dx : y * dy;
+            var across = dx ? Math.abs(y) : Math.abs(x);
+            if (along <= 1) return;
+            var score = along + across * 2;
+            if (score < bestScore) {
+              bestScore = score;
+              best = b;
+            }
+          });
+          focusOn(best);
+        }
+        document.addEventListener("keydown", function (e) {
+          lastKey = Date.now();
+          var k = e.keyCode;
+          if (!$("gate").hidden && gateKey(e)) return e.preventDefault();
+          if (k === 37 || k === 38 || k === 39 || k === 40) {
+            e.preventDefault();
+            move(k === 37 ? -1 : k === 39 ? 1 : 0, k === 38 ? -1 : k === 40 ? 1 : 0);
+          } else if (k === 4 || k === 10009 || k === 461 || k === 8) {
+            e.preventDefault(); // Back: the welcome page has nowhere to go back to
+          }
+        });
+
+        function fit() {
+          var s = Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
+          var st = $("stage");
+          st.style.transform = "translate(" + (window.innerWidth - 1920 * s) / 2 + "px," + (window.innerHeight - 1080 * s) / 2 + "px) scale(" + s + ")";
+        }
+
+        function alive() {
+          try {
+            if (bridge && bridge.alive) bridge.alive(!!screen);
+          } catch (e) {}
+        }
+
+        // Partner's preview: the editor sends its draft; nothing is paired, polled or kept.
+        window.addEventListener("message", function (e) {
+          if (!preview || e.source !== window.parent || !e.data || !validTv(e.data.tv)) return;
+          content = { version: "preview", tv: e.data.tv, weather: e.data.weather || null, got: Date.now(), timezone: e.data.timezone || "Europe/Athens" };
+          lang = e.data.lang || null;
+          langFor = e.data.tv.stay ? e.data.tv.stay.id : null;
+          render();
+        });
+
+        // ---- start: draw what we have first, then ask the hub
+        window.addEventListener("resize", function () {
+          fit();
+          if (!$("main").hidden) paginate();
+        });
+        fit();
+        render();
+        if (!preview) {
+          if (!screen && /^[A-Za-z0-9_-]{43}$/.test(params.get("pair") || "")) pair({ token: params.get("pair") });
+          poll();
+          alive();
+          setInterval(poll, POLL_MS);
+          setInterval(alive, 30000);
+        }
+        setInterval(tick, 15000);
+        setInterval(function () {
+          if (pages > 1 && Date.now() - lastKey > PAGE_MS) showPage((page + 1) % pages);
+        }, PAGE_MS);
+      })();
+    </script>
+  </body>
+</html>
