@@ -228,6 +228,15 @@ class GuestKeyTest(unittest.TestCase):
         self.assertEqual(status, 304)
 
 
+class LanUrlTest(unittest.TestCase):
+    def test_partner_learns_what_to_type_on_a_tv(self):
+        lan = type("Lan", (), {"ip": "192.168.1.10"})()
+        with mock.patch.object(agent, "panel_lan", return_value=lan), mock.patch.object(agent, "_LAN_URL", {"at": -1e9, "url": None}):
+            self.assertEqual(agent.panel_status()["lan_url"], f"http://192.168.1.10:{agent.PORT}")
+        with mock.patch.object(agent, "panel_lan", side_effect=OSError), mock.patch.object(agent, "_LAN_URL", {"at": -1e9, "url": None}):
+            self.assertIsNone(agent.panel_status()["lan_url"])
+
+
 class PageTest(unittest.TestCase):
     page = (ROOT / "tv.html").read_text(encoding="utf-8")
 

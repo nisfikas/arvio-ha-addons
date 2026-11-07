@@ -1967,6 +1967,21 @@ def panel_lan():
     )
 
 
+_LAN_URL: dict = {"at": -1e9, "url": None}
+
+
+def lan_url() -> str | None:
+    """`http://<LAN ip>:8099`, for what an installer types on a TV (Guest TV, LG «Play via URL»).
+    Cached 5 min: Partner polls panel_status every 2 s during a scan."""
+    if time.monotonic() - _LAN_URL["at"] > 300:
+        try:
+            lan = panel_lan()
+        except Exception:
+            lan = None
+        _LAN_URL.update(at=time.monotonic(), url=f"http://{lan.ip}:{PORT}" if lan else None)
+    return _LAN_URL["url"]
+
+
 def panel_status() -> dict:
     # The panels this hub installed, with the daily ADB check, so Partner can warn.
     known = [
@@ -1976,7 +1991,9 @@ def panel_status() -> dict:
         if isinstance(row, dict) and isinstance(row.get("device"), dict)
     ]
     with PANEL_LOCK:
-        return json.loads(json.dumps({"ok": True, "scan": PANEL_JOBS["scan"], "installs": list(PANEL_JOBS["installs"].values()), "known": known}))
+        out = json.loads(json.dumps({"ok": True, "scan": PANEL_JOBS["scan"], "installs": list(PANEL_JOBS["installs"].values()), "known": known}))
+    out["lan_url"] = lan_url()
+    return out
 
 
 def panel_watch_once() -> None:
