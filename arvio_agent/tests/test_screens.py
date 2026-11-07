@@ -179,6 +179,11 @@ class ScreenStoreTest(unittest.TestCase):
         out = agent.put_wall_screen(self._row(theme={"preset": "afisa", "mode": "light", "icons": "line"}))
         self.assertEqual(out["screen"]["theme"]["preset"], "afisa")
 
+    def test_theme_without_preset_is_afisa(self):
+        # As the domain (DEFAULT_SCREEN_THEME) and panel.html: Αφίσα is the factory look.
+        out = agent.put_wall_screen(self._row(theme={"mode": "light"}))
+        self.assertEqual(out["screen"]["theme"], {"preset": "afisa", "mode": "light", "icons": "line"})
+
     def test_refuses_unknown_theme(self):
         with self.assertRaises(ValueError) as cm:
             agent.put_wall_screen(self._row(theme={"preset": "neon", "mode": "dark", "icons": "line"}))
@@ -762,6 +767,16 @@ class ScreenLanHttpTest(unittest.TestCase):
         self.assertIn("function armHomeIdle()", html)
         self.assertIn('document.addEventListener("pointerdown"', html)
 
+    def test_panel_pairing_survives_a_new_hub_address(self):
+        # localStorage is per origin (http://<hub-ip>:8099): with the app's keep()/kept() the pairing
+        # lives in the app, and only the one-time move from an older page still reads localStorage.
+        html = (ROOT / "panel.html").read_text(encoding="utf-8")
+        start, end = html.index("const pairing = {"), html.index("let lastGood")
+        self.assertIn("shell.keep(k", html[start:end])
+        self.assertIn("shell.kept(k)", html[start:end])
+        rest = html[:start] + html[end:]
+        self.assertNotRegex(rest, r"localStorage\.\w+\((KEY|SECRET_KEY)\b")
+
     def test_panel_shutdown_tiles_run_listed_scripts(self):
         html = (ROOT / "panel.html").read_text(encoding="utf-8")
         self.assertIn("function shutdownMode(t)", html)
@@ -1137,7 +1152,7 @@ class ScreenLanHttpTest(unittest.TestCase):
         self.assertIn('history.replaceState(null, "", location.pathname + location.search)', html)
         self.assertIn("await pairWith({ token: pairToken }", html)
         # the app's hang check: a heartbeat every 30 s, harmless in a browser
-        self.assertIn("const beat = () => window.ArvioPanel && window.ArvioPanel.alive(!!localStorage.getItem(KEY));", html)
+        self.assertIn("const beat = () => window.ArvioPanel && window.ArvioPanel.alive(!!pairing.get(KEY));", html)
         self.assertIn("setInterval(beat, 30000);", html)
 
     def raw(self, path):
@@ -1313,7 +1328,7 @@ class ScreenLanHttpTest(unittest.TestCase):
         # full screen from the home screen, a fresh start when stuck, a spent #pair= left alone
         self.assertIn('<meta name="apple-mobile-web-app-capable" content="yes" />', html)
         self.assertIn('<link rel="apple-touch-icon" href="/panel/icon.png" />', html)
-        self.assertIn("navigator.standalone && localStorage.getItem(KEY)", html)
+        self.assertIn("navigator.standalone && pairing.get(KEY)", html)
         self.assertIn('const r = await fetch("/health", { cache: "no-store" });', html)
         # an agent update reaches the screen: the app itself loads the page only once
         self.assertIn("(v && v !== pageVersion)) location.reload();", html)
@@ -1322,7 +1337,7 @@ class ScreenLanHttpTest(unittest.TestCase):
         html = (ROOT / "panel.html").read_text(encoding="utf-8")
         self.assertIn('"X-Arvio-Lan-Sig": signature', html)
         self.assertNotIn("X-Arvio-Screen-Secret", html)
-        self.assertIn("localStorage.setItem(SECRET_KEY, body.screen_secret)", html)
+        self.assertIn("pairing.set(SECRET_KEY, body.screen_secret)", html)
         # every /api/screens* request goes through screenFetch: no bare fetch, no <img src>, no CSS url()
         self.assertEqual(re.findall(r'(?<![A-Za-z])fetch\(\s*"/api/screens', html), [])
         self.assertNotIn("url('/api/screens", html)

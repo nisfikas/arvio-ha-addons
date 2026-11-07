@@ -509,7 +509,7 @@ def parse_screen_theme(raw) -> dict | None:
         raise ValueError("invalid_theme")
     preset = raw.get("preset")
     if preset in (None, ""):
-        preset = "grafitis"
+        preset = "afisa"
     if preset not in SCREEN_THEME_PRESETS:
         raise ValueError("invalid_theme")
     mode = raw.get("mode")

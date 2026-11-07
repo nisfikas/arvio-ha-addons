@@ -1341,6 +1341,23 @@
       })();
       const KEY = "arvio.panel.screen_id";
       const SECRET_KEY = "arvio.panel.screen_secret";
+      // localStorage belongs to http://<hub-ip>:8099: when the hub gets a new DHCP address the app
+      // finds it again, and the page there would start unpaired. An app with keep()/kept() holds
+      // the pairing itself (plan 2026-11-07-guest-tv §3.4); a pairing from before moves there once.
+      const shell = window.ArvioPanel && window.ArvioPanel.keep && window.ArvioPanel.kept ? window.ArvioPanel : null;
+      const pairing = {
+        get: (k) => (shell ? shell.kept(k) || null : localStorage.getItem(k)),
+        set: (k, v) => (shell ? shell.keep(k, v || "") : v ? localStorage.setItem(k, v) : localStorage.removeItem(k)),
+      };
+      if (shell && localStorage.getItem(KEY)) {
+        if (!shell.kept(KEY)) {
+          pairing.set(KEY, localStorage.getItem(KEY));
+          pairing.set(SECRET_KEY, localStorage.getItem(SECRET_KEY));
+        }
+        // moved, not copied: a copy left here would come back after the panel was unpaired
+        localStorage.removeItem(KEY);
+        localStorage.removeItem(SECRET_KEY);
+      }
       let lastGood = Date.now(); // last snapshot the hub answered (the page's own watchdog, below)
       const DOOR_LINES = {
         repair_required: "Κάποιος στο κουδούνι. Για κάμερα και πόρτα, το πάνελ πρέπει να συνδεθεί ξανά.",
@@ -1626,7 +1643,7 @@
 
       // The pairing secret never leaves the panel: every request signs a one-time code from the hub (ADR 017).
       async function screenFetch(url, init) {
-        const secret = localStorage.getItem(SECRET_KEY);
+        const secret = pairing.get(SECRET_KEY);
         if (!secret) return fetch(url, init);
         const { nonce } = await (await fetch("/v1/lan/nonce", { cache: "no-store" })).json();
         const at = new URL(url, location.href);
@@ -3279,7 +3296,7 @@
       }
 
       async function load(keepPage) {
-        const sid = localStorage.getItem(KEY);
+        const sid = pairing.get(KEY);
         if (!sid) {
           screen = null;
           gate.classList.remove("hidden");
@@ -3299,8 +3316,8 @@
             miss += 1;
             if (miss < 3) return;
             miss = 0;
-            localStorage.removeItem(KEY);
-            localStorage.removeItem(SECRET_KEY);
+            pairing.set(KEY, "");
+            pairing.set(SECRET_KEY, "");
             return load(false);
           }
           if (!r.ok) return;
@@ -3436,9 +3453,8 @@
           gateErr.textContent = failText;
           return false;
         }
-        localStorage.setItem(KEY, body.screen_id);
-        if (body.screen_secret) localStorage.setItem(SECRET_KEY, body.screen_secret);
-        else localStorage.removeItem(SECRET_KEY);
+        pairing.set(KEY, body.screen_id);
+        pairing.set(SECRET_KEY, body.screen_secret);
         document.getElementById("code").value = "";
         await load(false);
         armHomeIdle();
@@ -3617,18 +3633,18 @@
         if (pairToken) history.replaceState(null, "", location.pathname + location.search);
         // An iPad's home-screen icon keeps its first URL, #pair= included: once that iPad is
         // paired, the spent token is left alone instead of counting as a wrong attempt.
-        const spent = pairToken && navigator.standalone && localStorage.getItem(KEY);
+        const spent = pairToken && navigator.standalone && pairing.get(KEY);
         const paired =
           pairToken &&
           !spent &&
           (await pairWith({ token: pairToken }, "Η αυτόματη σύζευξη δεν έγινε. Βάλε τον κωδικό από τον Partner."));
-        if (!paired && localStorage.getItem(KEY)) {
+        if (!paired && pairing.get(KEY)) {
           gate.classList.add("hidden");
           await load(true).catch(() => {});
           armHomeIdle();
         }
         setInterval(() => {
-          if (localStorage.getItem(KEY)) load(true).catch(() => {});
+          if (pairing.get(KEY)) load(true).catch(() => {});
         }, 4000);
         setInterval(paintTime, 1000);
       })();
@@ -3636,7 +3652,7 @@
       // Arvio Panel app (docs/ADR/012): a heartbeat; without it for 2 min the app replaces a
       // hung page. A browser has no ArvioPanel, so this does nothing there.
       // alive(true) once paired: the app (device owner, release build) then locks ADB away.
-      const beat = () => window.ArvioPanel && window.ArvioPanel.alive(!!localStorage.getItem(KEY));
+      const beat = () => window.ArvioPanel && window.ArvioPanel.alive(!!pairing.get(KEY));
       beat();
       setInterval(beat, 30000);
 
@@ -3646,7 +3662,7 @@
       // Safari leaks memory over days). All only when /health answers, so no error page ever shows.
       const PAGE_BORN = Date.now();
       setInterval(async () => {
-        if (PREVIEW || !localStorage.getItem(KEY)) return;
+        if (PREVIEW || !pairing.get(KEY)) return;
         const stale = !window.ArvioPanel && Date.now() - lastGood > 3 * 60000; // the app has its own watchdog
         const nightly = !window.ArvioPanel && new Date().getHours() === 4 && Date.now() - PAGE_BORN > 3600000;
         try {
