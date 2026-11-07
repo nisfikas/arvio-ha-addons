@@ -1177,6 +1177,65 @@ class ScreenLanHttpTest(unittest.TestCase):
         self.assertNotIn("arvio.panel_pair_link", agent.LAN_ALLOWED_ACTIONS)
         self.assertIn("arvio.panel_pair_link", agent.AGENT_SERVICE_ALLOWLIST)
 
+    def test_panel_screenshot_is_asked_once_and_kept_only_in_memory(self):
+        """Partner's «Στιγμιότυπο»: the panel answers once, signed, and only while an order waits."""
+        sid = "scr_aaaaaaaaaaaaaaaa"
+        ask = lambda s=sid: agent.execute_action("arvio.panel_screenshot", "", {"screen_id": s})
+        get = lambda: agent.execute_action("arvio.panel_screenshot_get", "", {"screen_id": sid})
+        def read():
+            status, raw = self.request("GET", f"/api/screens?screen_id={sid}", secret=secret)
+            self.assertEqual(status, 200)
+            return json.loads(raw)["screens"][0]
+        def put(body, key=None):
+            status, raw = self.request("POST", "/api/screens/screenshot", body={"screen_id": sid, **body}, secret=key)
+            return status, json.loads(raw)
+        jpeg = "data:image/jpeg;base64," + base64.b64encode(b"\xff\xd8\xff\xe0" + b"x" * 64).decode()
+
+        agent.PANEL_SHOTS.clear()
+        self.assertEqual(ask("scr_nope")["error"], "screen_not_found")
+        agent.put_wall_screen(self._row())
+        self.assertEqual(ask()["error"], "screen_not_paired")
+        secret = self._paired()
+        self.assertNotIn("screenshot", read())
+        self.assertIsNone(get()["data_base64"])
+        # nothing goes up unasked
+        self.assertEqual(put({"image": jpeg}, secret), (403, {"ok": False, "error": "no_screenshot_asked"}))
+        self.assertTrue(ask()["ok"])
+        agent.put_wall_screen(self._row())  # a layout pushed in between keeps the order
+        self.assertNotIn("screenshot", agent.list_wall_screens()["screens"][0])
+        self.assertIs(read()["screenshot"], True)
+        self.assertIs(read()["screenshot"], True)  # until the picture comes
+        # only the paired panel, and only a JPEG
+        self.assertEqual(put({"image": jpeg})[0], 403)
+        self.assertEqual(put({"image": jpeg}, "someone-else")[0], 403)
+        self.assertEqual(put({"image": "data:image/jpeg;base64,iVBORw0KGgo="}, secret), (400, {"ok": False, "error": "invalid_screenshot"}))
+        self.assertEqual(put({"refused": "whatever"}, secret)[0], 400)
+        self.assertEqual(put({"image": jpeg}, secret), (200, {"ok": True}))
+        out = get()
+        self.assertEqual(base64.b64decode(out["data_base64"])[:3], b"\xff\xd8\xff")
+        self.assertEqual(out["mime"], "image/jpeg")
+        self.assertIsNone(out["refused"])
+        self.assertNotIn("screenshot", read())  # answered: the order is gone
+        self.assertEqual(put({"image": jpeg}, secret)[0], 403)
+        # the doorbell's camera on screen: a refusal, and no picture
+        self.assertTrue(ask()["ok"])
+        self.assertEqual(put({"refused": "private"}, secret)[0], 200)
+        self.assertEqual((get()["refused"], get()["data_base64"]), ("private", None))
+        # never on the disk, and gone after a while
+        self.assertNotIn("data_base64", json.dumps(agent.load_screens()))
+        with mock.patch.object(agent.time, "time", return_value=agent.time.time() + agent.PANEL_SHOT_KEEP_S + 1):
+            self.assertIsNone(get()["taken_at"])
+        # an order the panel never took is void after its window
+        self.assertTrue(ask()["ok"])
+        with mock.patch.object(agent.time, "time", return_value=agent.time.time() + agent.PANEL_SHOT_TTL_S + 1):
+            self.assertNotIn("screenshot", read())
+        self.assertNotIn("arvio.panel_screenshot", agent.LAN_ALLOWED_ACTIONS)
+        self.assertIn("arvio.panel_screenshot", agent.AGENT_SERVICE_ALLOWLIST)
+        self.assertIn("arvio.panel_screenshot_get", agent.AGENT_SERVICE_ALLOWLIST)
+        html = (ROOT / "panel.html").read_text(encoding="utf-8")
+        self.assertIn("if (found.screenshot) takeScreenshot(sid);", html)
+        self.assertIn('body = { screen_id: sid, refused: "private" };', html)
+
     def test_panel_restart_is_one_order_taken_once(self):
         """Partner's «Επανεκκίνηση»: never a boot loop, never a surprise for a panel back later."""
         restart = lambda sid="scr_aaaaaaaaaaaaaaaa": agent.execute_action("arvio.panel_restart", "", {"screen_id": sid})
@@ -1265,7 +1324,7 @@ class ScreenLanHttpTest(unittest.TestCase):
         self.assertEqual(re.findall(r'(?<![A-Za-z])fetch\(\s*"/api/screens', html), [])
         self.assertNotIn("url('/api/screens", html)
         self.assertNotRegex(html, r'\.src\s*=\s*"/api/screens')
-        self.assertEqual(len(re.findall(r'screen(?:Fetch|BlobUrl)\(\s*"/api/screens', html)), 5)
+        self.assertEqual(len(re.findall(r'screen(?:Fetch|BlobUrl)\(\s*"/api/screens', html)), 6)
         self.assertNotRegex(html, r'[?&]secret=')
         # the hub's refusals become calm Greek lines, not silence
         self.assertIn("repair_required:", html)

@@ -3338,6 +3338,50 @@
         if (sheet) renderSheet();
         syncDoorbell();
         paintTime();
+        if (found.screenshot) takeScreenshot(sid);
+      }
+
+      // «Στιγμιότυπο» in Partner, asked once by the hub: what this window shows, taken by the Arvio Panel
+      // app. Never with the doorbell's camera or an open sheet on screen: those answer «private».
+      let shotBusy = false;
+      async function takeScreenshot(sid) {
+        if (shotBusy) return;
+        shotBusy = true;
+        let body;
+        if (!doorbellEl.classList.contains("hidden") || sheet) body = { screen_id: sid, refused: "private" };
+        else if (!(window.ArvioPanel && window.ArvioPanel.screenshot)) body = { screen_id: sid, refused: "no_app" };
+        else {
+          try {
+            body = { screen_id: sid, image: await nativeShot() };
+          } catch (e) {
+            body = { screen_id: sid, refused: "capture_failed" };
+          }
+        }
+        try {
+          await screenFetch("/api/screens/screenshot", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+        } catch (e) {
+          // the order stands until it expires: the next read tries again
+        }
+        shotBusy = false;
+      }
+      function nativeShot() {
+        return new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            window.__arvioShot = null;
+            reject(new Error("timeout"));
+          }, 8000);
+          window.__arvioShot = (data) => {
+            clearTimeout(timer);
+            window.__arvioShot = null;
+            if (typeof data === "string" && data.indexOf("data:image/jpeg;base64,") === 0) resolve(data);
+            else reject(new Error("capture_failed"));
+          };
+          window.ArvioPanel.screenshot();
+        });
       }
 
       async function pair() {

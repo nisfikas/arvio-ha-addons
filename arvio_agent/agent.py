@@ -60,7 +60,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.86"
+AGENT_VERSION = "0.1.87"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -1801,7 +1801,7 @@ def _put_wall_screen(payload: dict | None, entity_id: str = "") -> dict:
         "updated_at": str(payload.get("updated_at") or now_iso()),
     }
     # Hub-only (pair_wall_screen, mint_screen_pair_token, panel installs): the cloud never sends them.
-    for key in ("screen_secret_hash", "pair_token_hash", "pair_token_expires_at", "device", "restart_until"):
+    for key in ("screen_secret_hash", "pair_token_hash", "pair_token_expires_at", "device", "restart_until", "shot_until"):
         if prev.get(key):
             row[key] = prev[key]
     if "wallpaper_scrim" in prev:
@@ -1855,6 +1855,12 @@ def list_wall_screens() -> dict:
 # restart drops a job, and Partner says «Διακόπηκε» (plan §11 row 14).
 PANEL_ADB = panel_install.Adb(DATA / "adb")
 PANEL_RESTART_TTL_S = 120
+PANEL_SHOT_TTL_S = 120
+PANEL_SHOT_KEEP_S = 600
+PANEL_SHOT_MAX_BYTES = 600_000
+# private: a doorbell's camera or an open sheet is on the screen. no_app: an iPad, a browser, an older app.
+PANEL_SHOT_REFUSALS = ("private", "no_app", "capture_failed")
+PANEL_SHOTS: dict[str, dict] = {}
 PANEL_FONTS = {
     f"/panel/fonts/{name}-{subset}.woff2"
     for name in ("text", "display", "didot", "alegreya", "comfortaa", "firacode", "commissioner", "garamond", "garamond-italic", "firacond")
@@ -2060,6 +2066,70 @@ def panel_restart(payload: dict) -> dict:
     return {"ok": True, "expires_in": PANEL_RESTART_TTL_S}
 
 
+def panel_screenshot(payload: dict) -> dict:
+    """«Στιγμιότυπο» in Partner: one order for one paired screen, like «Επανεκκίνηση». The panel answers
+    once with a picture of its own window, or with why not; the order is void after PANEL_SHOT_TTL_S."""
+    sid = str(payload.get("screen_id") or "")
+    with SCREENS_LOCK:
+        doc = load_screens()
+        row = doc["screens"].get(sid)
+        if not isinstance(row, dict):
+            return {"ok": False, "error": "screen_not_found"}
+        if not row.get("screen_secret_hash"):
+            return {"ok": False, "error": "screen_not_paired"}
+        row["shot_until"] = time.time() + PANEL_SHOT_TTL_S
+        save_screens(doc)
+    return {"ok": True, "expires_in": PANEL_SHOT_TTL_S}
+
+
+def panel_screenshot_get(payload: dict) -> dict:
+    """The last answer to «Στιγμιότυπο», for PANEL_SHOT_KEEP_S. In memory only: never on the disk."""
+    sid = str(payload.get("screen_id") or "")
+    shot = PANEL_SHOTS.get(sid)
+    if not shot or time.time() - shot["t"] > PANEL_SHOT_KEEP_S:
+        PANEL_SHOTS.pop(sid, None)
+        return {"ok": True, "taken_at": None, "data_base64": None, "refused": None}
+    data = shot.get("data")
+    return {
+        "ok": True,
+        "taken_at": shot["at"],
+        "mime": "image/jpeg" if data else None,
+        "data_base64": base64.b64encode(data).decode("ascii") if data else None,
+        "refused": shot.get("refused"),
+    }
+
+
+def panel_screenshot_put(screen_id: str, secret: str | None, body: dict) -> dict:
+    """POST /api/screens/screenshot from the panel: only a signed panel, only while an order waits."""
+    with SCREENS_LOCK:
+        doc = load_screens()
+        row = doc["screens"].get(str(screen_id))
+        if not isinstance(row, dict):
+            raise ScreenDenied("screen_not_found")
+        check_screen_secret(row, secret, door=True)
+        if float(row.get("shot_until") or 0) <= time.time():
+            raise ScreenDenied("no_screenshot_asked")
+        refused = body.get("refused")
+        data = None
+        if refused is not None:
+            if refused not in PANEL_SHOT_REFUSALS:
+                raise ValueError("invalid_screenshot")
+        else:
+            raw = str(body.get("image") or "")
+            if raw.startswith("data:image/jpeg;base64,"):
+                raw = raw[len("data:image/jpeg;base64,"):]
+            try:
+                data = base64.b64decode(raw, validate=True)
+            except ValueError:  # binascii.Error is one
+                raise ValueError("invalid_screenshot") from None
+            if not data.startswith(b"\xff\xd8\xff") or len(data) > PANEL_SHOT_MAX_BYTES:
+                raise ValueError("invalid_screenshot")
+        row.pop("shot_until", None)
+        save_screens(doc)
+    PANEL_SHOTS[str(screen_id)] = {"t": time.time(), "at": now_iso(), "data": data, "refused": refused}
+    return {"ok": True}
+
+
 def screen_for_pair_token(token: str) -> dict | None:
     if not PAIR_TOKEN_RE.fullmatch(token or ""):
         return None
@@ -2226,6 +2296,7 @@ def panel_snapshot(screen_id: str | None = None, secret: str | None = None) -> d
         check_screen_secret(row, secret)
         row["last_seen_at"] = now_iso()
         restart = float(row.pop("restart_until", 0) or 0) > time.time()
+        shot = float(row.get("shot_until") or 0) > time.time()
         save_screens(doc)
     entities_out = []
     areas_out = []
@@ -2325,6 +2396,8 @@ def panel_snapshot(screen_id: str | None = None, secret: str | None = None) -> d
     ]
     if restart:
         screens[0]["restart"] = True
+    if shot:
+        screens[0]["screenshot"] = True
     attach_doorbell_live(screens, states)
     plans = load_floor_plans().get("plans") or {}
     return {
@@ -5522,6 +5595,10 @@ def execute_action(
         return panel_pair_link(payload)
     if action == "arvio.panel_restart":
         return panel_restart(payload)
+    if action == "arvio.panel_screenshot":
+        return panel_screenshot(payload)
+    if action == "arvio.panel_screenshot_get":
+        return panel_screenshot_get(payload)
     if action == "arvio.put_screen":
         return put_wall_screen(payload, entity_id)
     if action == "arvio.put_floor_plan":
@@ -6008,6 +6085,8 @@ AGENT_SERVICE_ALLOWLIST = frozenset(
         "arvio.panel_status",
         "arvio.panel_pair_link",
         "arvio.panel_restart",
+        "arvio.panel_screenshot",
+        "arvio.panel_screenshot_get",
         "arvio.put_screen",
         "arvio.put_floor_plan",
         "arvio.delete_screen",
@@ -10161,6 +10240,16 @@ class H(BaseHTTPRequestHandler):
                 except ValueError as e:
                     status = 429 if str(e) == "pairing_locked" else 400
                     return self._j(status, {"ok": False, "error": str(e)})
+                return self._j(200, out)
+
+            if path == "/api/screens/screenshot":
+                body = self._read_json()
+                try:
+                    out = panel_screenshot_put(str(body.get("screen_id") or ""), self._panel(), body)
+                except ScreenDenied as e:
+                    return self._j(403, {"ok": False, "error": str(e)})
+                except ValueError as e:
+                    return self._j(400, {"ok": False, "error": str(e)})
                 return self._j(200, out)
 
             if path == "/api/screens/doorbell/unlock":
