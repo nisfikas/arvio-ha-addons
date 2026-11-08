@@ -63,7 +63,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.88"
+AGENT_VERSION = "0.1.89"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -787,6 +787,8 @@ DEVICE_WATCH_EVERY_S = 300
 DEVICE_WATCH_AFTER_S = 30 * 60
 # ponytail: a whole integration falling over reports five devices; the rest are marked reported.
 DEVICE_WATCH_PER_TICK = 5
+# No device to lose: a Yubii that blinks marks its scenes unavailable too, and they are not «off the network».
+DEVICE_WATCH_NOT_DEVICES = frozenset({"scene", "script", "event", "todo"})
 
 
 def home_event_code(entity_id: str, new_state, old_state) -> str | None:
@@ -982,21 +984,53 @@ def _unavailable_since(state: dict, now: float) -> bool:
     return now - at >= DEVICE_WATCH_AFTER_S
 
 
+def _device_watch_main(rows: list[dict]) -> dict:
+    """The row a device is told by: the thing itself (the cover, the AC), not its power or its thermometer."""
+    return min(rows, key=lambda s: (str(s["entity_id"]).split(".", 1)[0] in ("sensor", "binary_sensor"), len(str(s["entity_id"]))))
+
+
+def _device_watch_fold(rows: list[dict], entity_regs: dict) -> dict[str, dict]:
+    """Without a device registry, `camera.x` and `switch.x_night_vision` from one driver are one doorbell: the
+    shortest id starts the others. A number after it is another device (`light.lobby_2`), not a part."""
+    out: dict[str, dict] = {}
+    for s in sorted(rows, key=lambda s: len(str(s["entity_id"]))):
+        eid = str(s["entity_id"])
+        obj, platform = eid.split(".", 1)[1], (entity_regs.get(eid) or {}).get("platform")
+        part_of = any(
+            (entity_regs.get(key) or {}).get("platform") == platform
+            and obj.startswith(f"{key.split('.', 1)[1]}_")
+            and not obj[len(key.split(".", 1)[1]) + 1 :].isdigit()
+            for key in out
+        )
+        if not part_of:
+            out[eid] = s
+    return out
+
+
 def device_watch_tick(states, entity_regs, now: float | None = None, path=None) -> list[tuple[str, str]]:
     """Devices with every home entity unavailable past the limit, once per outage: what has been reported
     stays on disk, so an agent restart in the middle does not report it again. Returns (entity_id, name)."""
     now = time.time() if now is None else now
     path = path or DEVICE_WATCH_FILE
+    entity_regs = entity_regs or {}
     groups: dict[str, list[dict]] = {}
+    loose: list[dict] = []
     for state in states or []:
         eid = str(state.get("entity_id") or "") if isinstance(state, dict) else ""
-        if eid.split(".", 1)[0] not in HOME_ENTITY_DOMAINS:
+        domain = eid.split(".", 1)[0]
+        if domain not in HOME_ENTITY_DOMAINS or domain in DEVICE_WATCH_NOT_DEVICES:
             continue
-        reg = entity_regs.get(eid) if entity_regs else None
+        reg = entity_regs.get(eid)
         if reg and reg.get("hidden"):
             continue
-        groups.setdefault(str((reg or {}).get("device_id") or eid), []).append(state)
-    down = {key: rows[0] for key, rows in groups.items() if all(_unavailable_since(r, now) for r in rows)}
+        if reg and reg.get("device_id"):
+            groups.setdefault(str(reg["device_id"]), []).append(state)
+        # No device registry (Arvio Core): a sensor alone is a measure of something else, its power, its
+        # energy, an AC's own thermometer, and says nothing the thing itself does not say.
+        elif domain != "sensor" and _unavailable_since(state, now):
+            loose.append(state)
+    down = {key: _device_watch_main(rows) for key, rows in groups.items() if all(_unavailable_since(r, now) for r in rows)}
+    down.update(_device_watch_fold(loose, entity_regs))
     try:
         reported = set(json.loads(path.read_text()))
     except (OSError, ValueError, TypeError):
