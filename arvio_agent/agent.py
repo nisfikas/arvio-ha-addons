@@ -60,7 +60,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.87"
+AGENT_VERSION = "0.1.88"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -845,7 +845,7 @@ ACTIVITY_MAX_AGE_S = 30 * 86400
 ACTIVITY_READ_MAX = 300
 ACTIVITY_FLUSH_S = 60
 ACTIVITY_DOMAINS = frozenset(
-    {"light", "switch", "cover", "climate", "lock", "alarm_control_panel", "fan", "vacuum", "media_player", "binary_sensor", "siren", "valve"}
+    {"light", "switch", "cover", "climate", "lock", "alarm_control_panel", "fan", "vacuum", "humidifier", "media_player", "binary_sensor", "siren", "valve"}
 )
 # Someone moving through their own house is not the installer's business: it says when people were home.
 ACTIVITY_PRIVATE_CLASSES = frozenset({"motion", "occupancy", "presence", "moving", "sound", "vibration"})
@@ -5295,6 +5295,15 @@ def build_service_data(action: str, entity_id: str, payload: dict, ha_version=No
         if not payload.get("level"):
             raise ValueError("level required")
         data["level"] = str(payload["level"])[:40]
+    elif action == "humidifier.set_humidity":
+        humidity = payload.get("humidity")
+        if isinstance(humidity, bool) or not isinstance(humidity, (int, float)) or not 0 <= humidity <= 100 or humidity != int(humidity):
+            raise ValueError("humidity must be a whole percent")
+        data["humidity"] = int(humidity)
+    elif action == "humidifier.set_mode":
+        if not isinstance(payload.get("mode"), str) or not payload["mode"]:
+            raise ValueError("mode required")
+        data["mode"] = payload["mode"][:40]
     elif action in ("lock.lock", "lock.unlock", "lock.open") or action.startswith(
         "alarm_control_panel."
     ):
@@ -5668,7 +5677,23 @@ def execute_action(
     if not entity_id:
         raise ValueError("entity_id required")
     service, data = build_service_data(action, entity_id, payload, HA_INFO.get("version"))
+    if action in ("humidifier.set_humidity", "humidifier.set_mode"):
+        current = ha(f"/states/{entity_id}")
+        attrs = current.get("attributes") if isinstance(current, dict) else None
+        check_humidifier_data(action, data, attrs if isinstance(attrs, dict) else {})
     return call_service(domain, service, data)
+
+
+def check_humidifier_data(action: str, data: dict, attrs: dict) -> None:
+    """A target inside the device's own bounds, a mode it lists (pure). Unknown bounds: the driver judges."""
+    if action == "humidifier.set_humidity":
+        low, high = _num(attrs.get("min_humidity")), _num(attrs.get("max_humidity"))
+        if (low is not None and data["humidity"] < low) or (high is not None and data["humidity"] > high):
+            raise ValueError("humidity outside the device's range")
+    elif action == "humidifier.set_mode":
+        modes = _str_list(attrs.get("available_modes"))
+        if data["mode"] not in modes:
+            raise ValueError("mode not offered by the device")
 
 
 def run_batch(cmd: dict, via: str = "relay") -> dict:
@@ -5836,6 +5861,7 @@ HOME_ENTITY_DOMAINS = (
     "todo",
     "camera",
     "vacuum",
+    "humidifier",  # humidifiers and dehumidifiers (docs/plans/2026-11-08-dehumidifier-card.md in the arvio repo)
     "event",  # a remote: Partner lists it, Home and panels have nothing to do with it
 )
 HOME_SENSOR_DEVICE_CLASSES = ("temperature", "humidity")
@@ -5893,6 +5919,18 @@ VACUUM_ACTIONS = frozenset(
         "vacuum.set_mop_level",
     }
 )
+# The humidifier services Home may send (domain HOME_HUMIDIFIER_ACTIONS): HA's own, comfort like a switch.
+HUMIDIFIER_ACTIONS = frozenset(
+    {
+        "humidifier.turn_on",
+        "humidifier.turn_off",
+        "humidifier.toggle",
+        "humidifier.set_humidity",
+        "humidifier.set_mode",
+    }
+)
+# HA HumidifierAction values; anything else is not one.
+HUMIDIFIER_ACTION_VALUES = ("drying", "humidifying", "idle", "off")
 CAMERA_HANDLERS = frozenset({"onvif", "generic"})
 CAMERA_ENTITY_RE = re.compile(r"^camera\.[a-z0-9_]+$")
 CAMERA_SNAPSHOT_WIDTH_MIN = 96
@@ -5998,6 +6036,7 @@ LAN_SCENARIO_PAYLOAD_KEYS = frozenset({"id", "scenario_id"})
 LAN_CLIMATE_ACTIONS = frozenset({"climate.set_temperature", "climate.set_hvac_mode"})
 LAN_CLIMATE_PAYLOAD_KEYS = frozenset({"temperature", "hvac_mode"})
 LAN_VACUUM_PAYLOAD_KEYS = frozenset({"fan_speed", "level"})
+LAN_HUMIDIFIER_PAYLOAD_KEYS = frozenset({"humidity", "mode"})
 MEDIA_ART_MAX_PX = 256
 MEDIA_ART_JPEG_QUALITY = 80
 MEDIA_ART_WIRE_MAX_BYTES = 40 * 1024  # hard cap for data_base64's decoded bytes
@@ -6110,6 +6149,8 @@ AGENT_SERVICE_ALLOWLIST = frozenset(
     | INTEGRATION_AGENT_ACTIONS
     # Vacuum card: start / pause / stop / return_to_base / locate — comfort, like a cover.
     | VACUUM_ACTIONS
+    # Dehumidifier card: on / off / target / mode — comfort, like a switch.
+    | HUMIDIFIER_ACTIONS
 )
 
 # Mirrors HOME_DANGEROUS_ACTIONS / HOME_SECURITY_ACTIONS in home-model.ts.
@@ -6175,6 +6216,8 @@ LAN_ALLOWED_ACTIONS = frozenset(
     | MUSIC_ASSISTANT_ACTIONS
     # Vacuum card: start / pause / stop / return_to_base / locate — comfort, like a cover.
     | VACUUM_ACTIONS
+    # Dehumidifier card: on / off / target / mode — comfort, like a switch.
+    | HUMIDIFIER_ACTIONS
 )
 LAN_SCRIPT_PREFIX = "script.arvio_"
 
@@ -7130,6 +7173,11 @@ def entity_capabilities(domain: str, attrs: dict) -> dict:
             "locate": bool(sf & VACUUM_FEATURE["LOCATE"]),
             "fan_speed": bool(sf & VACUUM_FEATURE["FAN_SPEED"]),
         }
+    if domain == "humidifier":
+        return {
+            "humidity": all(_num(attrs.get(k)) is not None for k in ("humidity", "min_humidity", "max_humidity")),
+            "modes": bool(_str_list(attrs.get("available_modes"))),
+        }
     return {
         "brightness": domain == "light"
         and (
@@ -7295,6 +7343,16 @@ def typed_attrs(
         out["cleaned_area"] = _num(attrs.get("cleaned_area"))
         out["cleaning_time"] = _num(attrs.get("cleaning_time"))
         out["supported_features"] = _int_or_none(attrs.get("supported_features"))
+    elif domain == "humidifier":
+        for key in ("humidity", "current_humidity", "min_humidity", "max_humidity"):
+            out[key] = _num(attrs.get(key))
+        if _num(attrs.get("target_humidity_step")) is not None:  # Arvio's own: absent means 1
+            out["target_humidity_step"] = _num(attrs.get("target_humidity_step"))
+        out["mode"] = str(attrs["mode"])[:40] if attrs.get("mode") else None
+        modes = attrs.get("available_modes")
+        out["available_modes"] = [str(m)[:40] for m in modes[:12]] if isinstance(modes, list) else []
+        action = attrs.get("action")
+        out["action"] = str(action) if action in HUMIDIFIER_ACTION_VALUES else None
     return out
 
 
@@ -10343,6 +10401,11 @@ class H(BaseHTTPRequestHandler):
                     raw_payload = body.get("payload") if isinstance(body.get("payload"), dict) else {}
                     cmd["payload"] = {
                         k: v for k, v in raw_payload.items() if k in LAN_VACUUM_PAYLOAD_KEYS
+                    }
+                elif action in HUMIDIFIER_ACTIONS:
+                    raw_payload = body.get("payload") if isinstance(body.get("payload"), dict) else {}
+                    cmd["payload"] = {
+                        k: v for k, v in raw_payload.items() if k in LAN_HUMIDIFIER_PAYLOAD_KEYS
                     }
                 ack = handle_command(cmd, via="lan", screen_secret=self._panel(), lan_app=self._app())
                 if not ack.get("ok"):
