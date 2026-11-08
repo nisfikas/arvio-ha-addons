@@ -24,7 +24,7 @@ RUN chmod a+x /run.sh
 
 LABEL \
   io.hass.name="Arvio Agent" \
-  io.hass.version="0.1.87" \
+  io.hass.version="0.1.88" \
   io.hass.type="addon" \
   io.hass.arch="aarch64|amd64|armv7"
 
