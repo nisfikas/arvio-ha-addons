@@ -777,6 +777,7 @@
         font-size: 1.05rem;
       }
       .cv-btns button.on { color: var(--on-text); border-color: var(--on-text); }
+      #sheet[data-kind="media_player"] .cv-btns { grid-template-columns: 1fr; }
       @media (prefers-reduced-motion: reduce) {
         .cv-shade { transition: none; }
       }
@@ -1574,6 +1575,9 @@
         vacuum: '<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="9" r="2.2"/><path d="M7.5 15.5h9"/>',
       };
       const ROOM_DOMAINS = { light: 1, switch: 1, cover: 1, climate: 1, media_player: 1, vacuum: 1 };
+      // A press on these opens their sheet (kind = domain) instead of toggling: a speaker that only
+      // paused left nothing else to do (SFK HQ iPad, 2026-11-09).
+      const SHEET_DOMAINS = { climate: 1, cover: 1, vacuum: 1, media_player: 1 };
       const gate = document.getElementById("gate");
       const board = document.getElementById("board");
       const pagesEl = document.getElementById("pages");
@@ -2470,11 +2474,18 @@
             setOverlay(e.entity_id, { state: "off", hvac_mode: "off" });
             cmd("climate.turn_off", e.entity_id);
           }
-        } else if (e.domain === "media_player") {
-          const next = e.state === "playing" ? "paused" : "playing";
-          setOverlay(e.entity_id, { state: next });
-          cmd(next === "playing" ? "media_player.media_play" : "media_player.media_pause", e.entity_id);
         }
+      }
+      /** «Παίξε ξανά» once a speaker has stopped: what it last had, if it still says what that was. */
+      function mediaCommand(e, act) {
+        if (!e) return;
+        setOverlay(e.entity_id, { state: act === "media_pause" ? "paused" : "playing" });
+        if (act === "play_media") {
+          cmd("media_player.play_media", e.entity_id, {
+            media_content_id: e.media_content_id,
+            media_content_type: e.media_content_type || "music",
+          });
+        } else cmd("media_player." + act, e.entity_id);
       }
       function planForFloor(floorId) {
         return (snap.floor_plans || []).find((p) => p.floor_id === floorId) || null;
@@ -2521,16 +2532,8 @@
       }
       function openPinSheet(eid) {
         const e = byId(eid) || { entity_id: eid, domain: String(eid).split(".")[0], state: "off" };
-        if (e.domain === "climate") {
-          openSheet({ kind: "climate", ref: eid });
-          return;
-        }
-        if (e.domain === "cover") {
-          openSheet({ kind: "cover", ref: eid });
-          return;
-        }
-        if (e.domain === "vacuum") {
-          openSheet({ kind: "vacuum", ref: eid });
+        if (SHEET_DOMAINS[e.domain]) {
+          openSheet({ kind: e.domain, ref: eid });
           return;
         }
         if (e.area_id) openSheet(roomSheet(e.area_id));
@@ -2543,12 +2546,7 @@
         }
         floor3dSel = eid;
         const e = byId(eid) || { entity_id: eid, domain: String(eid).split(".")[0], state: "off" };
-        if (e.domain === "climate") {
-          openSheet({ kind: "climate", ref: eid });
-          render();
-          return;
-        }
-        if (e.domain === "cover" || e.domain === "vacuum") {
+        if (SHEET_DOMAINS[e.domain]) {
           openSheet({ kind: e.domain, ref: eid });
           render();
           return;
@@ -2659,7 +2657,7 @@
           sheetTitle.textContent = "Καιρός";
           if (!w) {
             sheetSub.textContent = "";
-            sheetBody.innerHTML = "<p>Ο καιρός θα φανεί μόλις μπει η διεύθυνση του σπιτιού.</p>";
+            sheetBody.innerHTML = "<p>Δεν υπάρχει ακόμα πρόγνωση για αυτό το σπίτι.</p>";
           } else {
             const humidity = weatherHumidity();
             const hours = w.hourly || [];
@@ -2852,6 +2850,35 @@
             (away && caps.home ? '<button type="button" data-vac-act="return_to_base">Βάση</button>' : "") +
             (caps.locate ? '<button type="button" data-vac-act="locate">Εντοπισμός</button>' : "") +
             "</div>";
+        } else if (sheet.kind === "media_player") {
+          const e = byId(sheet.ref);
+          const st = e ? e.state : "";
+          const what = e ? [e.media_title, e.media_artist].filter(Boolean).join(" · ") : "";
+          const vol = e && e.volume_level != null && isFinite(Number(e.volume_level)) ? Math.round(Number(e.volume_level) * 100) : null;
+          const main =
+            st === "playing"
+              ? ["media_pause", "Παύση"]
+              : st === "paused"
+                ? ["media_play", "Συνέχεια"]
+                : e && e.media_content_id && st !== "unavailable"
+                  ? ["play_media", "Παίξε ξανά"]
+                  : null;
+          sheetTitle.textContent = e && e.name ? e.name : "Μουσική";
+          sheetSub.textContent = entityWord(e) + (what ? " · " + what : "");
+          sheetBody.innerHTML =
+            '<div class="clima">' +
+            (vol != null
+              ? '<div class="clima-dial">' +
+                '<button type="button" class="clima-nudge" data-vol-step="-0.05" aria-label="Χαμηλότερα">−</button>' +
+                '<div class="clima-face"><div class="clima-target">' +
+                vol +
+                '%</div><p class="clima-k">ένταση</p></div>' +
+                '<button type="button" class="clima-nudge" data-vol-step="0.05" aria-label="Δυνατότερα">+</button></div>'
+              : "") +
+            (main
+              ? '<div class="cv-btns"><button type="button" class="on" data-media-act="' + main[0] + '">' + main[1] + "</button></div>"
+              : "<p>Διάλεξε τι θα παίξει από την εφαρμογή Arvio Home.</p>") +
+            "</div>";
         } else if (sheet.kind === "climate") {
           const e = byId(sheet.ref);
           const modes = (e && Array.isArray(e.hvac_modes) && e.hvac_modes.length ? e.hvac_modes : ["off", "heat", "cool"]);
@@ -2923,16 +2950,8 @@
         }
         if (t.kind === "entity" && t.ref) {
           const e = byId(t.ref) || { entity_id: t.ref, domain: t.ref.split(".")[0], state: "off" };
-          if (e.domain === "climate") {
-            openSheet({ kind: "climate", ref: t.ref });
-            return;
-          }
-          if (e.domain === "cover") {
-            openSheet({ kind: "cover", ref: t.ref });
-            return;
-          }
-          if (e.domain === "vacuum") {
-            openSheet({ kind: "vacuum", ref: t.ref });
+          if (SHEET_DOMAINS[e.domain]) {
+            openSheet({ kind: e.domain, ref: t.ref });
             return;
           }
           toggleEntity(e);
@@ -2991,7 +3010,7 @@
         if (t.kind === "weather") {
           // No weather yet: words, not a lone «—» under drawn clouds.
           if (!snap.weather) {
-            return '<span class="kicker">Καιρός</span><span class="state">Θα φανεί μόλις μπει η διεύθυνση του σπιτιού.</span>';
+            return '<span class="kicker">Καιρός</span><span class="state">Δεν υπάρχει ακόμα πρόγνωση.</span>';
           }
           return (
             wxSky(snap.weather && snap.weather.condition) +
@@ -3889,18 +3908,24 @@
           coverCommand(byId(sheet.ref), coverBtn.getAttribute("data-cover-act"));
           return;
         }
+        const mediaBtn = e.target.closest && e.target.closest("[data-media-act]");
+        if (mediaBtn && sheet && sheet.kind === "media_player") {
+          mediaCommand(byId(sheet.ref), mediaBtn.getAttribute("data-media-act"));
+          return;
+        }
+        const volBtn = e.target.closest && e.target.closest("[data-vol-step]");
+        if (volBtn && sheet && sheet.kind === "media_player") {
+          const ent = byId(sheet.ref);
+          const cur = ent ? Number(ent.volume_level) : NaN;
+          const level = Math.round(Math.min(1, Math.max(0, (isFinite(cur) ? cur : 0) + Number(volBtn.getAttribute("data-vol-step")))) * 100) / 100;
+          setOverlay(sheet.ref, { volume_level: level });
+          cmd("media_player.volume_set", sheet.ref, { volume_level: level });
+          return;
+        }
         const eid = e.target.closest && e.target.closest("[data-eid]");
         if (eid) {
           const ent = byId(eid.getAttribute("data-eid"));
-          if (ent && ent.domain === "climate") {
-            openSheet({
-              kind: "climate",
-              ref: ent.entity_id,
-              parent: sheet && sheet.kind === "room" ? roomSheet(sheet.ref, sheet.lights) : undefined,
-            });
-            return;
-          }
-          if (ent && (ent.domain === "cover" || ent.domain === "vacuum")) {
+          if (ent && SHEET_DOMAINS[ent.domain]) {
             openSheet({
               kind: ent.domain,
               ref: ent.entity_id,

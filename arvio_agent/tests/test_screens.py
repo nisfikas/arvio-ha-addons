@@ -702,7 +702,7 @@ class ScreenLanHttpTest(unittest.TestCase):
         self.assertIn("function wxScene", html)
         self.assertIn("colon-blink", html)
         self.assertIn('dataset.align', html)
-        self.assertIn("Ο καιρός θα φανεί μόλις μπει η διεύθυνση του σπιτιού.", html)
+        self.assertIn("Δεν υπάρχει ακόμα πρόγνωση για αυτό το σπίτι.", html)
 
     def test_panel_security_is_status_and_room_has_lamps(self):
         html = (ROOT / "panel.html").read_text(encoding="utf-8")
@@ -1452,8 +1452,19 @@ class ScreenLanHttpTest(unittest.TestCase):
         html = (ROOT / "panel.html").read_text(encoding="utf-8")
         self.assertIn('const NO_CQ = !(window.CSS && CSS.supports && CSS.supports("height: 1cqh"));', html)
         self.assertIn("        fitFaces();\n      }", html)  # at the end of render()
-        self.assertIn("Θα φανεί μόλις μπει η διεύθυνση του σπιτιού.", html)
+        self.assertIn("Δεν υπάρχει ακόμα πρόγνωση.", html)
         self.assertNotIn("Home Assistant</p>", html)
+
+    def test_panel_speaker_opens_its_sheet(self):
+        """SFK HQ iPad 2026-11-09: a press on a speaker only paused it, and then nothing else could be done."""
+        html = (ROOT / "panel.html").read_text(encoding="utf-8")
+        self.assertIn("const SHEET_DOMAINS = { climate: 1, cover: 1, vacuum: 1, media_player: 1 };", html)
+        self.assertEqual(html.count("SHEET_DOMAINS["), 4)  # tile, room row, pin, second pin tap
+        self.assertIn('} else if (sheet.kind === "media_player") {', html)
+        self.assertIn('["play_media", "Παίξε ξανά"]', html)
+        self.assertIn('cmd("media_player.volume_set", sheet.ref, { volume_level: level });', html)
+        toggle = html[html.index("function toggleEntity(e)") : html.index("function mediaCommand(")]
+        self.assertNotIn("media_player", toggle)
 
     def test_panel_never_sends_its_secret(self):
         html = (ROOT / "panel.html").read_text(encoding="utf-8")
