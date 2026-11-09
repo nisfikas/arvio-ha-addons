@@ -2487,6 +2487,46 @@
           });
         } else cmd("media_player." + act, e.entity_id);
       }
+      /** Speakers the sheet can switch to: not a TV's remote (it plays no radio), not one that is away. */
+      function mediaSpeakers(current) {
+        return snap.entities
+          .filter((x) => x.domain === "media_player" && ((x.device_class !== "tv" && x.state !== "unavailable") || x.entity_id === current))
+          .map(viewEntity);
+      }
+      // Stations from the hub's own «Ραδιόφωνο» (Core's music driver): a public directory. The agent lets a
+      // panel list only this node, never anyone's own music or playlists, which stay in Home.
+      const RADIO_NODE = "media-source://arvio/radio";
+      let mediaBrowse = null; // { items, error } while the station list is open
+      async function browseRadio() {
+        if (!hubId) return;
+        const at = { items: null, error: "" };
+        mediaBrowse = at;
+        renderSheet();
+        try {
+          const r = await screenFetch("/v1/hubs/" + encodeURIComponent(hubId) + "/commands", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "arvio.media_browse",
+              entity_id: sheet.ref,
+              payload: { media_content_id: RADIO_NODE, media_content_type: "directory" },
+            }),
+          });
+          const page = await r.json().catch(() => ({}));
+          if (!r.ok || page.ok === false) throw new Error(page.error || "http_" + r.status);
+          at.items = (page.items || []).filter((it) => it.can_play && it.media_content_id);
+        } catch (err) {
+          at.error = "Το hub δεν έδωσε σταθμούς. Δοκίμασε ξανά.";
+        }
+        if (mediaBrowse === at && sheet && sheet.kind === "media_player") renderSheet();
+      }
+      function pickStation(index) {
+        const it = mediaBrowse && mediaBrowse.items ? mediaBrowse.items[index] : null;
+        if (!it || !sheet) return;
+        mediaBrowse = null;
+        setOverlay(sheet.ref, { state: "playing", media_title: it.title, media_artist: null });
+        cmd("media_player.play_media", sheet.ref, { media_content_id: it.media_content_id, media_content_type: it.media_content_type || "music" });
+      }
       function planForFloor(floorId) {
         return (snap.floor_plans || []).find((p) => p.floor_id === floorId) || null;
       }
@@ -2583,6 +2623,7 @@
       }
       function closeSheet() {
         sheet = null;
+        mediaBrowse = null;
         clearTimeout(sheetTimer);
         sheetEl.classList.add("hidden");
         sheetBody.innerHTML = "";
@@ -2855,6 +2896,8 @@
           const st = e ? e.state : "";
           const what = e ? [e.media_title, e.media_artist].filter(Boolean).join(" · ") : "";
           const vol = e && e.volume_level != null && isFinite(Number(e.volume_level)) ? Math.round(Number(e.volume_level) * 100) : null;
+          const speakers = mediaSpeakers(sheet.ref);
+          const mb = mediaBrowse;
           const main =
             st === "playing"
               ? ["media_pause", "Παύση"]
@@ -2877,8 +2920,43 @@
               : "") +
             (main
               ? '<div class="cv-btns"><button type="button" class="on" data-media-act="' + main[0] + '">' + main[1] + "</button></div>"
-              : "<p>Διάλεξε τι θα παίξει από την εφαρμογή Arvio Home.</p>") +
-            "</div>";
+              : "") +
+            (speakers.length > 1
+              ? '<div class="clima-chips"><span>Ηχείο</span><div>' +
+                speakers
+                  .map(
+                    (s) =>
+                      '<button type="button" class="clima-chip' +
+                      (s.entity_id === sheet.ref ? " on" : "") +
+                      '" data-media-speaker="' +
+                      esc(s.entity_id) +
+                      '">' +
+                      esc(s.name) +
+                      "</button>",
+                  )
+                  .join("") +
+                "</div></div>"
+              : "") +
+            '<div class="room-rest">' +
+            (!mb
+              ? '<button type="button" class="device" data-media-browse="1"><span>Σταθμοί</span><span class="state">›</span></button>'
+              : mb.error
+                ? "<p>" + esc(mb.error) + "</p>"
+                : !mb.items
+                  ? "<p>Φόρτωση…</p>"
+                  : !mb.items.length
+                    ? "<p>Δεν βρέθηκαν σταθμοί.</p>"
+                    : mb.items
+                        .map(
+                          (it, i) =>
+                            '<button type="button" class="device" data-media-item="' +
+                            i +
+                            '"><span>' +
+                            esc(it.title) +
+                            '</span><span class="state">▶</span></button>',
+                        )
+                        .join("")) +
+            "</div></div>";
         } else if (sheet.kind === "climate") {
           const e = byId(sheet.ref);
           const modes = (e && Array.isArray(e.hvac_modes) && e.hvac_modes.length ? e.hvac_modes : ["off", "heat", "cool"]);
@@ -3906,6 +3984,15 @@
         const coverBtn = e.target.closest && e.target.closest("[data-cover-act]");
         if (coverBtn && sheet && sheet.kind === "cover") {
           coverCommand(byId(sheet.ref), coverBtn.getAttribute("data-cover-act"));
+          return;
+        }
+        const pick = e.target.closest && e.target.closest("[data-media-speaker], [data-media-browse], [data-media-item]");
+        if (pick && sheet && sheet.kind === "media_player") {
+          if (pick.hasAttribute("data-media-speaker")) {
+            sheet.ref = pick.getAttribute("data-media-speaker"); // the same stations play on any speaker
+            renderSheet();
+          } else if (pick.hasAttribute("data-media-browse")) browseRadio();
+          else pickStation(Number(pick.getAttribute("data-media-item")));
           return;
         }
         const mediaBtn = e.target.closest && e.target.closest("[data-media-act]");

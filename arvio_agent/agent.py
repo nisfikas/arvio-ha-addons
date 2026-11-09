@@ -2583,8 +2583,8 @@ def panel_snapshot(screen_id: str | None = None, secret: str | None = None) -> d
                     "fan_speed", "fan_speed_list", "mop_fitted", "mop_level", "mop_level_list",
                 ):
                     item[k] = e.get(k)
-            if domain == "media_player":  # the speaker sheet: what plays, the volume, what to play again
-                for k in ("media_title", "media_artist", "volume_level", "media_content_id", "media_content_type"):
+            if domain == "media_player":  # the speaker sheet: what plays, the volume, what to play again; a TV is no speaker
+                for k in ("media_title", "media_artist", "volume_level", "media_content_id", "media_content_type", "device_class"):
                     item[k] = e.get(k)
             entities_out.append(item)
         states = ha("/states") or []
@@ -5239,7 +5239,7 @@ def entities() -> list:
             "current_position": attrs.get("current_position"),
             "unit_of_measurement": attrs.get("unit_of_measurement"),
         }
-        if domain == "cover":
+        if domain in ("cover", "media_player"):
             item["device_class"] = attrs.get("device_class")
         if domain in ("media_player", "vacuum"):
             state_s = str(e.get("state")) if e.get("state") is not None else None
@@ -6455,6 +6455,13 @@ LAN_ALLOWED_ACTIONS = frozenset(
     | HUMIDIFIER_ACTIONS
 )
 LAN_SCRIPT_PREFIX = "script.arvio_"
+# Core's «Ραδιόφωνο» (services/core/drivers/music): a public directory of stations, so a wall panel may
+# list it to pick a station. The library and playlists stay cloud-only, as above.
+LAN_RADIO_NODE = "media-source://arvio/radio"
+
+
+def lan_radio_browse(action: str, payload: dict) -> bool:
+    return action == "arvio.media_browse" and payload.get("media_content_id") == LAN_RADIO_NODE
 
 
 def lan_shutdown_scripts() -> set[str]:
@@ -8065,7 +8072,7 @@ def check_command_safety(
         if not lan_caller_ok(screen_secret, lan_app):
             raise CommandRejected("lan_forbidden", "the LAN path needs a paired panel or a signed-in app")
         # Explicit allowlist (not a denylist): anything not listed is forbidden locally.
-        if action not in LAN_ALLOWED_ACTIONS:
+        if action not in LAN_ALLOWED_ACTIONS and not lan_radio_browse(action, payload):
             raise CommandRejected("lan_forbidden", f"{action} not available on the LAN path")
         if action == "script.turn_on" and not lan_script_allowed(str(cmd.get("entity_id") or "")):
             raise CommandRejected("lan_forbidden", f"only {LAN_SCRIPT_PREFIX}* or screen shutdown scripts on the LAN path")

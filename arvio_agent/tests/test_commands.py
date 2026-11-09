@@ -121,6 +121,21 @@ class SafetyTest(unittest.TestCase):
         with self.assertRaises(agent.CommandRejected):
             agent.check_command_safety({"action": "climate.turn_off", "target": {"area_id": "ypno"}})
 
+    def test_lan_lists_radio_stations_only(self):
+        """A wall panel picks a station (SFK HQ, 2026-11-09); the library and playlists stay cloud-only."""
+        ok = mock.patch.object(agent, "lan_caller_ok", return_value=True)
+        ok.start()
+        self.addCleanup(ok.stop)
+        radio = {"media_content_id": "media-source://arvio/radio", "media_content_type": "directory"}
+        agent.check_command_safety({"action": "arvio.media_browse", "entity_id": "media_player.a", "payload": radio}, via="lan")
+        for payload in ({}, {"media_content_id": "media-source://arvio/library"}, {"media_content_id": "media-source://arvio/radio/x/../../library"}):
+            with self.assertRaises(agent.CommandRejected) as cm:
+                agent.check_command_safety({"action": "arvio.media_browse", "entity_id": "media_player.a", "payload": payload}, via="lan")
+            self.assertEqual(cm.exception.code, "lan_forbidden")
+        for action in ("arvio.media_search", "arvio.media_art"):
+            with self.assertRaises(agent.CommandRejected):
+                agent.check_command_safety({"action": action, "entity_id": "media_player.a", "payload": radio}, via="lan")
+
     def test_lan_path_is_an_explicit_allowlist(self):
         # About the allowlist; doors have their own tests (test_lan_doors, test_door_marks).
         no_door_rule = mock.patch.object(agent, "lan_door_refusal", return_value=None)

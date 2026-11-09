@@ -597,16 +597,20 @@ class ScreenLanHttpTest(unittest.TestCase):
                 "group_members": ["media_player.reception", "media_player.garage_speaker"],
             },
         }
+        tv = {"entity_id": "media_player.tv_saloni_75", "state": "on", "attributes": {"friendly_name": "TV", "device_class": "tv"}}
         with mock.patch.object(agent, "hub_id", "hub_lan"), mock.patch.object(
             agent, "registries_for_commands", return_value={"entity_regs": {}, "devices": {}, "areas": {}}
-        ), mock.patch.object(agent, "ha", return_value=[group]):
+        ), mock.patch.object(agent, "ha", return_value=[group, tv]):
             status, raw = self.panel_get()
         self.assertEqual(status, 200)
-        row = json.loads(raw.decode())["entities"][0]
+        rows = {r["entity_id"]: r for r in json.loads(raw.decode())["entities"]}
+        self.assertEqual(rows["media_player.tv_saloni_75"]["device_class"], "tv")  # the sheet offers no TV remote
+        row = rows["media_player.ekheia_sfk"]
         self.assertEqual(row["volume_level"], 0.21)
         self.assertEqual(row["media_title"], "Rock FM 96.9")
         self.assertEqual(row["media_content_id"], "https://az10.yesstreaming.net:8060/radio.mp3")
         self.assertEqual(row["media_content_type"], "music")
+        self.assertIsNone(row["device_class"])
 
     def test_panel_cover_has_animated_shade(self):
         html = (ROOT / "panel.html").read_text(encoding="utf-8")
@@ -1490,6 +1494,12 @@ class ScreenLanHttpTest(unittest.TestCase):
         self.assertIn('cmd("media_player.volume_set", sheet.ref, { volume_level: level });', html)
         toggle = html[html.index("function toggleEntity(e)") : html.index("function mediaCommand(")]
         self.assertNotIn("media_player", toggle)
+        # Another station or speaker from the sheet itself (SFK HQ, 2026-11-09): the hub's own browse tree.
+        self.assertIn('action: "arvio.media_browse"', html)
+        self.assertIn(f'const RADIO_NODE = "{agent.LAN_RADIO_NODE}";', html)  # the one node the LAN lets it list
+        self.assertIn("data-media-speaker", html)
+        self.assertIn('x.device_class !== "tv"', html)
+        self.assertNotIn("Διάλεξε τι θα παίξει από την εφαρμογή Arvio Home.", html)
 
     def test_panel_never_sends_its_secret(self):
         html = (ROOT / "panel.html").read_text(encoding="utf-8")
