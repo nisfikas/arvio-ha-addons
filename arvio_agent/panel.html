@@ -1744,8 +1744,21 @@
           "</div></div>"
         );
       }
+      // Same as @arvio/domain isCustomIcon: an installer's own picture, its shape in the tile's colour.
+      const CUSTOM_ICON_RE = /^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/;
+      function customIcon(icon) {
+        return typeof icon === "string" && icon.length <= 10946 && CUSTOM_ICON_RE.test(icon) ? icon : null;
+      }
       function ico(name, size) {
         const s = size || 22;
+        if (customIcon(name)) {
+          const m = "url(" + name + ") center / 100% 100% no-repeat";
+          return (
+            '<svg class="glyph" viewBox="0 0 24 24" width="' + s + '" height="' + s +
+            '" aria-hidden="true" style="-webkit-mask:' + m + ";mask:" + m +
+            '"><rect width="24" height="24" fill="currentColor"/></svg>'
+          );
+        }
         return (
           '<svg class="glyph" viewBox="0 0 24 24" width="' +
           s +
@@ -1857,7 +1870,7 @@
       }
       function glyphForEntity(e) {
         const d = e && e.domain;
-        const picked = e && d !== "lock" && d !== "alarm_control_panel" ? pickedGlyph(e.icon) : null;
+        const picked = e && d !== "lock" && d !== "alarm_control_panel" ? customIcon(e.icon) || pickedGlyph(e.icon) : null;
         if (picked) return picked;
         if (d === "climate") return iconForHvac((e && (e.hvac_mode || e.state)) || "");
         if (d === "light") return "bulb";

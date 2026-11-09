@@ -1,8 +1,12 @@
 """An installer's icons live on the hub, and the hub learns where it is from the cloud."""
+import base64
 import json
+import os
 import pathlib
+import struct
 import tempfile
 import unittest
+import zlib
 from unittest import mock
 
 from helpers import agent
@@ -25,6 +29,17 @@ class Base(unittest.TestCase):
         for p in self.patches:
             p.stop()
         self.dir.cleanup()
+
+
+def chunk(kind: bytes, data: bytes) -> bytes:
+    return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+
+
+def png(w=96, h=96, extra=b"", pixels=None) -> str:
+    """A real RGBA PNG, as Partner's canvas gives it."""
+    raw = pixels if pixels is not None else bytes(h * (1 + w * 4))
+    body = chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)) + extra + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+    return "data:image/png;base64," + base64.b64encode(b"\x89PNG\r\n\x1a\n" + body).decode()
 
 
 class IconSet(Base):
@@ -55,6 +70,42 @@ class IconSet(Base):
         for eid in ("lock.front", "alarm_control_panel.home"):
             with self.assertRaises(ValueError):
                 agent.icon_set({"entity_id": eid, "icon": "mdi:lightbulb"})
+
+    def test_an_installers_own_icon_is_kept_as_is_for_a_device(self):
+        icon = png()
+        agent.icon_set({"entity_id": "light.saloni", "icon": icon})
+        agent._icons_cache = None  # as after a restart
+        self.assertEqual(agent.picked_icons()["entities"], {"light.saloni": icon})
+
+    def test_an_own_icon_is_read_chunk_by_chunk(self):
+        for bad in (
+            png(8, 96),
+            png(96, 256),
+            png(extra=chunk(b"tEXt", b"Comment\x00hi")),
+            png(extra=chunk(b"acTL", bytes(8))),
+            png(pixels=os.urandom(96 * (1 + 96 * 4))),  # over 8 KB
+            png() + "AAAA",  # bytes after IEND
+            "data:image/png;base64,PHN2Zz48L3N2Zz4=",
+            "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=",
+        ):
+            with self.assertRaises(ValueError, msg=bad[:60]):
+                agent.icon_set({"entity_id": "light.x", "icon": bad})
+        with self.assertRaises(ValueError):
+            agent.icon_set({"area_id": "saloni", "icon": png()})
+        with self.assertRaises(ValueError):
+            agent.icon_set({"entity_id": "lock.front", "icon": png()})
+        self.assertEqual(agent.picked_icons()["entities"], {})
+
+    def test_one_hub_keeps_a_bounded_amount_of_them(self):
+        icon = png(pixels=bytes(range(256)) * 144)  # compresses, but not to nothing
+        n = agent.CUSTOM_ICONS_MAX_CHARS // len(icon)
+        for i in range(n):
+            agent.icon_set({"entity_id": f"light.l{i}", "icon": icon})
+        with self.assertRaises(ValueError) as e:
+            agent.icon_set({"entity_id": "light.one_more", "icon": icon})
+        self.assertEqual(str(e.exception), "icons_full")
+        agent.icon_set({"entity_id": "light.one_more", "icon": "mdi:lamp"})  # the catalogue still works
+        self.assertNotIn("light.one_more", {k for k, v in agent.picked_icons()["entities"].items() if v == icon})
 
     def test_the_lan_path_cannot_reach_it(self):
         for action in ("arvio.icon_set", "arvio.site_config"):

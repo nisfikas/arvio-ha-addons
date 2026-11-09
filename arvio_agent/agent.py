@@ -6683,6 +6683,38 @@ def door_mark(payload: dict | None = None) -> dict:
 
 ICON_RE = re.compile(r"^mdi:[a-z0-9-]{1,48}$")
 ICON_ENTITY_RE = re.compile(r"^[a-z_]+\.[a-z0-9_]+$")
+# An installer's own icon, as @arvio/domain `checkCustomIcon`: a small PNG whose shape takes the theme's colour.
+CUSTOM_ICON_PREFIX = "data:image/png;base64,"
+CUSTOM_ICON_MAX_BYTES = 8 * 1024
+CUSTOM_ICONS_MAX_CHARS = 256 * 1024  # all of them on one hub, written out
+CUSTOM_ICON_RE = re.compile(r"^data:image/png;base64,[A-Za-z0-9+/]+={0,2}$")
+PNG_CHUNKS = {b"IHDR", b"PLTE", b"tRNS", b"IDAT", b"IEND", b"sRGB", b"gAMA", b"cHRM", b"pHYs"}
+
+
+def custom_icon_ok(icon: str) -> bool:
+    """Chunk by chunk: no text, EXIF or animation, 16–128 px, at most 8 KB, nothing after IEND."""
+    if len(icon) > len(CUSTOM_ICON_PREFIX) + -(-CUSTOM_ICON_MAX_BYTES // 3) * 4 or not CUSTOM_ICON_RE.fullmatch(icon):
+        return False
+    try:
+        b = base64.b64decode(icon[len(CUSTOM_ICON_PREFIX):], validate=True)
+    except ValueError:
+        return False
+    if len(b) > CUSTOM_ICON_MAX_BYTES or not b.startswith(b"\x89PNG\r\n\x1a\n"):
+        return False
+    at = 8
+    while at + 12 <= len(b):
+        size = int.from_bytes(b[at:at + 4], "big")
+        kind = b[at + 4:at + 8]
+        if kind not in PNG_CHUNKS or at + 12 + size > len(b) or (kind == b"IHDR") != (at == 8):
+            return False
+        if kind == b"IHDR":
+            w, h = int.from_bytes(b[at + 8:at + 12], "big"), int.from_bytes(b[at + 12:at + 16], "big")
+            if size != 13 or not (16 <= w <= 128 and 16 <= h <= 128):
+                return False
+        at += 12 + size
+        if kind == b"IEND":
+            return at == len(b)
+    return False
 ICONS_LOCK = threading.Lock()
 _icons_cache: dict | None = None
 
@@ -6705,7 +6737,10 @@ def icon_set(payload: dict | None = None) -> dict:
     global _icons_cache
     payload = payload if isinstance(payload, dict) else {}
     icon = payload.get("icon")
-    if icon is not None and (not isinstance(icon, str) or not ICON_RE.fullmatch(icon)):
+    custom = isinstance(icon, str) and icon.startswith(CUSTOM_ICON_PREFIX)
+    if custom and not custom_icon_ok(icon):
+        raise ValueError("invalid_icon_image")
+    if icon is not None and not custom and (not isinstance(icon, str) or not ICON_RE.fullmatch(icon)):
         raise ValueError("invalid_icon")
     entity_id = payload.get("entity_id")
     area_id = payload.get("area_id")
@@ -6715,8 +6750,11 @@ def icon_set(payload: dict | None = None) -> dict:
             raise ValueError("invalid_icon_target")
         kind, target = "entities", entity_id
     elif isinstance(area_id, str) and entity_id is None:
+        # A room's icon also furnishes it in Μακέτα: from the catalogue only, for now.
         if not AREA_ID_RE.fullmatch(area_id):
             raise ValueError("invalid_icon_target")
+        if custom:
+            raise ValueError("invalid_icon")
         kind, target = "areas", area_id
     else:
         raise ValueError("invalid_icon_target")
@@ -6726,6 +6764,9 @@ def icon_set(payload: dict | None = None) -> dict:
             doc[kind].pop(target, None)
         else:
             doc[kind][target] = icon
+        # Kept as is, next to the name: the model and the panel carry it with no cloud. So it is capped.
+        if custom and sum(len(v) for v in doc["entities"].values() if isinstance(v, str) and v.startswith(CUSTOM_ICON_PREFIX)) > CUSTOM_ICONS_MAX_CHARS:
+            raise ValueError("icons_full")
         write_json_atomic(ICONS, doc)
         _icons_cache = doc
     schedule_registry_refresh("icon_set", delay=0.4)
