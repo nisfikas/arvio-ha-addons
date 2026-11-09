@@ -258,8 +258,12 @@ SCREEN_TILE_KINDS = frozenset(
         "occupancy",
         "session_now",
         "energy",
+        "camera",
+        "camera_button",
     }
 )
+# A camera's picture, or a button that opens it full screen (docs/plans/2026-11-08-panel-camera-tiles.md).
+SCREEN_CAMERA_KINDS = frozenset({"camera", "camera_button"})
 SCREEN_SECURITY_DOMAINS = frozenset({"lock", "alarm_control_panel"})
 SCREEN_LIGHT_ID_RE = re.compile(r"^light\.[A-Za-z0-9_]+$")
 SHUTDOWN_SCRIPT_RE = re.compile(r"^script\.\d+_scene_shutdown$")
@@ -274,6 +278,9 @@ CAMERA_STREAM_SUFFIXES = ("_main", "_sub", "_high", "_low")
 DOORBELL_CALL_RE = re.compile(r"^binary_sensor\.[a-z0-9_]+$")
 DOORBELL_UNLOCK_RE = re.compile(r"^(lock|switch)\.[a-z0-9_]+$")
 DOORBELL_LATCH_S = 45.0
+# Woken on every ring: a wall panel waits on it (GET /api/screens/ring) instead of finding out at its next 4 s poll.
+DOORBELL_RING = threading.Condition()
+DOORBELL_RING_WAIT_S = 25.0
 # call sensor → monotonic deadline (ring + 45 s). Written where the agent sees the ring
 # (note_doorbell_ring); the panel's ringing flag and the door-unlock window both read it.
 DOORBELL_LATCH: dict[str, float] = {}
@@ -595,6 +602,8 @@ def note_doorbell_ring(entity_id: str, new_state, watched: set[str] | None = Non
         prev = DOORBELL_LATCH.get(eid, 0)
         fresh = prev <= time.monotonic()
         DOORBELL_LATCH[eid] = time.monotonic() + DOORBELL_LATCH_S
+        with DOORBELL_RING:
+            DOORBELL_RING.notify_all()
         if fresh:
             threading.Thread(target=post_doorbell_ring, args=(eid,), daemon=True).start()
 
@@ -1103,6 +1112,19 @@ def doorbell_rang_recently(cfg: dict) -> bool:
     return any(DOORBELL_LATCH.get(eid, 0) > now for eid in ids)
 
 
+def doorbell_ring_wait(screen_id: str, secret: str | None = None, timeout: float = DOORBELL_RING_WAIT_S) -> bool:
+    """Answers the moment this screen's doorbell rings, or after `timeout` with whatever it is then. Only the
+    ring's start: the panel's own poll still ends it. Reads as much as the snapshot does, so an old pairing too."""
+    row, cfg = doorbell_row(screen_id)
+    if not row:
+        raise ValueError("not_found")
+    check_screen_secret(row, secret)
+    if not cfg:
+        raise ValueError("not_found")
+    with DOORBELL_RING:
+        return DOORBELL_RING.wait_for(lambda: doorbell_rang_recently(cfg), timeout)
+
+
 def doorbell_jpeg(screen_id: str, width: int = 720, secret: str | None = None) -> tuple[bytes, str]:
     row, cfg = doorbell_row(screen_id)
     if not row:
@@ -1132,6 +1154,71 @@ def doorbell_unlock(screen_id: str, secret: str | None = None) -> dict:
     if domain == "switch":
         return call_service("switch", "turn_on", {"entity_id": unlock})
     raise ValueError("doorbell_unlock_unavailable")
+
+
+def screen_camera(screen_id: str, camera: str, secret: str | None) -> str:
+    """One of this paired panel's own camera tiles, never any other camera on the hub. A panel paired
+    before 0.1.50 has no secret, and sees no camera (`repair_required`), as for the doorbell."""
+    sid = _safe_screen_id(screen_id)
+    row = load_screens()["screens"].get(sid) if sid and sid == screen_id else None
+    if not isinstance(row, dict):
+        raise ValueError("not_found")
+    check_screen_secret(row, secret, door=True)
+    for page in row.get("pages") or []:
+        for t in page.get("tiles") or [] if isinstance(page, dict) else []:
+            if isinstance(t, dict) and t.get("kind") in SCREEN_CAMERA_KINDS and t.get("ref") == camera:
+                return camera
+    raise ValueError("not_found")
+
+
+def screen_camera_jpeg(screen_id: str, camera: str, width: int, secret: str | None) -> tuple[bytes, str]:
+    raw, mime = fetch_camera_proxy(screen_camera(screen_id, camera, secret), clamp_camera_width(width))
+    return raw, mime or "image/jpeg"
+
+
+# Live video for a panel's full-screen camera: the player cannot sign each segment (Safari's own HLS cannot
+# send a header at all), so a ticket stands for the one stream a signed request opened, for a few minutes.
+# Whoever reads the Wi-Fi sees these bytes anyway (ADR 017, no TLS on the LAN); the ticket opens nothing else.
+LIVE_TICKET_S = 180
+LIVE_TICKETS_MAX = 8
+LIVE_TICKETS: dict[str, dict] = {}
+LIVE_LOCK = threading.Lock()
+
+
+def screen_camera_live(screen_id: str, camera: str, secret: str | None) -> dict:
+    eid = screen_camera(screen_id, camera, secret)
+    # A door camera never streams from a wall: the G4 gives one session, and a stream here stops a press's
+    # own before a phone joins it, or keeps a press from opening one. The panel stays on its stills.
+    states = ha("/states") or []
+    have = {str(st.get("entity_id") or "") for st in states if isinstance(st, dict)} if isinstance(states, list) else set()
+    if any(g in have for g in doorbell_call_guesses(eid)):
+        raise LookupError("door_camera")
+    out = camera_stream(None, eid)
+    if not out.get("ok"):
+        raise LookupError(str(out.get("error") or "no_hls"))
+    path, _, query = str(out["playlist_path"]).partition("?")
+    base, _, name = path.rpartition("/")
+    ticket = secrets.token_urlsafe(24)
+    now = time.monotonic()
+    with LIVE_LOCK:
+        for old in [k for k, v in LIVE_TICKETS.items() if v["until"] < now]:
+            del LIVE_TICKETS[old]
+        while len(LIVE_TICKETS) >= LIVE_TICKETS_MAX:
+            del LIVE_TICKETS[next(iter(LIVE_TICKETS))]
+        LIVE_TICKETS[ticket] = {"base": base + "/", "id": (parse_qs(query).get("id") or [None])[0], "until": now + LIVE_TICKET_S}
+    return {"ok": True, "url": f"/api/live/{ticket}/{name}" + (f"?{query}" if query else "")}
+
+
+def live_camera_path(ticket: str, rest: str, query: str) -> str | None:
+    """`/api/live/<ticket>/<file>` → the Core path of that ticket's stream, or None. go2rtc names its stream
+    in `?id=`, so a file of another stream is refused; Home Assistant's token is in the ticket's own path."""
+    with LIVE_LOCK:
+        t = LIVE_TICKETS.get(ticket)
+    if not t or t["until"] < time.monotonic():
+        return None
+    if t["id"] and (parse_qs(query).get("id") or [None])[0] != t["id"]:
+        return None
+    return camera_safe_ha_path(t["base"] + rest + (f"?{query}" if query else ""))
 
 
 VENUE_PIN_FAIL_MAX = 5
@@ -1744,6 +1831,10 @@ def _parse_screen_pages(raw) -> list:
                     if not isinstance(watch, str) or not SCREEN_LIGHT_ID_RE.fullmatch(watch):
                         raise ValueError("invalid_tile_watch")
                     tile["watch"] = watch
+            if kind in SCREEN_CAMERA_KINDS:
+                if not isinstance(ref, str) or not CAMERA_ENTITY_RE.fullmatch(ref):
+                    raise ValueError("invalid_tile_ref")
+                tile["ref"] = ref
             if kind == "entity" and isinstance(ref, str) and ref.split(".", 1)[0] in SCREEN_SECURITY_DOMAINS:
                 raise ValueError("tile_security_forbidden")
             if kind == "allOff" and isinstance(ref, str) and ref:
@@ -10301,6 +10392,8 @@ class H(BaseHTTPRequestHandler):
             return self._file("panel-app/icon.png", "image/png")
         if path in PANEL_FONTS:
             return self._file("panel-app/fonts/" + path.rsplit("/", 1)[1], "font/woff2")
+        if path == "/panel/hls.js":  # hls.js 1.7.3 light (Apache-2.0), only for a full-screen camera
+            return self._file("panel-app/hls.light.min.js", "text/javascript; charset=utf-8")
         if path == "/panel/ipad.mobileconfig":
             # «Σύζευξη iPad»: the QR in Partner. Only with an open pair token; 410 once used or expired.
             token = (parse_qs(urlparse(self.path).query).get("t") or [""])[0]
@@ -10341,6 +10434,48 @@ class H(BaseHTTPRequestHandler):
             self.send_header("Content-Type", mime)
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "private, max-age=3600")
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        if path == "/api/screens/ring":
+            sid = (parse_qs(urlparse(self.path).query).get("id") or [""])[0]
+            try:
+                return self._j(200, {"ok": True, "ringing": doorbell_ring_wait(sid, self._panel())})
+            except ScreenDenied as e:
+                return self._j(403, {"ok": False, "error": str(e)})
+            except ValueError:
+                return self._j(404, {"ok": False, "error": "not_found"})
+        if path == "/api/screens/camera.jpg":
+            qs = parse_qs(urlparse(self.path).query)
+            try:
+                w = int((qs.get("w") or ["480"])[0])
+            except ValueError:
+                w = 480
+            try:
+                data, mime = screen_camera_jpeg((qs.get("id") or [""])[0], (qs.get("e") or [""])[0], w, self._panel())
+            except ScreenDenied as e:
+                return self._j(403, {"ok": False, "error": str(e)})
+            except ValueError:
+                return self._j(404, {"error": "not_found"})
+            except Exception:
+                return self._j(502, {"error": "camera_unavailable"})
+            self.send_response(200)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        if path.startswith("/api/live/"):
+            ticket, _, rest = path[len("/api/live/") :].partition("/")
+            cam = live_camera_path(ticket, rest, urlparse(self.path).query)
+            if not cam:
+                return self._j(404, {"error": "not_found"})
+            status, headers, _, data = camera_http_via_supervisor("GET", cam)
+            self.send_response(status)
+            self.send_header("Content-Type", headers.get("content-type") or "application/octet-stream")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(data)
             return
@@ -10491,6 +10626,20 @@ class H(BaseHTTPRequestHandler):
                     return self._j(403, {"ok": False, "error": str(e)})
                 except ValueError as e:
                     return self._j(400, {"ok": False, "error": str(e)})
+                return self._j(200, out)
+
+            if path == "/api/screens/camera/live":
+                body = self._read_json()
+                try:
+                    out = screen_camera_live(str(body.get("screen_id") or ""), str(body.get("entity_id") or ""), self._panel())
+                except ScreenDenied as e:
+                    return self._j(403, {"ok": False, "error": str(e)})
+                except ValueError:
+                    return self._j(404, {"ok": False, "error": "not_found"})
+                except LookupError as e:
+                    return self._j(409, {"ok": False, "error": str(e)})
+                except Exception:
+                    return self._j(502, {"ok": False, "error": "no_hls"})
                 return self._j(200, out)
 
             if path == "/api/screens/doorbell/unlock":

@@ -988,6 +988,110 @@ class ScreenLanHttpTest(unittest.TestCase):
                 self.assertEqual(status, 200, path)
             self.assertEqual(self.unlock(secret)[0], 200)
 
+    # --- the doorbell at once: «όταν χτυπάν το κουδούνι δεν ανοίγει αυτόματα… πρέπει να είναι ακαριαίο» (08/11) ---
+
+    def test_ring_wait_answers_the_moment_it_rings(self):
+        secret = self._paired()
+        path = "/api/screens/ring?id=scr_aaaaaaaaaaaaaaaa"
+        self.assertEqual(self.request("GET", path)[0], 403)
+        self.assertEqual(self.request("GET", "/api/screens/ring?id=scr_nope", secret=secret)[0], 404)
+        threading.Timer(0.3, self.ring).start()
+        started = time.monotonic()
+        status, raw = self.request("GET", path, secret=secret)
+        self.assertEqual((status, json.loads(raw)["ringing"]), (200, True))
+        self.assertLess(time.monotonic() - started, 1.5)
+        # while it rings, at once; nothing rings: after the wait, false
+        self.assertTrue(agent.doorbell_ring_wait("scr_aaaaaaaaaaaaaaaa", secret, timeout=0.05))
+        agent.DOORBELL_LATCH.clear()
+        self.assertFalse(agent.doorbell_ring_wait("scr_aaaaaaaaaaaaaaaa", secret, timeout=0.05))
+
+    def test_panel_waits_for_the_ring_instead_of_its_poll(self):
+        html = (ROOT / "panel.html").read_text(encoding="utf-8")
+        wait = html[html.index("async function waitForRing()") : html.index("async function load(keepPage)")]
+        self.assertIn('screenFetch("/api/screens/ring?id="', wait)
+        self.assertIn("while (screen && screen.doorbell && !doorbellWasRinging && pairing.get(KEY))", wait)
+        self.assertIn("syncDoorbell();", wait)
+        self.assertIn("setTimeout(done, 5000)", wait)  # an error never spins
+        self.assertIn("        syncDoorbell();\n        waitForRing();\n", html)
+
+    # --- camera tiles (docs/plans/2026-11-08-panel-camera-tiles.md) ---
+
+    CAM_TILES = [{"id": "pg_aaaaaaaa", "tiles": [{"kind": "camera", "ref": "camera.kipos", "size": "l"}, {"kind": "camera_button", "ref": "camera.g4"}]}]
+    SID = "scr_aaaaaaaaaaaaaaaa"
+
+    def test_camera_tiles_need_a_camera(self):
+        agent.put_wall_screen(self._row(pages=self.CAM_TILES))
+        tiles = agent.list_wall_screens()["screens"][0]["pages"][0]["tiles"]
+        self.assertEqual(tiles, [{"kind": "camera", "ref": "camera.kipos", "size": "l", "span": 2}, {"kind": "camera_button", "ref": "camera.g4"}])
+        for ref in (None, "", "light.kipos", "camera.Kipos", "camera.a/b"):
+            with self.assertRaises(ValueError, msg=ref):
+                agent.put_wall_screen(self._row(pages=[{"id": "pg_aaaaaaaa", "tiles": [{"kind": "camera_button", "ref": ref}]}]))
+
+    def test_camera_picture_only_for_this_panels_own_tiles(self):
+        secret = self._paired(pages=self.CAM_TILES)
+        with mock.patch.object(agent, "fetch_camera_proxy", return_value=(JPEG, "image/jpeg")) as cam:
+            status, raw = self.request("GET", f"/api/screens/camera.jpg?id={self.SID}&e=camera.kipos&w=640", secret=secret)
+            self.assertEqual((status, raw), (200, JPEG))
+            cam.assert_called_once_with("camera.kipos", 640)
+            # the doorbell's camera is not a tile here, and no camera is without its secret
+            self.assertEqual(self.request("GET", f"/api/screens/camera.jpg?id={self.SID}&e=camera.8b014b9pajf9590_main", secret=secret)[0], 404)
+            status, raw = self.request("GET", f"/api/screens/camera.jpg?id={self.SID}&e=camera.kipos")
+            self.assertEqual((status, json.loads(raw)["error"]), (403, "bad_screen_secret"))
+            self.assertEqual(cam.call_count, 1)
+        agent.put_wall_screen(self._row(pages=self.CAM_TILES, screen_id=self.PANEL_ID))  # paired before 0.1.50
+        status, raw = self.request("GET", f"/api/screens/camera.jpg?id={self.PANEL_ID}&e=camera.kipos")
+        self.assertEqual((status, json.loads(raw)["error"]), (403, "repair_required"))
+
+    def test_camera_live_ticket_opens_that_stream_only(self):
+        secret = self._paired(pages=self.CAM_TILES)
+        stream = {"ok": True, "entity_id": "camera.kipos", "playlist_path": "/api/hls/playlist.m3u8?id=abc123"}
+        files = []
+
+        def core(method, path):
+            files.append(path)
+            return 200, {"content-type": "application/vnd.apple.mpegurl"}, [], b"#EXTM3U\n"
+
+        body = {"screen_id": self.SID, "entity_id": "camera.kipos"}
+        with mock.patch.object(agent, "ha", return_value=[]), mock.patch.object(agent, "camera_stream", return_value=stream), \
+             mock.patch.object(agent, "camera_http_via_supervisor", side_effect=core):
+            self.assertEqual(self.request("POST", "/api/screens/camera/live", body)[0], 403)
+            status, raw = self.request("POST", "/api/screens/camera/live", body, secret=secret)
+            self.assertEqual(status, 200, raw)
+            url = json.loads(raw)["url"]
+            self.assertRegex(url, r"^/api/live/[A-Za-z0-9_-]{32}/playlist\.m3u8\?id=abc123$")
+            ticket = url.split("/")[3]
+            self.assertEqual(self.request("GET", url), (200, b"#EXTM3U\n"))
+            # what the playlist names, relative to it
+            self.assertEqual(self.request("GET", f"/api/live/{ticket}/segment.ts?id=abc123&n=4")[0], 200)
+            self.assertEqual(files, ["/api/hls/playlist.m3u8?id=abc123", "/api/hls/segment.ts?id=abc123&n=4"])
+            for bad in (
+                f"/api/live/{ticket}/segment.ts?id=other&n=4",  # another camera's stream
+                f"/api/live/{ticket}/segment.ts?n=4",
+                f"/api/live/{ticket}/../states",
+                "/api/live/nope/playlist.m3u8?id=abc123",
+            ):
+                self.assertEqual(self.request("GET", bad)[0], 404, bad)
+            agent.LIVE_TICKETS[ticket]["until"] = 0
+            self.assertEqual(self.request("GET", url)[0], 404)
+            self.assertEqual(len(files), 2)
+            # a camera that is not one of this panel's tiles
+            status, _ = self.request("POST", "/api/screens/camera/live", {"screen_id": self.SID, "entity_id": "camera.other"}, secret=secret)
+            self.assertEqual(status, 404)
+
+    def test_a_door_camera_never_streams_from_the_panel(self):
+        secret = self._paired(pages=self.CAM_TILES)
+        call = [{"entity_id": "binary_sensor.g4_doorbell", "state": "off", "attributes": {}}]
+        with mock.patch.object(agent, "ha", return_value=call), mock.patch.object(agent, "camera_stream") as stream:
+            status, raw = self.request("POST", "/api/screens/camera/live", {"screen_id": self.SID, "entity_id": "camera.g4"}, secret=secret)
+        self.assertEqual((status, json.loads(raw)["error"]), (409, "door_camera"))
+        stream.assert_not_called()
+
+    def test_hub_serves_hls_js_for_the_panel(self):
+        status, raw = self.request("GET", "/panel/hls.js")
+        self.assertEqual(status, 200)
+        self.assertIn(b".Hls=", raw[-400:])
+        self.assertTrue((ROOT / "panel-app" / "hls.LICENSE").read_text().find("Apache License") > 0)
+
     def test_legacy_screen_reads_but_cannot_open_door_or_camera(self):
         agent.put_wall_screen(self._row())  # paired before 0.1.50: no secret hash on the row
         self.ring()
@@ -1360,13 +1464,40 @@ class ScreenLanHttpTest(unittest.TestCase):
         self.assertEqual(re.findall(r'(?<![A-Za-z])fetch\(\s*"/api/screens', html), [])
         self.assertNotIn("url('/api/screens", html)
         self.assertNotRegex(html, r'\.src\s*=\s*"/api/screens')
-        self.assertEqual(len(re.findall(r'screen(?:Fetch|BlobUrl)\(\s*"/api/screens', html)), 6)
+        self.assertEqual(len(re.findall(r'screen(?:Fetch|BlobUrl)\(\s*"/api/screens', html)), 9)  # + camera.jpg, camera/live, ring
         self.assertNotRegex(html, r'[?&]secret=')
         # the hub's refusals become calm Greek lines, not silence
         self.assertIn("repair_required:", html)
         self.assertIn("no_recent_ring:", html)
         self.assertIn("r.status === 429", html)
         self.assertIn("found.pairing_pending", html)
+
+    def test_panel_camera_streams_only_while_someone_looks(self):
+        """docs/plans/2026-11-08-panel-camera-tiles.md: stills on the wall, a stream only full screen, for 2 min."""
+        html = (ROOT / "panel.html").read_text(encoding="utf-8")
+        js = html[html.index("const CAM_TILE_MS") : html.index("async function load(keepPage)")]
+        self.assertIn("const CAM_TILE_MS = 10000;", js)
+        self.assertIn("const CAMVIEW_MS = 120000;", js)
+        self.assertIn("v.closeAt = setTimeout(closeCamView, CAMVIEW_MS);", js)
+        # a tile pulls a still, never a stream; nothing while the doorbell, full screen or a hidden page is up
+        tiles = js[js.index("async function camTiles()") : js.index("function loadHls()")]
+        self.assertNotIn("camera/live", tiles)
+        self.assertIn("camView || !screen || document.hidden || !doorbellEl.classList.contains(\"hidden\")", tiles)
+        # the stream ends with the view: on «Κλείσιμο», a hidden page, the doorbell, a lost pairing
+        self.assertIn('getElementById("camview-close").addEventListener("click", closeCamView)', js)
+        self.assertIn("if (document.hidden) closeCamView();", js)
+        show = html[html.index("function showDoorbell()") : html.index("function syncDoorbell()")]
+        self.assertIn("closeCamView();", show)
+        close = js[js.index("function closeCamView()") :]
+        self.assertIn("camStop(v);", close)
+        self.assertIn("v.hls.destroy();", js[js.index("function camStop(v)") :])
+        # hls.js first, Safari's own where it cannot run; 5 new streams a minute, then stills
+        self.assertIn('s.src = "/panel/hls.js";', js)
+        self.assertIn('camVideo.canPlayType("application/vnd.apple.mpegurl")', js)
+        self.assertIn("if (v.restarts.length >= 5) return camStillsOnly(v, \"no_hls\");", js)
+        self.assertNotIn("recoverMediaError", js)
+        # a camera on screen is private to «Στιγμιότυπο»
+        self.assertIn("|| sheet || camView || cameraOnPage()) body = { screen_id: sid, refused: \"private\" };", html)
 
 if __name__ == "__main__":
     unittest.main()

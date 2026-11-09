@@ -109,7 +109,7 @@
         padding: 1.5rem;
         text-align: center;
       }
-      #gate.hidden, #board.hidden, #status.hidden, #sheet.hidden, #doorbell.hidden, #doorbell-open.hidden, #doorbell-yes.hidden { display: none; }
+      #gate.hidden, #board.hidden, #status.hidden, #sheet.hidden, #doorbell.hidden, #camview.hidden, #doorbell-open.hidden, #doorbell-yes.hidden { display: none; }
       h1 { margin: 0; font-size: 1.4rem; font-weight: 600; letter-spacing: -0.03em; }
       p { margin: 0; color: var(--muted); }
       input {
@@ -935,6 +935,27 @@
       #doorbell-bar p { flex: 1 1 8rem; color: var(--ink); }
       #doorbell-confirm { color: var(--on-text); }
       #doorbell-bar button { min-height: 72px; border-radius: var(--r, 28px); padding: 0 1.2rem; font-size: 1.1rem; }
+      /* A camera on the wall (docs/plans/2026-11-08-panel-camera-tiles.md): the still fills its tile; full screen
+         shows the whole frame, the picture first, the video over it once it moves. */
+      .tile--camera { padding: 0; background: #121212; }
+      .tile--camera .cam-still { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; }
+      .tile--camera .cam-label {
+        position: absolute; left: 0; right: 0; bottom: 0;
+        padding: 0.5rem 0.8rem; color: #f2f2f2; background: rgba(0, 0, 0, 0.5); font-size: 1rem;
+      }
+      #camview { position: absolute; top: 0; right: 0; bottom: 0; left: 0; z-index: 7; background: #050505; color: #f2f2f2; }
+      #camview-img, #camview-video { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: contain; }
+      #camview:not(.live) #camview-video { opacity: 0; }
+      #camview.live #camview-img { display: none; }
+      #camview-bar {
+        position: absolute; left: 0; right: 0; bottom: 0;
+        display: flex; align-items: center; gap: 12px;
+        padding: 12px 16px; padding-bottom: max(12px, env(safe-area-inset-bottom));
+        background: rgba(0, 0, 0, 0.55);
+      }
+      #camview-bar p { flex: 1 1 auto; min-width: 0; margin: 0; }
+      #camview-state { display: block; font-size: 0.95rem; opacity: 0.75; }
+      #camview-close { min-height: 64px; border-radius: var(--r, 28px); padding: 0 1.2rem; font-size: 1.1rem; color: #f2f2f2; background: #121212; border-color: #333; }
       /* Pairing, in the look of Partner's sign-in: a flat card, condensed capitals, one orange
          signal. Orange never carries text here (2.4:1 on ink); the focus ring is paper. */
       #gate .gate-card, .notice .gate-card { width: min(22rem, 100%); display: flex; flex-direction: column; text-align: left; }
@@ -1003,6 +1024,7 @@
       .no-flex-gap .wx-hours > * + * { margin-left: 2px; }
       .no-flex-gap .clima-chips div > * { margin: 0 8px 8px 0; }
       .no-flex-gap #doorbell-bar > * { margin: 0 12px 12px 0; }
+      .no-flex-gap #camview-bar > * + * { margin-left: 12px; }
       /* aspect-ratio arrived in Safari 15: a square from padding on older iPads. */
       @supports not (aspect-ratio: 1) {
         .wx-orb { height: 0; padding-bottom: min(34%, 5.4rem); }
@@ -1337,6 +1359,14 @@
         <button type="button" id="doorbell-open" class="hidden">Άνοιγμα πόρτας</button>
         <button type="button" id="doorbell-yes" class="hidden">Ναι, άνοιξε</button>
         <button type="button" id="doorbell-dismiss">Κλείσιμο</button>
+      </div>
+    </aside>
+    <aside id="camview" class="hidden">
+      <img id="camview-img" alt="" />
+      <video id="camview-video" muted playsinline webkit-playsinline autoplay></video>
+      <div id="camview-bar">
+        <p><b id="camview-title"></b><span id="camview-state"></span></p>
+        <button type="button" id="camview-close">Κλείσιμο</button>
       </div>
     </aside>
     <script>
@@ -2515,6 +2545,7 @@
       }
       function homeBusy() {
         if (doorbellEl && !doorbellEl.classList.contains("hidden")) return true;
+        if (camView) return true;
         const rec = timerRec();
         return Boolean(rec && rec.ringing);
       }
@@ -2848,6 +2879,10 @@
       }
 
       async function tap(t) {
+        if ((t.kind === "camera" || t.kind === "camera_button") && t.ref) {
+          openCamView(t.ref);
+          return;
+        }
         if (t.kind === "clock") {
           openSheet({ kind: "clock", bold: !!t.bold });
           return;
@@ -2918,6 +2953,19 @@
             esc(remain && !ringing ? "χρονόμετρο" : dateText()) +
             "</span>"
           );
+        }
+        if (t.kind === "camera") {
+          const cam = byId(t.ref);
+          const src = camStills[t.ref];
+          return (
+            '<img class="cam-still" alt="" data-cam="' + esc(t.ref) + '"' + (src ? ' src="' + src + '"' : "") + " />" +
+            (src ? "" : tileGlyph("camera")) +
+            '<span class="cam-label">' + esc(cam ? cam.name : t.ref) + "</span>"
+          );
+        }
+        if (t.kind === "camera_button") {
+          const cam = byId(t.ref);
+          return tileGlyph("camera") + '<span class="kicker">Κάμερα</span><span class="name">' + esc(cam ? cam.name : t.ref) + "</span>";
         }
         if (t.kind === "energy") {
           return '<span class="kicker">Ενέργεια</span><span class="face">' + esc(energyNowText()) + "</span>";
@@ -3324,6 +3372,7 @@
       function showDoorbell() {
         if (!doorbellEl.classList.contains("hidden")) return;
         const db = screen && screen.doorbell;
+        closeCamView();
         doorbellEl.classList.remove("hidden");
         doorbellYes.classList.add("hidden");
         if (db && db.unlock_entity_id) doorbellOpen.classList.remove("hidden");
@@ -3348,6 +3397,219 @@
         showDoorbell();
       }
 
+      // Cameras on the wall (docs/plans/2026-11-08-panel-camera-tiles.md). A tile's still comes every 10 s, only
+      // for the page in view; nothing streams until someone opens one full screen, and that closes after 2 min.
+      const CAM_TILE_MS = 10000;
+      const CAMVIEW_MS = 120000;
+      const camStills = {};
+      const camAt = {};
+      let camTileBusy = false;
+      let camView = null;
+      let hlsLib = null;
+      const camEl = document.getElementById("camview");
+      const camImg = document.getElementById("camview-img");
+      const camVideo = document.getElementById("camview-video");
+      const camState = document.getElementById("camview-state");
+      function cameraOnPage() {
+        const page = screen && (screen.pages || [])[pageIx];
+        return ((page && page.tiles) || []).some((t) => t.kind === "camera");
+      }
+      async function pullCamStill(eid, width) {
+        const url = await screenBlobUrl(
+          "/api/screens/camera.jpg?id=" + encodeURIComponent(screen.screen_id) + "&e=" + encodeURIComponent(eid) + "&w=" + width,
+          { cache: "no-store" }
+        );
+        const old = camStills[eid];
+        camStills[eid] = url;
+        camAt[eid] = Date.now();
+        pagesEl.querySelectorAll('img[data-cam="' + eid + '"]').forEach((img) => {
+          img.src = url;
+          const glyph = img.parentNode.querySelector(".tile-ico");
+          if (glyph) glyph.parentNode.removeChild(glyph);
+        });
+        if (old) URL.revokeObjectURL(old);
+        return url;
+      }
+      async function camTiles() {
+        if (PREVIEW || camTileBusy || camView || !screen || document.hidden || !doorbellEl.classList.contains("hidden")) return;
+        const page = (screen.pages || [])[pageIx];
+        const due = ((page && page.tiles) || [])
+          .filter((t) => t.kind === "camera" && t.ref && !(Date.now() - (camAt[t.ref] || 0) < CAM_TILE_MS))
+          .map((t) => t.ref);
+        camTileBusy = true;
+        try {
+          for (const eid of due.filter((e, i) => due.indexOf(e) === i)) {
+            camAt[eid] = Date.now(); // a camera that does not answer waits its 10 s like the others
+            await pullCamStill(eid, 640).catch(() => {});
+          }
+        } finally {
+          camTileBusy = false;
+        }
+      }
+      function loadHls() {
+        if (!hlsLib) {
+          hlsLib = new Promise((resolve) => {
+            // An iPad on iOS 12 has no MediaSource: Safari's own HLS, without 386 KB of script.
+            if (!(window.MediaSource || window.WebKitMediaSource || window.ManagedMediaSource)) return resolve(null);
+            const s = document.createElement("script");
+            s.src = "/panel/hls.js";
+            s.onload = () => resolve(window.Hls && window.Hls.isSupported() ? window.Hls : null);
+            s.onerror = () => {
+              hlsLib = null;
+              resolve(null);
+            };
+            document.head.appendChild(s);
+          });
+        }
+        return hlsLib;
+      }
+      function camStop(v) {
+        if (v.hls) v.hls.destroy();
+        v.hls = null;
+        v.native = false;
+        v.live = false;
+        camEl.classList.remove("live");
+        camVideo.removeAttribute("src");
+        camVideo.load();
+      }
+      function camStillsOnly(v, code) {
+        if (camView !== v) return;
+        camStop(v);
+        camState.textContent = code === "repair_required" ? "Για εικόνα, το πάνελ πρέπει να συνδεθεί ξανά." : "Φωτογραφία";
+      }
+      // The Home web's player (camera-live.tsx): hls.js first wherever it runs, since the browser's own HLS gave up
+      // for good on a broken frame (Lechange, G2H Pro, 2026-11-08); the browser's own only where hls.js cannot;
+      // a player that gives up asks for a new stream, at most 5 a minute, then stills.
+      async function camLive(v) {
+        let out = {};
+        try {
+          const r = await screenFetch("/api/screens/camera/live", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ screen_id: screen.screen_id, entity_id: v.eid }),
+          });
+          out = await r.json().catch(() => ({}));
+          if (!r.ok) out.url = "";
+        } catch (e) {}
+        if (camView !== v) return;
+        if (!out.url) return camStillsOnly(v, out.error);
+        const Hls = await loadHls();
+        if (camView !== v) return;
+        if (Hls) {
+          const player = new Hls({ lowLatencyMode: false, maxBufferLength: 12 });
+          v.hls = player;
+          player.on(Hls.Events.ERROR, (ev, data) => {
+            if (!data.fatal || v.hls !== player) return;
+            if (data.type === Hls.ErrorTypes.NETWORK_ERROR) return player.startLoad();
+            camRestart(v);
+          });
+          player.on(Hls.Events.MANIFEST_PARSED, () => {
+            camVideo.play().catch(() => {});
+          });
+          player.loadSource(out.url);
+          player.attachMedia(camVideo);
+          return;
+        }
+        if (!camVideo.canPlayType("application/vnd.apple.mpegurl")) return camStillsOnly(v, "no_hls");
+        v.native = true;
+        camVideo.src = out.url;
+        camVideo.play().catch(() => {});
+      }
+      function camRestart(v) {
+        if (camView !== v) return;
+        camStop(v);
+        const now = Date.now();
+        v.restarts = v.restarts.filter((t) => now - t < 60000);
+        if (v.restarts.length >= 5) return camStillsOnly(v, "no_hls");
+        v.restarts.push(now);
+        camState.textContent = "Σύνδεση…";
+        camLive(v);
+      }
+      async function camStill(v) {
+        if (camView !== v || v.live || v.busy) return;
+        v.busy = true;
+        try {
+          const url = await pullCamStill(v.eid, 1280);
+          if (camView === v) camImg.src = url;
+        } catch (e) {
+          if (camView === v && e.message === "repair_required") camStillsOnly(v, "repair_required");
+        } finally {
+          v.busy = false;
+        }
+      }
+      function openCamView(eid) {
+        if (PREVIEW || !screen) return;
+        closeCamView();
+        closeSheet();
+        const cam = byId(eid);
+        const v = { eid: eid, restarts: [], hls: null, native: false, live: false, busy: false };
+        camView = v;
+        document.getElementById("camview-title").textContent = cam ? cam.name : eid;
+        camState.textContent = "Σύνδεση…";
+        if (camStills[eid]) camImg.src = camStills[eid];
+        camEl.classList.remove("hidden");
+        v.closeAt = setTimeout(closeCamView, CAMVIEW_MS);
+        v.stillTimer = setInterval(() => camStill(v), 1000);
+        camStill(v);
+        camLive(v);
+      }
+      function closeCamView() {
+        const v = camView;
+        if (!v) return;
+        camView = null;
+        clearTimeout(v.closeAt);
+        clearInterval(v.stillTimer);
+        camStop(v);
+        camEl.classList.add("hidden");
+        camImg.removeAttribute("src");
+      }
+      // «Ζωντανά» only while the picture moves; the still stays under it until then.
+      camVideo.addEventListener("playing", () => {
+        if (!camView) return;
+        camView.live = true;
+        camEl.classList.add("live");
+        camState.textContent = "Ζωντανά";
+      });
+      camVideo.addEventListener("waiting", () => {
+        if (camView && camView.live) camState.textContent = "Σύνδεση…";
+      });
+      camVideo.addEventListener("error", () => {
+        if (camView && camView.native) camRestart(camView);
+      });
+      document.getElementById("camview-close").addEventListener("click", closeCamView);
+      document.addEventListener("visibilitychange", () => {
+        if (document.hidden) closeCamView();
+      });
+      setInterval(camTiles, 2000);
+
+      // The doorbell at once: the hub answers this request the moment it rings (agent `doorbell_ring_wait`), where
+      // the 4 s poll alone took up to 4 s. Only while nothing rings here; the poll still ends a ring.
+      let ringWaiting = false;
+      async function waitForRing() {
+        if (PREVIEW || ringWaiting) return;
+        ringWaiting = true;
+        try {
+          while (screen && screen.doorbell && !doorbellWasRinging && pairing.get(KEY)) {
+            let out = null;
+            try {
+              const r = await screenFetch("/api/screens/ring?id=" + encodeURIComponent(screen.screen_id), { cache: "no-store" });
+              out = r.ok ? await r.json() : null;
+            } catch (e) {}
+            if (!out) {
+              await new Promise((done) => setTimeout(done, 5000));
+              continue;
+            }
+            if (out.ringing && screen && screen.doorbell && !doorbellWasRinging) {
+              screen.doorbell.ringing = true;
+              syncDoorbell();
+              load(true).catch(() => {});
+            }
+          }
+        } finally {
+          ringWaiting = false;
+        }
+      }
+
       async function load(keepPage) {
         const sid = pairing.get(KEY);
         if (!sid) {
@@ -3358,6 +3620,7 @@
           applyTheme(null);
           applyWallpaper(null);
           hideDoorbell();
+          closeCamView();
           closeSheet();
           return;
         }
@@ -3416,6 +3679,7 @@
         render();
         if (sheet) renderSheet();
         syncDoorbell();
+        waitForRing();
         paintTime();
         if (found.screenshot) takeScreenshot(sid);
       }
@@ -3427,7 +3691,7 @@
         if (shotBusy) return;
         shotBusy = true;
         let body;
-        if (!doorbellEl.classList.contains("hidden") || sheet) body = { screen_id: sid, refused: "private" };
+        if (!doorbellEl.classList.contains("hidden") || sheet || camView || cameraOnPage()) body = { screen_id: sid, refused: "private" };
         else {
           try {
             // The app's own pixels when it can (Arvio Panel 0.1.2); else the page draws itself.
