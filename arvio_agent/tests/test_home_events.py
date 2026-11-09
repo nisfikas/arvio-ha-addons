@@ -263,6 +263,46 @@ class DeviceWatchTest(unittest.TestCase):
         rows = [state("light.a", "unavailable", last_changed=self.at(40)), state("update.x", "unavailable", last_changed=self.at(40))]
         self.assertEqual(self.tick(rows, regs), [])
 
+    def test_scenes_scripts_remotes_and_lists_are_never_a_device(self):
+        # Κρέσνα 08/11: a Yubii blink left its scenes unavailable, and five «Εκτός σύνδεσης» came of it.
+        rows = [state(eid, "unavailable", last_changed=self.at(40)) for eid in ("scene.saloni_auto_open_shutters", "script.arvio_x", "event.remote_buttons", "todo.list")]
+        self.assertEqual(self.tick(rows), [])
+
+    def test_on_arvio_core_one_line_for_the_ac_and_none_for_its_thermometers(self):
+        # The Midea at Κρέσνα, 08/11 10:43: three lines for one AC. Core has no device registry.
+        regs = {e: {"platform": "systems.arvio.midea", "device_id": None} for e in ("climate.153931628163424_climate", "sensor.153931628163424_indoor_temperature", "sensor.153931628163424_outdoor_temperature")}
+        rows = [
+            state("climate.153931628163424_climate", "unavailable", name="Κλιματιστικό", last_changed=self.at(32)),
+            state("sensor.153931628163424_indoor_temperature", "unavailable", name="Θερμοκρασία κλιματιστικού", last_changed=self.at(32)),
+            state("sensor.153931628163424_outdoor_temperature", "unavailable", name="Εξωτερική θερμοκρασία", last_changed=self.at(32)),
+        ]
+        self.assertEqual(self.tick(rows, regs), [("climate.153931628163424_climate", "Κλιματιστικό")])
+
+    def test_on_arvio_core_a_roller_is_one_line_not_its_power_and_energy(self):
+        rows = [
+            state("cover.saloni_rolo_saloni_21", "unavailable", name="Ρολό σαλονιού", last_changed=self.at(40)),
+            state("sensor.saloni_rolo_saloni_21_power", "unavailable", name="Ρολό σαλονιού Ισχύς", last_changed=self.at(40)),
+            state("sensor.saloni_rolo_saloni_21_energy", "unavailable", name="Ρολό σαλονιού Ενέργεια", last_changed=self.at(40)),
+        ]
+        self.assertEqual(self.tick(rows), [("cover.saloni_rolo_saloni_21", "Ρολό σαλονιού")])
+
+    def test_on_arvio_core_a_doorbell_is_one_line_and_a_second_light_is_its_own(self):
+        hap = {"platform": "systems.arvio.hap"}
+        regs = {e: hap for e in ("camera.doorbell_501b", "switch.doorbell_501b_night_vision", "binary_sensor.doorbell_501b_doorbell")}
+        rows = [state(e, "unavailable", name=e, last_changed=self.at(40)) for e in regs]
+        rows += [state(e, "unavailable", name=e, last_changed=self.at(40)) for e in ("light.lobby", "light.lobby_2")]
+        self.assertEqual(sorted(e for e, _ in self.tick(rows, regs)), ["camera.doorbell_501b", "light.lobby", "light.lobby_2"])
+
+    def test_a_device_is_told_by_the_thing_not_its_meter(self):
+        regs = {"sensor.a_power": {"device_id": "d1"}, "cover.a": {"device_id": "d1"}}
+        rows = [state("sensor.a_power", "unavailable", name="Ισχύς", last_changed=self.at(40)), state("cover.a", "unavailable", name="Ρολό", last_changed=self.at(40))]
+        self.assertEqual(self.tick(rows, regs), [("cover.a", "Ρολό")])
+
+    def test_the_ac_that_drops_its_connection_every_two_minutes_says_nothing(self):
+        # midea/driver.ts: the unit closes each connection after about 2′, unavailable only after 30″ away.
+        for minutes in (0.5, 2, 29):
+            self.assertEqual(self.tick([state("climate.ac", "unavailable", last_changed=self.at(minutes))]), [])
+
     def test_a_whole_integration_falling_over_stays_a_few_lines(self):
         rows = [state(f"light.l{i}", "unavailable", last_changed=self.at(40)) for i in range(20)]
         self.assertEqual(len(self.tick(rows)), agent.DEVICE_WATCH_PER_TICK)
