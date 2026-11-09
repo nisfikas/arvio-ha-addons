@@ -583,6 +583,31 @@ class ScreenLanHttpTest(unittest.TestCase):
         self.assertEqual(row["current_position"], 80)
         self.assertEqual(row["device_class"], "shutter")
 
+    def test_panel_snapshot_includes_what_a_speaker_plays(self):
+        """SFK HQ 2026-11-09: the speaker sheet showed only «Παύση», because the snapshot carried no media fields."""
+        group = {  # the hub's own «Ηχεία SFK», as Core reports it (arvio.model, 2026-11-09 08:40 UTC)
+            "entity_id": "media_player.ekheia_sfk",
+            "state": "playing",
+            "attributes": {
+                "friendly_name": "Ηχεία SFK",
+                "volume_level": 0.21,
+                "media_title": "Rock FM 96.9",
+                "media_content_id": "https://az10.yesstreaming.net:8060/radio.mp3",
+                "media_content_type": "music",
+                "group_members": ["media_player.reception", "media_player.garage_speaker"],
+            },
+        }
+        with mock.patch.object(agent, "hub_id", "hub_lan"), mock.patch.object(
+            agent, "registries_for_commands", return_value={"entity_regs": {}, "devices": {}, "areas": {}}
+        ), mock.patch.object(agent, "ha", return_value=[group]):
+            status, raw = self.panel_get()
+        self.assertEqual(status, 200)
+        row = json.loads(raw.decode())["entities"][0]
+        self.assertEqual(row["volume_level"], 0.21)
+        self.assertEqual(row["media_title"], "Rock FM 96.9")
+        self.assertEqual(row["media_content_id"], "https://az10.yesstreaming.net:8060/radio.mp3")
+        self.assertEqual(row["media_content_type"], "music")
+
     def test_panel_cover_has_animated_shade(self):
         html = (ROOT / "panel.html").read_text(encoding="utf-8")
         self.assertIn("cv-shade", html)

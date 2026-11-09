@@ -2583,6 +2583,9 @@ def panel_snapshot(screen_id: str | None = None, secret: str | None = None) -> d
                     "fan_speed", "fan_speed_list", "mop_fitted", "mop_level", "mop_level_list",
                 ):
                     item[k] = e.get(k)
+            if domain == "media_player":  # the speaker sheet: what plays, the volume, what to play again
+                for k in ("media_title", "media_artist", "volume_level", "media_content_id", "media_content_type"):
+                    item[k] = e.get(k)
             entities_out.append(item)
         states = ha("/states") or []
         if not isinstance(states, list):
