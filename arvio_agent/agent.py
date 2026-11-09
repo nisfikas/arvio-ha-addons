@@ -2499,6 +2499,7 @@ def panel_snapshot(screen_id: str | None = None, secret: str | None = None) -> d
     weather = None
     states = []
     door_relays = door_relay_ids()  # no tile and no entity: the LAN path refuses them, the doorbell opens them
+    marked = door_marks() or set()  # a marked door is never drawn as a light, whatever its icon
     try:
         snap = registries_for_commands()
         entity_regs = snap.get("entity_regs") or {}
@@ -2522,6 +2523,8 @@ def panel_snapshot(screen_id: str | None = None, secret: str | None = None) -> d
                 "area_id": effective_area_id(entity_regs.get(eid), devices),
                 "icon": picked_icons()["entities"].get(eid) or (entity_regs.get(eid) or {}).get("icon"),
             }
+            if eid in marked:
+                item["door_marked"] = True
             if domain == "climate":
                 item["current_temperature"] = e.get("current_temperature")
                 item["temperature"] = e.get("temperature")

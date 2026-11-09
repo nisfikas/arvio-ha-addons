@@ -1841,6 +1841,11 @@
         const g = icon && PICKED_ICONS[icon];
         return g && ICONS[g] ? g : null;
       }
+      // @arvio/domain switchIsLight: a relay an installer gave a light's icon is a light here, its command still switch.*.
+      const LIGHT_ICONS = ["mdi:lightbulb", "mdi:ceiling-light", "mdi:chandelier", "mdi:floor-lamp", "mdi:lamp", "mdi:wall-sconce", "mdi:spotlight", "mdi:led-strip", "mdi:outdoor-lamp"];
+      function isLight(e) {
+        return e.domain === "light" || (e.domain === "switch" && !e.door_marked && LIGHT_ICONS.indexOf(e.icon) >= 0);
+      }
       function iconForHvac(m) {
         if (m === "heat" || m === "heating") return "flame";
         if (m === "cool" || m === "cooling") return "snowflake";
@@ -2006,7 +2011,7 @@
         return (a && pickedGlyph(a.icon)) || "bulb";
       }
       function lightsIn(areaId) {
-        return snap.entities.filter((e) => e.domain === "light" && (!areaId || e.area_id === areaId)).map(viewEntity);
+        return snap.entities.filter((e) => isLight(e) && (!areaId || e.area_id === areaId)).map(viewEntity);
       }
       function lightsForRoom(areaId, allow) {
         const all = lightsIn(areaId);
@@ -2703,7 +2708,7 @@
         } else if (sheet.kind === "room") {
           const lights = lightsForRoom(sheet.ref, sheet.lights);
           const anyOn = lights.some((e) => e.state === "on");
-          const rest = devicesIn(sheet.ref).filter((e) => e.domain !== "light");
+          const rest = devicesIn(sheet.ref).filter((e) => !isLight(e));
           sheetTitle.textContent = areaName(sheet.ref);
           sheetSub.textContent = lights.length
             ? anyOn
@@ -2922,7 +2927,7 @@
         } else if (t.kind === "allOff") {
           for (const e of lightsIn(t.ref)) {
             setOverlay(e.entity_id, { state: "off" });
-            cmd("light.turn_off", e.entity_id);
+            cmd(e.domain + ".turn_off", e.entity_id);
           }
           return;
         } else if (t.kind === "scene" && t.ref) {
@@ -3805,7 +3810,7 @@
           const next = anyOn ? "off" : "on";
           for (const ent of lights) {
             setOverlay(ent.entity_id, { state: next });
-            cmd(anyOn ? "light.turn_off" : "light.turn_on", ent.entity_id);
+            cmd(ent.domain + (anyOn ? ".turn_off" : ".turn_on"), ent.entity_id);
           }
           return;
         }

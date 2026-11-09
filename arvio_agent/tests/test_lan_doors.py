@@ -197,6 +197,20 @@ class LanDoorsTest(unittest.TestCase):
         tiles = [t["ref"] for t in out["screens"][0]["pages"][0]["tiles"]]
         self.assertEqual(tiles, ["switch.plain"])
 
+    def test_the_panel_knows_a_marked_door_so_a_lamp_icon_never_makes_it_a_light(self):
+        rows = [
+            {"entity_id": "switch.yard", "state": "off", "name": "Αυλή", "domain": "switch"},
+            {"entity_id": "switch.lamp", "state": "off", "name": "Φως", "domain": "switch"},
+        ]
+        with mock.patch.object(agent, "entities", return_value=rows), \
+             mock.patch.object(agent, "registries_for_commands", return_value={}), \
+             mock.patch.object(agent, "door_marks", return_value={"switch.yard"}):
+            out = agent.panel_snapshot("scr_door", SECRET)
+        marked = {e["entity_id"]: e.get("door_marked") for e in out["entities"]}
+        self.assertEqual(marked, {"switch.yard": True, "switch.lamp": None})
+        page = (pathlib.Path(__file__).resolve().parents[1] / "panel.html").read_text(encoding="utf-8")
+        self.assertIn('(e.domain === "switch" && !e.door_marked && LIGHT_ICONS.indexOf(e.icon) >= 0)', page)
+
     def test_the_panel_sends_its_secret_with_commands(self):
         page = (pathlib.Path(__file__).resolve().parents[1] / "panel.html").read_text(encoding="utf-8")
         start = page.index("async function cmd(action, entityId, payload)")
