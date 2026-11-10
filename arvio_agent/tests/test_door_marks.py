@@ -367,6 +367,22 @@ class PulseTest(unittest.TestCase):
             time.sleep(0.4)
         self.assertEqual(self.calls, ["switch.turn_on", "switch.turn_off"])
 
+    def test_core_not_seeing_a_pulsed_relay_on_is_no_failure(self):
+        # Arvio Core answers not_confirmed when its read-back finds the relay already off again.
+        def core(domain, service, data):
+            self.calls.append(f"{domain}.{service}")
+            if service == "turn_on":
+                raise RuntimeError("not_confirmed")
+
+        agent.door_mark({"entity_id": RELAY, "door": True, "pulse_ms": 200})
+        with mock.patch.object(agent, "ha_call_service", core):
+            self.assertTrue(agent.call_service("switch", "turn_on", {"entity_id": RELAY})["ok"])
+            time.sleep(0.4)
+        self.assertEqual(self.calls, ["switch.turn_on", "switch.turn_off"])
+        agent.door_mark({"entity_id": RELAY, "door": True, "pulse_ms": 0})
+        with mock.patch.object(agent, "ha_call_service", core), self.assertRaises(RuntimeError):
+            agent.call_service("switch", "turn_on", {"entity_id": RELAY})  # without a pulse it stays a failure
+
     def test_a_relay_with_no_pulse_is_left_alone(self):
         agent.door_mark({"entity_id": RELAY, "door": True})
         self.assertFalse(agent.arm_pulses("switch", "turn_on", [RELAY]))

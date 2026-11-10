@@ -63,7 +63,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.90"
+AGENT_VERSION = "0.1.91"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -5428,6 +5428,12 @@ def call_service(
         pulsed = False
         try:
             ha_context_id = ha_call_service(domain, service, data)
+        except RuntimeError as e:
+            # Arvio Core reads a relay back until it shows on, and a pulsed one is off again by then
+            # (Yubii «Πόρτα Nick», 09/11). Its controller took the command: as with HA below, that is it.
+            if str(e) != "not_confirmed" or not is_pulse_press(domain, service, entity_ids):
+                raise
+            ha_context_id = None
         finally:
             # Also when the call failed: it may have reached the relay all the same.
             pulsed = arm_pulses(domain, service, entity_ids)
@@ -6666,6 +6672,14 @@ def _pulse_off(entity_id: str) -> None:
         except Exception as e:
             print(f"pulse: {entity_id} did not turn off ({e}), try {attempt + 1}", flush=True)
             time.sleep(1)
+
+
+def is_pulse_press(domain: str, service: str, entity_ids: list) -> bool:
+    """Turning on relays that all have a pulse: what comes back is on, or already off again."""
+    if domain not in ("switch", "light") or service not in ("turn_on", "toggle") or not entity_ids:
+        return False
+    pulses = door_pulses()
+    return all(pulses.get(e) for e in entity_ids)
 
 
 def arm_pulses(domain: str, service: str, entity_ids: list) -> bool:
