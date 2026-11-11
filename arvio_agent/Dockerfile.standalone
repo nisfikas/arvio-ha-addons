@@ -7,7 +7,7 @@ RUN apk add --no-cache android-tools \
   && pip3 install --no-cache-dir websocket-client==1.8.0 pillow==11.1.0
 
 WORKDIR /app
-COPY agent.py occupancy.py panel_install.py guest_tv.py launcher.py ui.html panel.html tv.html /app/
+COPY agent.py occupancy.py panel_install.py guest_tv.py launcher.py ui.html panel.html tv.html lan-sign.js /app/
 COPY panel-app /app/panel-app
 ENV ARVIO_DATA_DIR=/data
 EXPOSE 8099

@@ -3,6 +3,7 @@ import base64
 import json
 import pathlib
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -311,3 +312,80 @@ class DeviceWatchTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HomeEventLineTest(unittest.TestCase):
+    """One event per (entity, code) on its way at a time, one thread for all of them, and a bound."""
+
+    def setUp(self):
+        agent._home_events_pending.clear()
+        while not agent._home_events.empty():
+            agent._home_events.get_nowait()
+        self.addCleanup(agent._home_events_pending.clear)
+
+    def note(self, entity_id, new, old, device_class):
+        agent.note_home_event(entity_id, state(entity_id, new, device_class), state(entity_id, old, device_class))
+
+    def wait_for(self, done):
+        for _ in range(200):
+            if done():
+                return
+            time.sleep(0.01)
+        self.fail("waited in vain")
+
+    def test_a_sensor_that_flaps_through_an_internet_cut_is_one_push(self):
+        gate, posted = threading.Event(), []
+
+        def slow_post(code, entity_id, name):
+            posted.append((code, entity_id, name))
+            gate.wait(5)
+
+        with mock.patch.object(agent, "post_hub_event", slow_post):
+            for _ in range(3):
+                self.note("binary_sensor.leak", "on", "off", "moisture")
+            for _ in range(2):
+                self.note("sensor.bat", "20", "21", "battery")
+            self.assertEqual(sorted(agent._home_events_pending), [("binary_sensor.leak", "leak"), ("sensor.bat", "battery_low")])
+            threading.Thread(target=agent.home_event_next, daemon=True).start()
+            self.wait_for(lambda: posted)
+            self.assertEqual(posted, [("leak", "binary_sensor.leak", "Κουζίνα")])
+            # while it is on its way (retries take minutes), another flap adds nothing
+            self.note("binary_sensor.leak", "on", "off", "moisture")
+            self.assertEqual(agent._home_events.qsize(), 1)
+            gate.set()
+            threading.Thread(target=agent.home_event_next, daemon=True).start()
+            self.wait_for(lambda: not agent._home_events_pending)
+            self.assertEqual([p[0] for p in posted], ["leak", "battery_low"])
+        # once out, the next one is a new event
+        self.assertTrue(agent.queue_home_event("leak", "binary_sensor.leak", "Κουζίνα"))
+
+    def test_the_line_is_bounded(self):
+        with mock.patch.object(agent, "HOME_EVENT_PENDING_MAX", 2):
+            self.assertTrue(agent.queue_home_event("smoke", "binary_sensor.a", "A"))
+            self.assertTrue(agent.queue_home_event("smoke", "binary_sensor.b", "B"))
+            self.assertFalse(agent.queue_home_event("smoke", "binary_sensor.c", "C"))
+            self.assertFalse(agent.queue_home_event("smoke", "binary_sensor.a", "A"))
+        self.assertEqual(agent._home_events.qsize(), 2)
+
+    def test_a_device_gone_takes_the_same_line(self):
+        rows = [{"entity_id": "light.a", "state": "unavailable", "attributes": {"friendly_name": "A"}, "last_changed": "2020-01-01T00:00:00+00:00"}]
+        with mock.patch.object(agent, "registry_snapshot", return_value={"loaded_at": 1.0, "entity_regs": {}}), \
+             mock.patch.object(agent, "device_watch_tick", return_value=[("light.a", "A")]), \
+             mock.patch.object(agent, "ha", return_value=rows), \
+             mock.patch.object(agent, "queue_home_event") as queued, \
+             mock.patch.object(agent.time, "sleep", side_effect=[None, StopIteration]):
+            with self.assertRaises(StopIteration):
+                agent.device_watch_loop()
+        queued.assert_called_once_with("unavailable", "light.a", "A")
+
+    def test_the_cloud_answering_at_all_ends_the_tries(self):
+        waits = []
+        with mock.patch.object(agent, "post_as_hub", side_effect=[False, False, True]) as post:
+            agent.post_hub_event("smoke", "binary_sensor.a", "A", sleep=waits.append)
+        self.assertEqual(waits, [0, 5, 30])
+        self.assertEqual(post.call_count, 3)
+        post.assert_called_with("events", {"code": "smoke", "entity_id": "binary_sensor.a", "name": "A"}, "event")
+        waits.clear()
+        with mock.patch.object(agent, "post_as_hub", return_value=False) as post:
+            agent.post_hub_event("smoke", "binary_sensor.a", "A", sleep=waits.append)
+        self.assertEqual(waits, [0, 5, 30, 120])

@@ -121,7 +121,7 @@ Firewall: επίτρεψε θύρα **8787/tcp**.
 - `state_snapshot`: μετά το wait-for-state (≤ 2 s) — `{ entity_id, state, last_changed, attrs }` για μία οντότητα, `{ entities: { id: {state, attrs} } }` για target.
 - **Χωρίς «αναμενόμενη» κατάσταση (§14.3):** το fallback του 0.1.13 αφαιρέθηκε. Αν το HA δεν επιβεβαιώσει την αλλαγή μέσα στο wait, το ack είναι `ok:false`, `error:"state_not_confirmed"` και το snapshot δείχνει ό,τι βλέπει το HA. Stateless υπηρεσίες (scene/script/stop_cover/set_*) δεν περιμένουν κατάσταση.
 - `ha_context_id`: η κλήση γίνεται με το τεκμηριωμένο WS `call_service` (το result φέρει πάντα `context.id`, ώστε και το αργό `state_changed` μιας Zigbee συσκευής να χαρτογραφείται στην εντολή)· fallback στο `POST /api/services/…` όταν δεν ανοίγει WS (εκεί το context έρχεται από τα states που άλλαξαν — `null` αν δεν άλλαξε τίποτα). Ο agent κρατά `ha_context_id → command_id` (LRU 500) για το `command_id` στα push events.
-- **Δύο κοινόχρηστες HA websocket συνδέσεις** (`SharedHaWs`, καθεμία με δικό της lock, lazy άνοιγμα, `ping` μετά από 30 s αδράνειας, drop + reopen σε σφάλμα): το **command channel** (`ha_ws_shared_command`) μεταφέρει **μόνο** τα `call_service` που αλλάζουν κατάσταση (φώτα, κλειδαριές, players)· το **query channel** (`ha_ws_query_command`) τα read-only `media_player/browse_media`, `media_player/search_media` και τα `call_service … return_response: true` (`music_assistant.search`, `get_queue`). Ένα αργό browse/search Spotify ή Music Assistant (έως το timeout 20 s του socket) καθυστερεί έτσι μόνο άλλα queries, ποτέ μια εντολή· `HaWsUnavailable` (δεν άνοιξε socket, τίποτα δεν στάλθηκε) → REST fallback όπως πριν.
+- **Δύο κοινόχρηστες HA websocket συνδέσεις** (`SharedHaWs`, καθεμία με δικό της lock, lazy άνοιγμα, `ping` μετά από 30 s αδράνειας, drop + reopen σε σφάλμα): το **command channel** (`ha_ws_shared_command`) μεταφέρει **μόνο** τα `call_service` που αλλάζουν κατάσταση (φώτα, κλειδαριές, players)· το **query channel** (`ha_ws_query_command`) τα read-only `media_player/browse_media`, `media_player/search_media` και τα `call_service … return_response: true` (`todo.get_items`, προγνώσεις καιρού). Ένα αργό browse/search Spotify (έως το timeout 20 s του socket) καθυστερεί έτσι μόνο άλλα queries, ποτέ μια εντολή· `HaWsUnavailable` (δεν άνοιξε socket, τίποτα δεν στάλθηκε) → REST fallback όπως πριν.
 
 ### 5.4 Ασφάλεια εντολών (§6.9, §9.4)
 
@@ -147,7 +147,7 @@ Wait-for-state μετά από service call: ένα REST read ανά οντότ�
 | `{ type:"heartbeat", hub_id, snapshot_version, agent_version, ts }` | κάθε 30 s + αμέσως μετά το άνοιγμα του WS |
 | `{ type:"ping" }` | κάθε 20 s (υπάρχον) |
 
-Το `/health` επιστρέφει επιπλέον `snapshot_version`, `ha_version` και (0.1.21) `ma_available`.
+Το `/health` επιστρέφει επιπλέον `snapshot_version` και `ha_version`.
 
 Το cloud heartbeat (`POST /v1/hubs/{hub_id}/heartbeat`, κάθε 30 s μαζί με τον presence code) στέλνει επίσης `snapshot_version`: το cloud (`home-model.ts` `hubSnapshotVersion`) σερβίρει το `site_model_cache` χωρίς να ρωτήσει τον hub όσο η τιμή ταιριάζει με την cached. Agents χωρίς το πεδίο → «άγνωστο» → κανονικό fetch.
 
@@ -156,9 +156,11 @@ Wait-for-state μετά από service call: ένα REST read ανά οντότ�
 ```bash
 cd addons/arvio_agent && python3 -m unittest discover -s tests -v
 ```
-Μόνο stdlib `unittest`· fixtures χωρίς HA (`ARVIO_DATA_DIR` για το `/data`)· καλύπτουν builder (με/χωρίς floors, area από συσκευή, config/hidden εκτός, paging, show_in_home), target/batch, expiry/dedupe/confirm, χωρίς-fallback ack, push και LAN· `tests/test_media.py` (0.1.21) καλύπτει το μοντέλο μουσικής, `ma_available`, `media_art` (με/χωρίς Pillow, cache), browse/search, allowlists, `volume_max`, push χωρίς position-only, ownership σεναρίων και τα version pins.
+Μόνο stdlib `unittest`· fixtures χωρίς HA (`ARVIO_DATA_DIR` για το `/data`)· καλύπτουν builder (με/χωρίς floors, area από συσκευή, config/hidden εκτός, paging, show_in_home), target/batch, expiry/dedupe/confirm, χωρίς-fallback ack, push και LAN· `tests/test_media.py` (0.1.21) καλύπτει το μοντέλο μουσικής, `media_art` (με/χωρίς Pillow, cache), browse/search, allowlists, `volume_max`, push χωρίς position-only, ownership σεναρίων και τα version pins.
 
 ## 6. Agent 0.1.21 — Μουσική (§15 του σχεδίου, Φάση 2b)
+
+> **Το Music Assistant καταργήθηκε 2026-11-04** (μουσική = Arvio Music, `services/core/drivers/music` στο monorepo). Από την 0.1.92 ο agent δεν έχει πια `music_assistant.*` εντολές, `ma_available`, βιβλιοθήκη ή αναζήτηση MA· ό,τι λέει παρακάτω για το MA είναι ιστορία. Ο native έλεγχος κάθε `media_player` μένει όπως περιγράφεται.
 
 Music Assistant (MA) ως «μηχανή μουσικής» **και** native έλεγχος κάθε `media_player` (Cast, Sonos, Apple TV, Spotify, MA players). Χωρίς MA το app δουλεύει σε **«έλεγχο μόνο»**. Τα πεδία μουσικής **δεν** υπάρχουν ακόμη στο `home-model.ts` (το προσθέτει το cloud stream)· αυστηροί αναγνώστες τα αγνοούν. Έκδοση σε τρία σημεία όπως πριν (`config.yaml`, `Dockerfile` label, `AGENT_VERSION`) — ελέγχεται από test.
 

@@ -148,7 +148,7 @@ class SafetyTest(unittest.TestCase):
             "climate.set_swing_mode", "climate.turn_on", "climate.turn_off", "scene.turn_on", "script.turn_on",
             "arvio.list_entities", "arvio.pairing_status",
             "arvio.trigger_scenario",  # 0.1.50: arvio.list_screens is relay-only (screen enumeration)
-        } | set(agent.MEDIA_PLAYER_ACTIONS) | set(agent.MUSIC_ASSISTANT_ACTIONS)  # 0.1.21: transport/volume only; library/art stay cloud-only
+        } | set(agent.MEDIA_PLAYER_ACTIONS)  # 0.1.21: transport/volume only; library/art stay cloud-only
         allowed |= set(agent.VACUUM_ACTIONS)  # vacuum card: wall panels start / pause / dock the robot
         allowed |= set(agent.HUMIDIFIER_ACTIONS)  # dehumidifier card: on / off / target / mode
         self.assertEqual(set(agent.LAN_ALLOWED_ACTIONS), allowed)
@@ -478,35 +478,32 @@ class TargetResolutionTest(unittest.TestCase):
         self.assertEqual(agent.resolve_target_entities(None, "light", *args), [])
 
     def test_native_target(self):
-        self.assertEqual(agent.native_target_data({"floor_id": "f"}, "2024.4.0"), {"floor_id": "f"})
-        self.assertEqual(agent.native_target_data({"area_id": "a", "floor_id": "f"}, "2025.1"), {"area_id": "a", "floor_id": "f"})
-        self.assertIsNone(agent.native_target_data({"floor_id": "f"}, "2024.3.3"))
-        self.assertIsNone(agent.native_target_data({"entity_ids": ["light.a"]}, "2025.1"))
+        self.assertEqual(agent.native_target_data({"floor_id": "f"}), {"floor_id": "f"})
+        self.assertEqual(agent.native_target_data({"area_id": "a", "floor_id": "f"}), {"area_id": "a", "floor_id": "f"})
+        self.assertIsNone(agent.native_target_data({"entity_ids": ["light.a"]}))
 
 
 class ServiceDataTest(unittest.TestCase):
-    def test_kelvin_vs_mireds(self):
-        svc, data = agent.build_service_data("light.turn_on", "light.a", {"color_temp_kelvin": 2700}, "2025.8")
+    def test_kelvin(self):
+        svc, data = agent.build_service_data("light.turn_on", "light.a", {"color_temp_kelvin": 2700})
         self.assertEqual((svc, data), ("turn_on", {"entity_id": "light.a", "color_temp_kelvin": 2700}))
-        svc, data = agent.build_service_data("light.turn_on", "light.a", {"color_temp_kelvin": 2700}, "2022.6.1")
-        self.assertEqual(data, {"entity_id": "light.a", "color_temp": 370})
-        _, data = agent.build_service_data("light.turn_on", "light.a", {"brightness_pct": 45, "rgb_color": [1, 2, 3]}, None)
+        _, data = agent.build_service_data("light.turn_on", "light.a", {"brightness_pct": 45, "rgb_color": [1, 2, 3]})
         self.assertEqual(data, {"entity_id": "light.a", "brightness_pct": 45, "rgb_color": [1, 2, 3]})
 
     def test_codes_and_positions(self):
-        _, data = agent.build_service_data("lock.unlock", "lock.a", {"code": "1234", "confirm_dangerous": True}, None)
+        _, data = agent.build_service_data("lock.unlock", "lock.a", {"code": "1234", "confirm_dangerous": True})
         self.assertEqual(data, {"entity_id": "lock.a", "code": "1234"})
-        _, data = agent.build_service_data("lock.lock", "lock.a", {}, None)
+        _, data = agent.build_service_data("lock.lock", "lock.a", {})
         self.assertEqual(data, {"entity_id": "lock.a"})
-        _, data = agent.build_service_data("alarm_control_panel.alarm_arm_home", "alarm_control_panel.a", {"code": ""}, None)
+        _, data = agent.build_service_data("alarm_control_panel.alarm_arm_home", "alarm_control_panel.a", {"code": ""})
         self.assertEqual(data, {"entity_id": "alarm_control_panel.a"})
-        _, data = agent.build_service_data("alarm_control_panel.alarm_disarm", "alarm_control_panel.a", {"code": 4321}, None)
+        _, data = agent.build_service_data("alarm_control_panel.alarm_disarm", "alarm_control_panel.a", {"code": 4321})
         self.assertEqual(data["code"], "4321")
-        svc, data = agent.build_service_data("cover.set_cover_position", "cover.a", {"position": 40}, None)
+        svc, data = agent.build_service_data("cover.set_cover_position", "cover.a", {"position": 40})
         self.assertEqual((svc, data["position"]), ("set_cover_position", 40))
-        svc, data = agent.build_service_data("cover.stop_cover", "cover.a", {}, None)
+        svc, data = agent.build_service_data("cover.stop_cover", "cover.a", {})
         self.assertEqual((svc, data), ("stop_cover", {"entity_id": "cover.a"}))
-        svc, data = agent.build_service_data("climate.set_hvac_mode", "climate.a", {"hvac_mode": "cool"}, None)
+        svc, data = agent.build_service_data("climate.set_hvac_mode", "climate.a", {"hvac_mode": "cool"})
         self.assertEqual(data["hvac_mode"], "cool")
         self.assertEqual(agent._expected_state_for("lock", "lock"), "locked")
         self.assertEqual(agent._expected_state_for("alarm_control_panel", "alarm_arm_night"), "armed_night")
@@ -592,7 +589,6 @@ class SharedHaWsTest(unittest.TestCase):
 
     def test_query_channel_is_separate_and_never_blocks_call_service(self):
         """A slow browse_media (query channel) must not delay a call_service (command channel)."""
-        agent.MA_INFO["entry_id"] = None
         sockets = self.sockets
         browse_started = threading.Event()
         release_browse = threading.Event()
@@ -746,13 +742,6 @@ class ExecuteWithFakeHaTest(unittest.TestCase):
         self.assertEqual(body, {"floor_id": "isogeio"})  # HA ≥ 2024.4 native target
         self.assertEqual(out["affected_entity_ids"], ["light.kouzina", "light.saloni"])
         self.assertEqual(out["state_snapshot"]["entities"]["light.saloni"]["state"], "off")
-
-    def test_floor_target_fallback_old_ha(self):
-        agent.HA_INFO["version"] = "2023.11.3"
-        out = agent.execute_action("light.turn_off", "", {}, target={"floor_id": "isogeio"})
-        _, body = self.fake.calls[0]
-        self.assertEqual(body, {"entity_id": ["light.kouzina", "light.saloni"]})
-        self.assertEqual(out["affected_entity_ids"], ["light.kouzina", "light.saloni"])
 
     def test_explicit_ids_ride_along_native(self):
         agent.execute_action("light.turn_off", "", {}, target={"area_id": "kouzina", "entity_ids": ["light.orphan"]})

@@ -1115,6 +1115,12 @@ class ScreenLanHttpTest(unittest.TestCase):
         self.assertEqual((status, json.loads(raw)["error"]), (409, "door_camera"))
         stream.assert_not_called()
 
+    def test_hub_serves_the_signing_code_for_both_pages(self):
+        status, raw = self.request("GET", "/panel/lan-sign.js")
+        self.assertEqual(status, 200)
+        self.assertIn(b"function lanSignature(", raw)
+        self.assertEqual(raw, (ROOT / "lan-sign.js").read_bytes())
+
     def test_hub_serves_hls_js_for_the_panel(self):
         status, raw = self.request("GET", "/panel/hls.js")
         self.assertEqual(status, 200)

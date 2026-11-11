@@ -254,9 +254,14 @@ class PageTest(unittest.TestCase):
             self.assertIsNone(re.search(bad, script), bad)
 
     def test_it_signs_exactly_as_the_wall_panel_does(self):
+        # Both pages load the one file, and the hub puts it inline into /tv: a TV keeps one file.
         panel = (ROOT / "panel.html").read_text(encoding="utf-8")
-        block = lambda html: html.split("// lan-sign:start", 1)[1].split("// lan-sign:end", 1)[0]
-        self.assertEqual(block(self.page), block(panel))
+        self.assertIn(agent.LAN_SIGN_TAG, self.page)
+        self.assertIn(agent.LAN_SIGN_TAG, panel)
+        served = agent.tv_page()[0].decode("utf-8")
+        self.assertNotIn(agent.LAN_SIGN_TAG, served)
+        self.assertIn("function lanSignature(", served)
+        self.assertNotIn("String.prototype.padStart", (ROOT / "lan-sign.js").read_text(encoding="utf-8"))
 
     def test_it_has_the_wall_panels_themes(self):
         panel = (ROOT / "panel.html").read_text(encoding="utf-8")

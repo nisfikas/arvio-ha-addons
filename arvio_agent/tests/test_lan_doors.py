@@ -179,8 +179,10 @@ class LanDoorsTest(unittest.TestCase):
         self.assertEqual(self.sent, [f"switch.turn_on:{RELAY}"])
 
     def test_the_cloud_path_is_not_changed_by_this(self):
-        agent.check_command_safety({"action": "switch.turn_on", "entity_id": RELAY}, via="relay")
-        agent.check_command_safety({"action": "cover.open_cover", "entity_id": "cover.garage"}, via="relay")
+        for n, (action, eid) in enumerate((("switch.turn_on", RELAY), ("cover.open_cover", "cover.garage"))):
+            ack = agent.handle_command({"command_id": f"relay_door_{n}", "action": action, "entity_id": eid})
+            self.assertTrue(ack["ok"], ack)
+        self.assertEqual(self.sent, [f"switch.turn_on:{RELAY}", "cover.open_cover:cover.garage"])
 
     def test_the_panel_does_not_show_a_relay_it_cannot_use(self):
         rows = [

@@ -89,6 +89,15 @@ class SignatureTest(Remote):
         for raw in (b"not json", b"[]", b'{"hub":"hub_vector"}', b'{"hub":"hub_vector","exp":"never"}', b'{"hub":"hub_vector","exp":true}'):
             self.assertIsNone(self.app_signed(make_token(raw=raw)), raw)
 
+    def test_a_box_whose_clock_is_in_1970_takes_no_key(self):
+        # No RTC, no internet: it would take an expired or revoked key as fresh. It has the cloud until it learns the time.
+        self.assertTrue(agent.lan_app_claims_ok(VECTOR_BODY, now=EARLIER))
+        self.assertFalse(agent.lan_app_claims_ok(VECTOR_BODY, now=VECTOR_EXP))
+        for lost in (0.0, 86400.0 * 365, agent.LAN_CLOCK_FLOOR - 1):
+            self.assertFalse(agent.lan_app_claims_ok(VECTOR_BODY, now=lost), lost)
+        with mock.patch.object(agent.time, "time", return_value=0.0):
+            self.assertIsNone(self.app_signed(VECTOR))
+
     def test_a_hub_with_no_relay_token_accepts_no_key_at_all(self):
         # sha256("") is public: without this, anyone could sign for a hub that has no token yet.
         with mock.patch.object(agent, "RELAY_TOKEN", ""):
@@ -232,13 +241,6 @@ class RoutesTest(Remote):
         self.assertEqual(self.raw("POST", path, changed, signed("POST", path, asked, token=VECTOR))[0], 403)
         self.assertEqual(self.sent, [])
 
-    def test_a_panel_page_from_before_the_update_keeps_its_pairing(self):
-        # Three 403s and the old page forgets its secret. 426 it ignores, and it reloads within a minute.
-        for path in ("/api/screens?screen_id=scr_a", f"/v1/hubs/{HUB}/commands"):
-            method, data = ("GET", None) if path.startswith("/api") else ("POST", b"{}")
-            self.assertEqual(self.raw(method, path, data, {"X-Arvio-Screen-Secret": SECRET})[0], 426, path)
-        self.assertEqual(self.sent, [])
-
     def test_an_expired_nonce_does_not_read_as_a_wrong_secret(self):
         # Someone flooding the hub with requests for nonces must not make a panel forget its pairing.
         headers = signed("GET", "/api/screens?screen_id=scr_a", secret=SECRET)
@@ -263,7 +265,9 @@ class RoutesTest(Remote):
         self.assertEqual(self.both_routes("cover.open_cover", "cover.garage", secret=SECRET), (200, 200))
 
     def test_the_cloud_path_needs_no_key(self):
-        agent.check_command_safety({"action": "light.turn_on", "entity_id": "light.a"}, via="relay")
+        ack = agent.handle_command({"command_id": "relay_light_a", "action": "light.turn_on", "entity_id": "light.a"})
+        self.assertTrue(ack["ok"], ack)
+        self.assertEqual(self.sent, ["light.turn_on:light.a"])
 
     def test_a_box_with_no_cloud_has_nobody_to_ask(self):
         with mock.patch.object(agent, "mode", "embedded"):

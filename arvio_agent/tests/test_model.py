@@ -343,15 +343,8 @@ class WeatherBlockTest(unittest.TestCase):
 
 
 class VersionHelpersTest(unittest.TestCase):
-    def test_versions(self):
-        self.assertEqual(agent.parse_ha_version("2025.8.1"), (2025, 8))
-        self.assertEqual(agent.parse_ha_version("2024.4"), (2024, 4))
-        self.assertIsNone(agent.parse_ha_version("dev"))
-        self.assertTrue(agent.ha_version_at_least("2024.4.0", (2024, 4)))
-        self.assertFalse(agent.ha_version_at_least("2024.3.9", (2024, 4)))
-        self.assertTrue(agent.ha_version_at_least(None, (2024, 4)))  # unknown → assume current
+    def test_mireds(self):
         self.assertEqual(agent.mireds_to_kelvin(250), 4000)
-        self.assertEqual(agent.kelvin_to_mireds(2700), 370)
         self.assertIsNone(agent.mireds_to_kelvin(0))
 
     def test_parse_iso(self):

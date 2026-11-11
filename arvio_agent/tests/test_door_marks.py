@@ -324,7 +324,9 @@ class ScenesAndScenariosTest(LanServer):
         self.assertNotIn("/states", calls)
 
     def test_the_cloud_path_runs_them_as_before(self):
-        agent.check_command_safety({"action": "scene.turn_on", "entity_id": "scene.with_relay"}, via="relay")
+        ack = agent.handle_command({"command_id": "relay_scene_with_relay", "action": "scene.turn_on", "entity_id": "scene.with_relay"})
+        self.assertTrue(ack["ok"], ack)
+        self.assertEqual(self.sent, [("scene.turn_on", "scene.with_relay")])
 
 
 

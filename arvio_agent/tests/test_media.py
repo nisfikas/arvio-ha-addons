@@ -22,11 +22,7 @@ from helpers import (
 )
 
 FUTURE = "2999-01-01T00:00:00Z"
-MA_ENTRIES = [
-    {"entry_id": "zha1", "domain": "zha", "disabled_by": None},
-    {"entry_id": "ma_old", "domain": "music_assistant", "disabled_by": "user"},
-    {"entry_id": "ma1", "domain": "music_assistant", "disabled_by": None},
-]
+ENTRIES = [{"entry_id": "zha1", "domain": "zha", "disabled_by": None}]
 
 
 def by_id(model: dict) -> dict:
@@ -129,11 +125,11 @@ class FakePillow:
 
 class VersionPinTest(unittest.TestCase):
     def test_three_places_agree(self):
-        self.assertEqual(agent.AGENT_VERSION, "0.1.92")
+        self.assertEqual(agent.AGENT_VERSION, "0.1.93")
         cfg = (ROOT / "config.yaml").read_text(encoding="utf-8")
-        self.assertIn('\nversion: "0.1.92"\n', cfg)
+        self.assertIn('\nversion: "0.1.93"\n', cfg)
         docker = (ROOT / "Dockerfile").read_text(encoding="utf-8")
-        self.assertIn('io.hass.version="0.1.92"', docker)
+        self.assertIn('io.hass.version="0.1.93"', docker)
         self.assertIn("COPY occupancy.py", docker)
         self.assertIn("COPY panel.html", docker)
         self.assertRegex(docker, r"pillow", "Pillow must be installed for the art resize path")
@@ -210,14 +206,6 @@ class MediaModelTest(unittest.TestCase):
         self.assertIsNone(agent.media_art_hash("a", ""))
         self.assertEqual(len(h1), 40)
 
-    def test_ma_available_in_model_root(self):
-        m = build()
-        self.assertIs(m["ma_available"], False)
-        self.assertIsNone(m["ma_config_entry_id"])
-        m2 = build(ma_config_entry_id="ma1")
-        self.assertIs(m2["ma_available"], True)
-        self.assertEqual(m2["ma_config_entry_id"], "ma1")
-
     def test_registry_platform_in_both_shapes_and_fingerprint(self):
         disp = agent.normalize_entity_registry({"entity_categories": {}, "entities": [{"ei": "media_player.x", "pl": "sonos"}]})
         lst = agent.normalize_entity_registry([{"entity_id": "media_player.x", "platform": "sonos"}])
@@ -239,48 +227,15 @@ class MediaModelTest(unittest.TestCase):
         self.assertTrue(items["media_player.saloni"]["art_hash"])
 
 
-# --- 2b. Music Assistant detection (config entries) ---------------------------------------------
+# --- 2b. config entries (ZHA) -------------------------------------------------------------------
 
 
-class MaDetectionTest(unittest.TestCase):
-    def test_entry_id_from_config_entries(self):
-        self.assertEqual(agent.music_assistant_entry_id(MA_ENTRIES), "ma1")  # disabled entry skipped
-        self.assertEqual(agent.MA_INFO["entry_id"], "ma1")
-        self.assertIsNone(agent.music_assistant_entry_id([]))
-        self.assertIsNone(agent.MA_INFO["entry_id"])
-        self.assertIsNone(agent.music_assistant_entry_id([{"domain": "music_assistant", "disabled_by": "user", "entry_id": "x"}]))
-        fake = MediaFakeHa({}, entries=MA_ENTRIES)
-        with mock.patch.object(agent, "ha", side_effect=fake):
-            self.assertEqual(agent.music_assistant_entry_id(), "ma1")  # reads /config/config_entries/entry
-            self.assertTrue(agent.zha_is_available())  # same read serves ZHA
+class ConfigEntriesTest(unittest.TestCase):
+    def test_zha_is_read_from_the_config_entries(self):
+        with mock.patch.object(agent, "ha", side_effect=MediaFakeHa({}, entries=ENTRIES)):
+            self.assertTrue(agent.zha_is_available())
         with mock.patch.object(agent, "ha", return_value=None):
             self.assertEqual(agent.config_entries(), [])
-            self.assertIsNone(agent.music_assistant_entry_id())
-
-    def test_model_fetch_sets_ma_available(self):
-        from helpers import AREAS, DEVICES, ENTITY_REGISTRY_DISPLAY, FLOORS
-
-        fake = MediaFakeHa({}, entries=MA_ENTRIES)
-        fake.states = {s["entity_id"]: s for s in STATES}
-        agent.REGISTRY_CACHE = agent.RegistrySnapshot()
-        with mock.patch.object(agent, "ha", side_effect=fake), \
-             mock.patch.object(agent, "fetch_registries", return_value={
-                 "floors": FLOORS, "areas": AREAS, "devices": DEVICES, "entity_registry": ENTITY_REGISTRY_DISPLAY}), \
-             mock.patch.object(agent, "fetch_arvio_automation_configs", return_value={}), \
-             mock.patch.object(agent, "push_model_changed"):
-            agent.save_hub({"hub_id": "hub_media"})
-            m = agent.execute_action("arvio.model", "", {})
-        self.assertIs(m["ma_available"], True)
-        self.assertEqual(m["ma_config_entry_id"], "ma1")
-        self.assertIn("media_player.saloni", by_id(m))
-        fake.entries = []
-        with mock.patch.object(agent, "ha", side_effect=fake), \
-             mock.patch.object(agent, "fetch_registries", return_value={
-                 "floors": FLOORS, "areas": AREAS, "devices": DEVICES, "entity_registry": ENTITY_REGISTRY_DISPLAY}), \
-             mock.patch.object(agent, "fetch_arvio_automation_configs", return_value={}), \
-             mock.patch.object(agent, "push_model_changed"):
-            m = agent.execute_action("arvio.model", "", {})
-        self.assertIs(m["ma_available"], False)
 
 
 # --- 3. arvio.media_art ---------------------------------------------------------------------------
@@ -457,12 +412,6 @@ def browse_child(i: int, thumb=None, **kw) -> dict:
 
 
 class MediaBrowseTest(unittest.TestCase):
-    def setUp(self):
-        agent.MA_INFO["entry_id"] = None
-
-    def tearDown(self):
-        agent.MA_INFO["entry_id"] = None
-
     def test_mapping_thumbnails_and_cap(self):
         result = {
             "title": "Spotify", "media_class": "directory", "media_content_type": "library", "media_content_id": "spotify://",
@@ -530,96 +479,13 @@ class MediaBrowseTest(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 agent.media_browse({"entity_id": "media_player.saloni"})
 
-    def test_root_uses_music_assistant_library_playlists(self):
-        agent.MA_INFO["entry_id"] = "ma1"
-        ws_calls = []
-
-        def fake_ws(msg_type, extra=None):
-            ws_calls.append((msg_type, extra))
-            if extra and extra.get("service") == "get_library":
-                return {"context": {"id": "ctx_lib"}, "response": {"items": [
-                    {"name": "Discover Weekly", "uri": "spotify://playlist/dw", "media_type": "playlist",
-                     "image": "https://i.scdn.co/1"},
-                    {"name": "no uri"},
-                    {"name": "Liked", "uri": "library://playlist/2", "media_type": "playlist"},
-                ], "media_type": "playlist"}}
-            return {"title": "Cast", "children": [browse_child(1)]}
-
-        with mock.patch.object(agent, "ha_ws_query_command", side_effect=fake_ws), \
-             mock.patch.object(agent, "ha_ws_shared_command") as cmd_ws:
-            out = agent.media_browse({"entity_id": "media_player.saloni"})
-            cmd_ws.assert_not_called()
-        self.assertEqual(ws_calls[0], ("call_service", {
-            "domain": "music_assistant", "service": "get_library",
-            "service_data": {"config_entry_id": "ma1", "media_type": "playlist", "limit": 50, "order_by": "name"},
-            "return_response": True,
-        }))
-        self.assertEqual(out["source"], "music_assistant")
-        self.assertEqual(out["title"], "Playlists")
-        self.assertEqual([i["media_content_id"] for i in out["items"]],
-                         ["spotify://playlist/dw", "library://playlist/2"])
-        self.assertEqual(out["items"][0]["title"], "Discover Weekly")
-        self.assertEqual(out["items"][0]["thumbnail"], "https://i.scdn.co/1")
-        self.assertTrue(out["items"][0]["can_play"])
-        self.assertFalse(out["items"][0]["can_expand"], "playlists play whole; MA browse_media is album/artist only")
-        # expanding a node still uses the player's browse_media
-        with mock.patch.object(agent, "ha_ws_query_command", side_effect=fake_ws):
-            nested = agent.media_browse({"entity_id": "media_player.saloni",
-                                        "media_content_id": "spotify://playlist/dw",
-                                        "media_content_type": "playlist"})
-        self.assertEqual(ws_calls[-1], ("media_player/browse_media", {
-            "entity_id": "media_player.saloni", "media_content_id": "spotify://playlist/dw",
-            "media_content_type": "playlist"}))
-        self.assertEqual(nested["items"][0]["media_content_id"], "spotify://playlist/1")
-        self.assertNotIn("source", nested)
-        # get_library failure on a group player must not fall through to browse_media
-        ws_calls.clear()
-
-        def fail_library(msg_type, extra=None):
-            ws_calls.append((msg_type, extra))
-            if extra and extra.get("service") == "get_library":
-                raise RuntimeError("no such service")
-            return {"title": "Cast", "children": [browse_child(9)]}
-
-        with mock.patch.object(agent, "ha_ws_query_command", side_effect=fail_library), \
-             mock.patch.object(agent, "music_assistant_entry_id", return_value="ma1"):
-            fallback = agent.media_browse({"entity_id": "media_player.office_group"})
-        self.assertEqual(fallback["source"], "music_assistant")
-        self.assertEqual(fallback["items"], [])
-        self.assertTrue(fallback["ok"])
-        self.assertTrue(all(c[0] != "media_player/browse_media" for c in ws_calls))
-        self.assertEqual(agent.ma_library_items(None, "playlist"), [])
-        self.assertEqual(agent.ma_library_items({"items": "nope"}, "playlist"), [])
-
-    def test_root_looks_up_entry_id_when_cache_empty(self):
-        agent.MA_INFO["entry_id"] = None
-        ws_calls = []
-
-        def fake_ws(msg_type, extra=None):
-            ws_calls.append((msg_type, extra))
-            if extra and extra.get("service") == "get_library":
-                return {"context": {"id": "ctx"}, "response": {"items": [
-                    {"name": "Liked", "uri": "library://playlist/2", "media_type": "playlist"},
-                ]}}
-            raise RuntimeError("Entity does not support browse media")
-
-        with mock.patch.object(agent, "ha_ws_query_command", side_effect=fake_ws), \
-             mock.patch.object(agent, "music_assistant_entry_id", return_value="ma1"):
-            out = agent.media_browse({"entity_id": "media_player.office_group"})
-        self.assertEqual(out["source"], "music_assistant")
-        self.assertEqual(out["items"][0]["title"], "Liked")
-        self.assertEqual(ws_calls[0][1]["service"], "get_library")
-
     def test_browse_media_unsupported_returns_empty_page(self):
-        agent.MA_INFO["entry_id"] = None
-        with mock.patch.object(agent, "music_assistant_entry_id", return_value=None), \
-             mock.patch.object(agent, "ha_ws_query_command",
+        with mock.patch.object(agent, "ha_ws_query_command",
                                side_effect=RuntimeError("Entity does not support browse media")):
             out = agent.media_browse({"entity_id": "media_player.office_group"})
         self.assertTrue(out["ok"])
         self.assertEqual(out["items"], [])
-        with mock.patch.object(agent, "music_assistant_entry_id", return_value=None), \
-             mock.patch.object(agent, "ha_ws_query_command",
+        with mock.patch.object(agent, "ha_ws_query_command",
                                side_effect=agent.HaWsUnavailable("no ws")):
             with self.assertRaises(RuntimeError):
                 agent.media_browse({"entity_id": "media_player.saloni"})
@@ -628,24 +494,9 @@ class MediaBrowseTest(unittest.TestCase):
 # --- 5. arvio.media_search ------------------------------------------------------------------------
 
 
-MA_RESPONSE = {
-    "artists": [{"name": "Miles Davis", "uri": "library://artist/1", "media_type": "artist", "image": "https://img/1"}],
-    "albums": [{"name": "Kind of Blue", "uri": "spotify://album/2", "media_type": "album", "artists": [{"name": "Miles Davis"}], "image": None}],
-    "tracks": [{"name": "So What", "uri": "spotify://track/3", "media_type": "track",
-                "artists": [{"name": "Miles Davis"}, {"name": "Bill Evans"}], "album": {"name": "Kind of Blue"},
-                "image": "/api/proxy/3"}],
-    "playlists": [{"name": "Jazz", "uri": "spotify://playlist/4", "media_type": "playlist"}],
-    "radio": [{"name": "Jazz FM", "uri": "tunein://radio/5", "media_type": "radio"}, {"name": "no uri"}],
-}
-
-
 class MediaSearchTest(unittest.TestCase):
     def setUp(self):
-        self.fake = MediaFakeHa(media_states(), entries=[], response=MA_RESPONSE)
-        agent.MA_INFO["entry_id"] = None
-
-    def tearDown(self):
-        agent.MA_INFO["entry_id"] = None
+        self.fake = MediaFakeHa(media_states(), entries=[])
 
     def test_search_media_ws_when_player_supports_it(self):
         ws_calls = []
@@ -680,71 +531,6 @@ class MediaSearchTest(unittest.TestCase):
             cmd_ws.assert_not_called()  # search never holds the call_service channel
         self.assertEqual(self.fake.calls, [])  # no MA service call
 
-    def test_music_assistant_fallback(self):
-        # the cast speaker has no SEARCH_MEDIA → music_assistant.search with return_response
-        ws_calls = []
-
-        def fake_ws(msg_type, extra=None):
-            ws_calls.append((msg_type, extra))
-            return {"context": {"id": "ctx_ma"}, "response": MA_RESPONSE}
-
-        agent.MA_INFO["entry_id"] = "ma1"
-        with mock.patch.object(agent, "ha", side_effect=self.fake), \
-             mock.patch.object(agent, "ha_ws_query_command", side_effect=fake_ws), \
-             mock.patch.object(agent, "ha_ws_shared_command") as cmd_ws:
-            out = agent.media_search({"entity_id": "media_player.kouzina", "query": "miles", "media_type": "track"})
-            cmd_ws.assert_not_called()  # the MA search return_response call rides the query channel too
-        self.assertEqual(ws_calls, [("call_service", {
-            "domain": "music_assistant", "service": "search",
-            "service_data": {"config_entry_id": "ma1", "name": "miles", "limit": 10, "media_type": ["track"]},
-            "return_response": True,
-        })])
-        self.assertEqual(out["source"], "music_assistant")
-        items = out["items"]
-        self.assertEqual([i["media_content_id"] for i in items], ["spotify://track/3"])
-        self.assertEqual(items[0]["title"], "So What")
-        self.assertEqual(items[0]["media_content_type"], "track")
-        self.assertIsNone(items[0]["thumbnail"])  # MA proxy image → hash only
-        self.assertTrue(items[0]["thumbnail_hash"])
-        self.assertEqual(items[0]["artist"], "Miles Davis · Bill Evans")
-        self.assertEqual(items[0]["album"], "Kind of Blue")
-        self.assertTrue(items[0]["can_play"]); self.assertFalse(items[0]["can_expand"])
-        for key in ("title", "media_content_id", "media_content_type", "media_class", "can_play", "can_expand", "thumbnail", "thumbnail_hash"):
-            self.assertIn(key, items[0])
-        # without media_type: tracks + playlists only (albums/artists/radio are extra Spotify round trips)
-        with mock.patch.object(agent, "ha", side_effect=self.fake), \
-             mock.patch.object(agent, "ha_ws_query_command", side_effect=fake_ws), \
-             mock.patch.object(agent, "ha_ws_shared_command"):
-            mixed = agent.media_search({"entity_id": "media_player.kouzina", "query": "miles"})
-        self.assertEqual(ws_calls[-1][1]["service_data"]["media_type"], ["track", "playlist"])
-        self.assertEqual([i["media_content_id"] for i in mixed["items"]],
-                         ["spotify://track/3", "spotify://playlist/4"])
-        self.assertEqual([i["media_content_type"] for i in mixed["items"]], ["track", "playlist"])
-        self.assertTrue(mixed["items"][1]["can_expand"])
-        # REST fallback (no websocket) uses POST …?return_response and reads service_response
-        with mock.patch.object(agent, "ha", side_effect=self.fake), \
-             mock.patch.object(agent, "ha_ws_query_command", side_effect=agent.HaWsUnavailable("no ws")):
-            out = agent.media_search({"entity_id": "media_player.kouzina", "query": "miles"})
-        self.assertEqual(self.fake.calls[-1][0], "/services/music_assistant/search?return_response")
-        self.assertEqual(self.fake.calls[-1][1], {"config_entry_id": "ma1", "name": "miles", "limit": 10, "media_type": ["track", "playlist"]})
-        self.assertEqual(len(out["items"]), 2)
-        # MA in the house wins over SEARCH_MEDIA (Apple TV / MA otherwise hang on search_media)
-        ws_calls.clear()
-        with mock.patch.object(agent, "ha", side_effect=self.fake), \
-             mock.patch.object(agent, "ha_ws_query_command", side_effect=fake_ws), \
-             mock.patch.object(agent, "ha_ws_shared_command"):
-            out = agent.media_search({"entity_id": "media_player.saloni", "query": "miles", "media_type": "track"})
-        self.assertEqual(out["source"], "music_assistant")
-        self.assertTrue(all(c[0] != "media_player/search_media" for c in ws_calls))
-        # MA entry unknown yet → looked up from the config entries on demand
-        agent.MA_INFO["entry_id"] = None
-        self.fake.entries = MA_ENTRIES
-        with mock.patch.object(agent, "ha", side_effect=self.fake), \
-             mock.patch.object(agent, "ha_ws_query_command", side_effect=fake_ws):
-            out = agent.media_search({"entity_id": "media_player.kouzina", "query": "x"})
-        self.assertEqual(out["source"], "music_assistant")
-        self.assertEqual(agent.MA_INFO["entry_id"], "ma1")
-
     def test_unavailable(self):
         with mock.patch.object(agent, "ha", side_effect=self.fake), \
              mock.patch.object(agent, "ha_ws_query_command") as ws, \
@@ -758,11 +544,6 @@ class MediaSearchTest(unittest.TestCase):
             agent.media_search({"entity_id": "media_player.kouzina", "query": "  "})
         with self.assertRaises(ValueError):
             agent.media_search({"entity_id": "switch.a", "query": "x"})
-        self.assertEqual(agent.ma_search_items(None), [])
-        self.assertEqual(len(agent.ma_search_items({"tracks": [{"name": "t", "uri": f"u{i}"} for i in range(300)]})), 200)
-        self.assertEqual([i["media_content_type"] for i in agent.ma_search_items(MA_RESPONSE)],
-                         ["track", "playlist", "album", "artist", "radio"])
-        self.assertEqual(len(agent.ma_search_items(MA_RESPONSE, media_type="track")), 1)
 
 
 # --- 6. services: allowlists, service data, volume_max, acks -----------------------------------------
@@ -774,7 +555,6 @@ MEDIA_SERVICES = [
     "media_player.volume_mute", "media_player.volume_up", "media_player.volume_down", "media_player.select_source",
     "media_player.join", "media_player.unjoin", "media_player.media_seek", "media_player.play_media", "media_player.turn_on",
     "media_player.turn_off", "media_player.shuffle_set", "media_player.repeat_set",
-    "music_assistant.play_media", "music_assistant.transfer_queue", "music_assistant.get_queue",
 ]
 
 
@@ -798,7 +578,7 @@ class MediaAllowlistTest(unittest.TestCase):
             self.assertNotIn(action, agent.TARGET_ACTIONS)
         self.assertEqual(len(agent.MEDIA_PLAYER_ACTIONS), 19)
         # not services: media_player.play / toggle stay unknown; no target on media
-        for action in ("media_player.play", "media_player.toggle", "music_assistant.play_announcement"):
+        for action in ("media_player.play", "media_player.toggle", "music_assistant.play_media"):
             with self.assertRaises(agent.CommandRejected) as cm:
                 agent.check_command_safety({"action": action})
             self.assertEqual(cm.exception.code, "action_not_allowed")
@@ -809,7 +589,7 @@ class MediaAllowlistTest(unittest.TestCase):
 
 class MediaServiceDataTest(unittest.TestCase):
     def sd(self, action, payload, eid="media_player.saloni"):
-        return agent.build_service_data(action, eid, payload, "2025.8.1")
+        return agent.build_service_data(action, eid, payload)
 
     def test_media_seek_takes_finite_seconds_only(self):
         self.assertEqual(self.sd("media_player.media_seek", {"seek_position": 83.456})[1],
@@ -875,30 +655,13 @@ class MediaServiceDataTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.sd("media_player.repeat_set", {"repeat": "forever"})
 
-    def test_music_assistant_service_data(self):
-        svc, data = self.sd("music_assistant.play_media", {"media_id": "spotify://playlist/1", "media_type": "playlist",
-                                                           "enqueue": "replace_next", "radio_mode": 1, "artist": "Miles"})
-        self.assertEqual(svc, "play_media")
-        self.assertEqual(data, {"entity_id": "media_player.saloni", "media_id": "spotify://playlist/1", "media_type": "playlist",
-                                "artist": "Miles", "enqueue": "replace_next", "radio_mode": True})
-        listed = self.sd("music_assistant.play_media", {"media_id": ["a", "b"]})[1]
-        self.assertEqual(listed["media_id"], ["a", "b"])
-        self.assertEqual(listed["enqueue"], "replace")
-        with self.assertRaises(ValueError):
-            self.sd("music_assistant.play_media", {"media_type": "track"})
-        with self.assertRaises(ValueError):
-            self.sd("music_assistant.play_media", {"media_id": "x", "enqueue": "soon"})
-        self.assertEqual(self.sd("music_assistant.transfer_queue", {"source_player": "media_player.kouzina", "auto_play": 0})[1],
-                         {"entity_id": "media_player.saloni", "source_player": "media_player.kouzina", "auto_play": False})
-        self.assertEqual(self.sd("music_assistant.transfer_queue", {})[1], {"entity_id": "media_player.saloni"})
-
     def test_expected_attrs(self):
         self.assertEqual(agent.media_expected_attrs("media_player.volume_set", {"volume_level": 0.4}), {"volume_level": 0.4})
         self.assertEqual(agent.media_expected_attrs("media_player.select_source", {"source": "Radio"}), {"source": "Radio"})
         self.assertEqual(agent.media_expected_attrs("media_player.volume_mute", {"is_volume_muted": True}), {"is_volume_muted": True})
         self.assertEqual(agent.media_expected_attrs("media_player.shuffle_set", {"shuffle": True}), {"shuffle": True})
         self.assertEqual(agent.media_expected_attrs("media_player.repeat_set", {"repeat": "all"}), {"repeat": "all"})
-        for action in ("media_player.media_play", "media_player.join", "music_assistant.play_media", "media_player.volume_up"):
+        for action in ("media_player.media_play", "media_player.join", "media_player.volume_up"):
             self.assertIsNone(agent.media_expected_attrs(action, {}))
         self.assertTrue(agent._attrs_match({"attributes": {"volume_level": 0.41}}, {"volume_level": 0.4}))  # device rounding
         self.assertFalse(agent._attrs_match({"attributes": {"volume_level": 0.5}}, {"volume_level": 0.4}))
@@ -915,7 +678,6 @@ class MediaServiceDataTest(unittest.TestCase):
         self.assertEqual(agent._expected_state_for("media_player", "turn_off"), "off")
         for svc in ("media_play_pause", "media_next_track", "volume_set", "select_source", "join", "play_media", "volume_up"):
             self.assertIsNone(agent._expected_state_for("media_player", svc), svc)
-        self.assertIsNone(agent._expected_state_for("music_assistant", "play_media"))
         self.assertTrue(agent._state_matches("media_player", "playing", "buffering"))
         self.assertTrue(agent._state_matches("media_player", "idle", "paused"))
         self.assertFalse(agent._state_matches("media_player", "idle", "playing"))
@@ -1059,53 +821,6 @@ class MediaExecuteTest(unittest.TestCase):
         self.assertEqual(self.fake.calls[-1][0], "/services/media_player/volume_up")
         self.assertEqual(len(self.fake.reads), reads + 1)
 
-    def test_music_assistant_actions_and_get_queue_response(self):
-        out = agent.execute_action("music_assistant.play_media", "media_player.saloni",
-                                   {"media_id": "spotify://playlist/1", "media_type": "playlist", "enqueue": "replace"})
-        self.assertTrue(out["ok"])
-        self.assertEqual(self.fake.calls[-1], ("/services/music_assistant/play_media", {
-            "entity_id": "media_player.saloni", "media_id": "spotify://playlist/1", "media_type": "playlist", "enqueue": "replace"}))
-        self.fake.states["media_player.saloni"]["state"] = "idle"
-        self.fake.calls.clear()
-        kicked = agent.execute_action("music_assistant.play_media", "media_player.saloni",
-                                      {"media_id": "library://playlist/14", "media_type": "playlist"})
-        self.assertTrue(kicked["ok"])
-        self.assertEqual([c[0] for c in self.fake.calls], [
-            "/services/music_assistant/play_media",
-            "/services/media_player/media_play",
-        ])
-        self.assertEqual(self.fake.calls[0][1]["enqueue"], "replace")
-        self.assertEqual(kicked["state"], "playing")
-        self.fake.states["media_player.saloni"]["state"] = "idle"
-        self.fake.calls.clear()
-        agent.execute_action("music_assistant.play_media", "media_player.saloni",
-                             {"media_id": "library://playlist/14", "media_type": "playlist", "enqueue": "add"})
-        self.assertEqual([c[0] for c in self.fake.calls], ["/services/music_assistant/play_media"])
-        self.assertEqual(out["state_snapshot"]["entity_id"], "media_player.saloni")
-        agent.execute_action("music_assistant.transfer_queue", "media_player.kouzina", {"source_player": "media_player.saloni", "auto_play": True})
-        self.assertEqual(self.fake.calls[-1][1], {"entity_id": "media_player.kouzina", "source_player": "media_player.saloni", "auto_play": True})
-        # get_queue: the response lands in the ack data
-        ack = agent.handle_command({"command_id": "q1", "action": "music_assistant.get_queue", "entity_id": "media_player.saloni"})
-        self.assertTrue(ack["ok"])
-        self.assertEqual(ack["queue"], {"items": [{"name": "So What"}], "current_index": 0})
-        self.assertEqual(self.fake.calls[-1][0], "/services/music_assistant/get_queue?return_response")
-        self.assertEqual(ack["affected_entity_ids"], ["media_player.saloni"])
-        self.assertIsNone(ack["state_snapshot"])
-        # …and over the websocket the documented return_response flag is used
-        ws_calls = []
-
-        def fake_ws(msg_type, extra=None):
-            ws_calls.append((msg_type, extra))
-            return {"context": {"id": "ctx_q"}, "response": {"items": []}}
-
-        with mock.patch.object(agent, "ha_ws_query_command", side_effect=fake_ws), \
-             mock.patch.object(agent, "ha_ws_shared_command") as cmd_ws:
-            out = agent.execute_action("music_assistant.get_queue", "media_player.saloni", {})
-            cmd_ws.assert_not_called()  # return_response reads ride the query channel
-        self.assertEqual(ws_calls, [("call_service", {"domain": "music_assistant", "service": "get_queue",
-                                                      "service_data": {"entity_id": "media_player.saloni"}, "return_response": True})])
-        self.assertEqual((out["queue"], out["ha_context_id"]), ({"items": []}, "ctx_q"))
-
 
 # --- 7. push: coalescing skips position-only updates, art_hash rides along ----------------------------
 
@@ -1223,10 +938,10 @@ class MediaLanTest(unittest.TestCase):
             self.assertEqual(status, 200, body)
             # security keys never lifted, and volume_max is cloud-only (a LAN caller cannot set its own ceiling)
             self.assertEqual(calls[-1][2], {"volume_level": 0.4})
-            # flat keys (lab UI convenience)
+            # nothing outside `payload` is read (the lab UI's flat keys are gone)
             status, body = self.post("/v1/hubs/hub_lan/commands", {"action": "media_player.select_source", "entity_id": "media_player.saloni", "source": "Spotify"})
             self.assertEqual(status, 200, body)
-            self.assertEqual(calls[-1][2], {"source": "Spotify"})
+            self.assertEqual(calls[-1][2], {})
             # library / playlists / art are cloud-only (personal data, LAN is unauthenticated)
             for action in ("arvio.media_search", "arvio.media_browse", "arvio.media_art"):
                 status, body = self.post("/v1/hubs/hub_lan/commands", {"action": action, "entity_id": "media_player.saloni", "query": "miles"})

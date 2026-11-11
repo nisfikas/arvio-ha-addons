@@ -18,13 +18,14 @@ COPY guest_tv.py /app/guest_tv.py
 COPY ui.html /app/ui.html
 COPY panel.html /app/panel.html
 COPY tv.html /app/tv.html
+COPY lan-sign.js /app/lan-sign.js
 COPY panel-app /app/panel-app
 COPY run.sh /run.sh
 RUN chmod a+x /run.sh
 
 LABEL \
   io.hass.name="Arvio Agent" \
-  io.hass.version="0.1.92" \
+  io.hass.version="0.1.93" \
   io.hass.type="addon" \
   io.hass.arch="aarch64|amd64|armv7"
 

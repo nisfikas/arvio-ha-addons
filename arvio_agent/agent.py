@@ -12,6 +12,7 @@ import json
 import math
 import os
 import plistlib
+import queue
 import random
 import re
 import secrets
@@ -41,7 +42,6 @@ try:
 except OSError:
     pass
 STATE = DATA / "hub.json"
-LAB = DATA / "lab_store.json"
 SCREENS = DATA / "screens.json"
 # The house's Guest TV profile, Wi-Fi and logo, from the cloud (`arvio.put_guest_tv`); one per hub.
 GUEST_TV = DATA / "guest-tv.json"
@@ -63,7 +63,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.92"
+AGENT_VERSION = "0.1.93"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -222,23 +222,6 @@ def load_hub() -> dict:
     return {}
 
 
-def load_lab() -> dict:
-    if LAB.exists():
-        return json.loads(LAB.read_text())
-    return {
-        "orgs": {},
-        "sites": {},
-        "claims": {},
-        "claim_tokens": {},
-        "support_grants": {},
-        "bootstrapped": False,
-    }
-
-
-def save_lab(s: dict) -> None:
-    write_json_atomic(LAB, s)
-
-
 def sha(s: str) -> str:
     return hashlib.sha256(s.encode()).hexdigest()
 
@@ -284,9 +267,7 @@ DOORBELL_RING_WAIT_S = 25.0
 # call sensor → monotonic deadline (ring + 45 s). Written where the agent sees the ring
 # (note_doorbell_ring); the panel's ringing flag and the door-unlock window both read it.
 DOORBELL_LATCH: dict[str, float] = {}
-# How a caller proves itself on the LAN path without sending its key (ADR 017). A panel page from
-# before 0.1.84 still sends its secret in this header for up to a minute after an update.
-OLD_PANEL_HEADER = "X-Arvio-Screen-Secret"
+# How a caller proves itself on the LAN path without sending its key (ADR 017).
 LAN_NONCE_HEADER = "X-Arvio-Lan-Nonce"
 LAN_SIG_HEADER = "X-Arvio-Lan-Sig"
 LAN_ID_HEADER = "X-Arvio-Lan-Id"
@@ -604,32 +585,42 @@ def note_doorbell_ring(entity_id: str, new_state, watched: set[str] | None = Non
             threading.Thread(target=post_doorbell_ring, args=(eid,), daemon=True).start()
 
 
-def post_doorbell_ring(call_entity_id: str) -> None:
-    """Tell the cloud so Home PWAs (iPhone/iPad included) get a Web Push. The photo comes after the
-    ring is out: a slow camera never delays a doorbell."""
+def post_as_hub(path: str, body: dict, what: str) -> bool:
+    """POST to the cloud as this hub (`/v1/hubs/{hub}/{path}`, with its enrol key). True when the cloud
+    answered, also with an error: that is in the log and is not tried again. False when it could not be
+    reached. The log never holds the body: a notification's text is the house's."""
     if os.environ.get("ARVIO_AGENT_TEST") == "1":
-        return
+        return True
     st = load_hub()
     hid = str(st.get("hub_id") or hub_id or "").strip()
     pk = str(st.get("enroll_public_key") or "").strip()
     if not hid or not pk or not CLOUD:
-        return
-    camera = doorbell_camera_for_call(call_entity_id) if ring_photos_enabled() else None
-    ring_id = str(uuid.uuid4())
+        return True
     try:
         req = urllib.request.Request(
-            f"{CLOUD}/v1/hubs/{hid}/doorbell-ring",
-            data=json.dumps({"enroll_public_key": pk, "call_entity_id": call_entity_id, "ring_id": ring_id, "photo": bool(camera)}).encode(),
+            f"{CLOUD}/v1/hubs/{hid}/{path}",
+            data=json.dumps({"enroll_public_key": pk, **body}).encode(),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=8) as r:
             r.read()
     except urllib.error.HTTPError as e:
-        print(f"doorbell ring: cloud answered {e.code}", flush=True)
+        print(f"{what}: cloud answered {e.code}", flush=True)
     except Exception as e:
-        # A ring nobody's phone got must at least be in the log.
-        print(f"doorbell ring: not sent ({type(e).__name__})", flush=True)
+        print(f"{what}: not sent ({type(e).__name__})", flush=True)
+        return False
+    return True
+
+
+def post_doorbell_ring(call_entity_id: str) -> None:
+    """Tell the cloud so Home PWAs (iPhone/iPad included) get a Web Push. The photo comes after the
+    ring is out: a slow camera never delays a doorbell. A ring nobody's phone got is at least in the log."""
+    if os.environ.get("ARVIO_AGENT_TEST") == "1":
+        return
+    camera = doorbell_camera_for_call(call_entity_id) if ring_photos_enabled() else None
+    ring_id = str(uuid.uuid4())
+    post_as_hub("doorbell-ring", {"call_entity_id": call_entity_id, "ring_id": ring_id, "photo": bool(camera)}, "doorbell ring")
     if camera:
         keep_ring_photo(ring_id, camera)
 
@@ -751,27 +742,8 @@ def notify_body(data) -> dict | None:
 
 def post_hub_notify(body: dict) -> None:
     """Hand an automation «Ειδοποίηση» to the cloud, which pushes it to the house's people.
-    No queue: offline, it is dropped (a «η σκούπα τελείωσε» an hour late is noise). Logs never hold the text."""
-    if os.environ.get("ARVIO_AGENT_TEST") == "1":
-        return
-    st = load_hub()
-    hid = str(st.get("hub_id") or hub_id or "").strip()
-    pk = str(st.get("enroll_public_key") or "").strip()
-    if not hid or not pk or not CLOUD:
-        return
-    try:
-        req = urllib.request.Request(
-            f"{CLOUD}/v1/hubs/{hid}/notify",
-            data=json.dumps({"enroll_public_key": pk, **body}).encode(),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=8) as r:
-            r.read()
-    except urllib.error.HTTPError as e:
-        print(f"notify: cloud answered {e.code}", flush=True)
-    except Exception as e:
-        print(f"notify: not sent ({type(e).__name__})", flush=True)
+    No queue: offline, it is dropped (a «η σκούπα τελείωσε» an hour late is noise)."""
+    post_as_hub("notify", body, "notify")
 
 
 # ---- What this box reports by itself: the alarm, smoke, water, gas, a flat battery, a device gone ----
@@ -827,39 +799,58 @@ def home_event_name(state: dict) -> str:
     return " ".join(str(attrs.get("friendly_name") or "").split())[:HOME_EVENT_NAME_MAX]
 
 
+HOME_EVENT_RETRY_S = (0, 5, 30, 120)
+# One event per (entity, code) on its way at a time, and one line for all of them: a leak sensor that flaps
+# through an internet cut, or a battery that sits on 20 %, is one push when the cloud is back, not one per
+# flap and not a thread each. The line is bounded; past it an event is dropped with a line in the log.
+HOME_EVENT_PENDING_MAX = 100
+_home_events: queue.Queue = queue.Queue()
+_home_events_pending: set[tuple[str, str]] = set()
+_home_events_lock = threading.Lock()
+
+
 def note_home_event(entity_id: str, new_state, old_state) -> None:
     code = home_event_code(entity_id, new_state, old_state)
     if code:
-        threading.Thread(target=post_hub_event, args=(code, entity_id, home_event_name(new_state)), daemon=True).start()
+        queue_home_event(code, entity_id, home_event_name(new_state))
+
+
+def queue_home_event(code: str, entity_id: str, name: str) -> bool:
+    """False when the same event is already on its way, or the line is full."""
+    key = (entity_id, code)
+    with _home_events_lock:
+        if key in _home_events_pending:
+            return False
+        if len(_home_events_pending) >= HOME_EVENT_PENDING_MAX:
+            print(f"event: {code} {entity_id} dropped, {HOME_EVENT_PENDING_MAX} waiting", flush=True)
+            return False
+        _home_events_pending.add(key)
+    _home_events.put((code, entity_id, name))
+    return True
+
+
+def home_event_loop() -> None:
+    while True:
+        home_event_next()
+
+
+def home_event_next() -> None:
+    code, entity_id, name = _home_events.get()
+    try:
+        post_hub_event(code, entity_id, name)
+    except Exception as e:
+        print(f"event: {type(e).__name__}", flush=True)
+    with _home_events_lock:
+        _home_events_pending.discard((entity_id, code))
 
 
 def post_hub_event(code: str, entity_id: str, name: str, sleep=time.sleep) -> None:
     """To the cloud, which rings phones for a danger and only notes the rest. A few tries: smoke during a
     short internet cut still reaches the house's history. The cloud answering at all ends it."""
-    if os.environ.get("ARVIO_AGENT_TEST") == "1":
-        return
-    st = load_hub()
-    hid = str(st.get("hub_id") or hub_id or "").strip()
-    pk = str(st.get("enroll_public_key") or "").strip()
-    if not hid or not pk or not CLOUD:
-        return
-    for wait in (0, 5, 30, 120):
+    for wait in HOME_EVENT_RETRY_S:
         sleep(wait)
-        try:
-            req = urllib.request.Request(
-                f"{CLOUD}/v1/hubs/{hid}/events",
-                data=json.dumps({"enroll_public_key": pk, "code": code, "entity_id": entity_id, "name": name}).encode(),
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=8) as r:
-                r.read()
+        if post_as_hub("events", {"code": code, "entity_id": entity_id, "name": name}, "event"):
             return
-        except urllib.error.HTTPError as e:
-            print(f"event: cloud answered {e.code}", flush=True)
-            return
-        except Exception as e:
-            print(f"event: not sent ({type(e).__name__})", flush=True)
 
 
 # ---- What the devices did, on this box, for the installer's log (monorepo services/api/src/partner-log.ts) ----
@@ -1056,7 +1047,7 @@ def device_watch_loop() -> None:
             snap = registry_snapshot()
             if snap["loaded_at"]:
                 for eid, name in device_watch_tick(ha("/states") or [], snap["entity_regs"]):
-                    post_hub_event("unavailable", eid, name)
+                    queue_home_event("unavailable", eid, name)
         except Exception as e:
             print(f"device watch: {type(e).__name__}", flush=True)
 
@@ -1519,15 +1510,13 @@ def _run_recipe_step(step, stop_players: list[str] | None = None) -> None:
             try:
                 if isinstance(volume, (int, float)):
                     call_service("media_player", "volume_set", {"entity_id": player, "volume_level": float(volume)})
-                action = "music_assistant.play_media" if media_id.startswith("library://") else "media_player.play_media"
-                domain, service = action.split(".", 1)
                 data = {
                     "entity_id": player,
                     "media_id": media_id,
                     "media_type": str(media.get("media_type") or "playlist"),
                     "enqueue": enqueue,
                 }
-                call_service(domain, service, data)
+                call_service("media_player", "play_media", data)
             except Exception:
                 pass
 
@@ -3016,22 +3005,6 @@ def _spawn_media_call(domain: str, service: str, data: dict) -> None:
     threading.Thread(target=run, name=f"ha-{domain}.{service}", daemon=True).start()
 
 
-def _kick_idle_queue(entity_ids: list[str], data: dict, states: dict, sent_at: float) -> dict:
-    """MA often fills the queue without play_index; media_play starts the loaded items."""
-    enqueue = str(data.get("enqueue") or "replace")
-    if enqueue not in ("play", "replace") or not entity_ids:
-        return states
-    idle = [e for e in entity_ids if _state_of(states.get(e)) not in ("playing", "buffering")]
-    if not idle:
-        return states
-    for e in idle:
-        try:
-            ha_call_service("media_player", "media_play", {"entity_id": e})
-        except Exception:
-            pass
-    return _overlay_feed(_read_states_rest(entity_ids), entity_ids, sent_at)
-
-
 def config_entries() -> list:
     """GET /api/config/config_entries/entry (documented Core API) → [] when unreachable."""
     entries = ha("/config/config_entries/entry")
@@ -3049,24 +3022,10 @@ def config_entry_for_domain(entries: list, domain: str) -> dict | None:
     return None
 
 
-# Music Assistant (0.1.21 §15): the config entry id feeds `music_assistant.search` /
-# `get_library` and the model's `ma_available`; refreshed on every arvio.model read.
-MA_INFO: dict = {"entry_id": None, "checked_at": 0.0}
-
-
-def music_assistant_entry_id(entries: list | None = None) -> str | None:
-    """Config entry id of Music Assistant (None → the app runs «έλεγχο μόνο»). Cached in MA_INFO."""
-    entry = config_entry_for_domain(config_entries() if entries is None else entries, "music_assistant")
-    entry_id = str(entry["entry_id"]) if isinstance(entry, dict) and entry.get("entry_id") else None
-    MA_INFO["entry_id"] = entry_id
-    MA_INFO["checked_at"] = time.time()
-    return entry_id
-
-
 def ha_call_service_response(domain: str, service: str, data: dict) -> tuple[str | None, dict | None]:
     """call_service with a response (documented WS `return_response: true`; REST `?return_response`).
 
-    → (context_id, response dict | None). Used for `music_assistant.search` / `get_library` / `get_queue`.
+    → (context_id, response dict | None). Used for `todo.get_items` and the weather forecasts.
     Read-only, so it rides the query channel (`ha_ws_query_command`), not the command one.
     """
     try:
@@ -5004,51 +4963,6 @@ def enroll_embedded() -> None:
         err = ""
 
 
-def cloud_json(method: str, path: str, body: dict | None = None) -> dict:
-    """Proxy JSON request to Arvio cloud (remote mode)."""
-    data = None if body is None else json.dumps(body).encode()
-    req = urllib.request.Request(
-        f"{CLOUD}{path}",
-        data=data,
-        method=method,
-        headers={"Content-Type": "application/json"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=15) as r:
-            raw = r.read().decode()
-            out = json.loads(raw) if raw else {}
-            if isinstance(out, dict) and out.get("error"):
-                raise ValueError(str(out["error"]))
-            return out
-    except urllib.error.HTTPError as e:
-        try:
-            err_body = json.loads(e.read().decode())
-            msg = err_body.get("error") or str(e)
-        except Exception:
-            msg = str(e)
-        raise ValueError(msg) from e
-
-
-def cache_lab_boot(boot: dict) -> None:
-    lab = load_lab()
-    lab["bootstrapped"] = True
-    lab["partner_org_id"] = boot.get("partner_org_id")
-    lab["site_id"] = boot.get("site_id")
-    lab["customer_org_id"] = boot.get("customer_org_id")
-    save_lab(lab)
-
-
-def sync_hub_from_cloud(hub: dict) -> None:
-    global hub_state, hub_id
-    st = load_hub()
-    st["state"] = hub.get("state") or st.get("state")
-    st["site_id"] = hub.get("site_id")
-    st["customer_org_id"] = hub.get("customer_org_id")
-    save_hub(st)
-    hub_state = st.get("state") or hub_state
-    hub_id = st.get("hub_id") or hub_id
-
-
 def apply_heartbeat_reply(hb: dict) -> bool:
     """Persist extras the cloud may send on heartbeat. True if the relay token changed.
 
@@ -5254,8 +5168,6 @@ def _expected_state_for(domain: str, service: str) -> str | None:
             "turn_on": "on",
             "turn_off": "off",
         }.get(service)
-    if domain == "music_assistant":
-        return None
     if domain == "vacuum":
         # locate changes no state: acked on the call itself.
         return {"start": "cleaning", "pause": "paused", "return_to_base": "returning", "stop": "idle"}.get(service)
@@ -5389,7 +5301,7 @@ def call_service(
     0.1.20 (§14.3): no "expected state" fallback — the snapshot is what HA reports, and
     `ok` is False (`error: "state_not_confirmed"`) when HA did not confirm within the wait.
     0.1.21: `expected_attrs` confirms via attributes (media volume_set / select_source …).
-    0.1.34: media_player / music_assistant never wait — Spotify holds the socket;
+    0.1.34: media_player never waits — Spotify holds the socket;
     Home already paints the intent, and the state stream is the confirmation.
     """
     if isinstance(data, str):
@@ -5408,11 +5320,11 @@ def call_service(
     entity_id = entity_ids[0] if len(entity_ids) == 1 else ""
 
     expected = _expected_state_for(domain, service)
-    # Spotify / Music Assistant hold the HA websocket until the player answers.
+    # Spotify holds the HA websocket until the player answers.
     # Waiting here for volume_level or «playing» queues the next skip/volume
     # behind 2 s of silence. Home paints the intent immediately; the state
-    # stream is the confirmation. play_media waits and, if still idle, media_play.
-    media = domain in ("media_player", "music_assistant")
+    # stream is the confirmation. play_media waits.
+    media = domain == "media_player"
     start = media and service in MEDIA_START_SERVICES
     if media and MEDIA_CALL_ASYNC and not start:
         ha_context_id = None
@@ -5434,8 +5346,6 @@ def call_service(
             pulsed = arm_pulses(domain, service, entity_ids)
         if media:
             states = _overlay_feed(_read_states_rest(entity_ids), entity_ids, sent_at)
-            if start and domain == "music_assistant":
-                states = _kick_idle_queue(entity_ids, data, states, sent_at)
             confirmed = True
         elif pulsed:
             states = _read_states_rest(entity_ids)  # on or already off again: both are right
@@ -5483,7 +5393,7 @@ def call_service(
     }
 
 
-def build_service_data(action: str, entity_id: str, payload: dict, ha_version=None) -> tuple[str, dict]:
+def build_service_data(action: str, entity_id: str, payload: dict) -> tuple[str, dict]:
     """Payload → HA service data for one entity (pure). Returns (service, data)."""
     domain, service = action.split(".", 1)
     data: dict = {"entity_id": entity_id} if entity_id else {}
@@ -5497,12 +5407,7 @@ def build_service_data(action: str, entity_id: str, payload: dict, ha_version=No
         if payload.get("hs_color") is not None:
             data["hs_color"] = payload["hs_color"]
         if payload.get("color_temp_kelvin") is not None:
-            kelvin = int(payload["color_temp_kelvin"])
-            if ha_version_at_least(ha_version, HA_KELVIN_MIN_VERSION):
-                data["color_temp_kelvin"] = kelvin
-            else:
-                # HA < 2022.12 only understands mireds.
-                data["color_temp"] = kelvin_to_mireds(kelvin)
+            data["color_temp_kelvin"] = int(payload["color_temp_kelvin"])
         elif payload.get("color_temp") is not None:
             data["color_temp"] = int(payload["color_temp"])
     elif action == "climate.set_temperature":
@@ -5587,31 +5492,6 @@ def build_service_data(action: str, entity_id: str, payload: dict, ha_version=No
             if repeat not in MEDIA_REPEAT_MODES:
                 raise ValueError("repeat must be off|all|one")
             data["repeat"] = repeat
-    elif domain == "music_assistant":
-        if service == "play_media":
-            media_id = payload.get("media_id")
-            if not media_id:
-                raise ValueError("media_id required")
-            data["media_id"] = [str(x) for x in media_id] if isinstance(media_id, list) else str(media_id)
-            if payload.get("media_type"):
-                data["media_type"] = str(payload["media_type"])
-            for key in ("artist", "album"):
-                if payload.get(key):
-                    data[key] = str(payload[key])
-            if payload.get("enqueue") is not None:
-                if str(payload["enqueue"]) not in MA_ENQUEUE_MODES:
-                    raise ValueError("enqueue must be play|replace|next|replace_next|add")
-                data["enqueue"] = str(payload["enqueue"])
-            else:
-                # MA's omitted default can be ADD: queue fills, current_item stays null.
-                data["enqueue"] = "replace"
-            if payload.get("radio_mode") is not None:
-                data["radio_mode"] = bool(payload["radio_mode"])
-        elif service == "transfer_queue":
-            if payload.get("source_player"):
-                data["source_player"] = str(payload["source_player"])
-            if payload.get("auto_play") is not None:
-                data["auto_play"] = bool(payload["auto_play"])
     return service, data
 
 
@@ -5662,7 +5542,7 @@ def media_expected_attrs(action: str, data: dict) -> dict | None:
 
 
 def execute_media_action(action: str, entity_id: str, payload: dict) -> dict:
-    """media_player.* / music_assistant.* for one player (§15.5). Honours payload.volume_max."""
+    """media_player.* for one player (§15.5). Honours payload.volume_max."""
     if not entity_id:
         raise ValueError("entity_id required")
     domain, service = action.split(".", 1)
@@ -5693,19 +5573,7 @@ def execute_media_action(action: str, entity_id: str, payload: dict) -> dict:
             out["service"] = action
             out["clamped_to_volume_max"] = True
             return out
-    if action == "music_assistant.get_queue":
-        ctx, response = ha_call_service_response("music_assistant", "get_queue", {"entity_id": entity_id})
-        return {
-            "ok": True,
-            "error": None,
-            "entity_id": entity_id,
-            "service": action,
-            "queue": response,
-            "state_snapshot": None,
-            "affected_entity_ids": [entity_id],
-            "ha_context_id": ctx,
-        }
-    service, data = build_service_data(action, entity_id, payload, HA_INFO.get("version"))
+    service, data = build_service_data(action, entity_id, payload)
     return call_service(domain, service, data, expected_attrs=media_expected_attrs(action, data))
 
 
@@ -5879,7 +5747,7 @@ def execute_action(
     if "." not in action:
         raise ValueError("action must be domain.service")
     domain, _service = action.split(".", 1)
-    if domain in ("media_player", "music_assistant"):
+    if domain == "media_player":
         return execute_media_action(action, entity_id, payload)
 
     if isinstance(target, dict) and action in TARGET_ACTIONS:
@@ -5891,8 +5759,8 @@ def execute_action(
             affected = sorted(set(affected) | {entity_id})
         if not affected:
             raise ValueError("target matched no entities")
-        service, data = build_service_data(action, "", payload, HA_INFO.get("version"))
-        native = native_target_data(target, HA_INFO.get("version"))
+        service, data = build_service_data(action, "", payload)
+        native = native_target_data(target)
         explicit = resolve_target_entities(
             {"entity_ids": target.get("entity_ids", target.get("entity_id"))}, domain, {}, {}, {}
         )
@@ -5911,7 +5779,7 @@ def execute_action(
 
     if not entity_id:
         raise ValueError("entity_id required")
-    service, data = build_service_data(action, entity_id, payload, HA_INFO.get("version"))
+    service, data = build_service_data(action, entity_id, payload)
     if action in ("humidifier.set_humidity", "humidifier.set_mode"):
         current = ha(f"/states/{entity_id}")
         attrs = current.get("attributes") if isinstance(current, dict) else None
@@ -6175,7 +6043,6 @@ CAMERA_FLOW_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 CAMERA_FLOW_STEPS = frozenset({"user", "device", "configure", "auth"})
 CAMERA_USER_INPUT_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 MEDIA_ENQUEUE_MODES = frozenset({"add", "next", "play", "replace"})  # media_player.play_media
-MA_ENQUEUE_MODES = frozenset({"play", "replace", "next", "replace_next", "add"})  # music_assistant.play_media
 MEDIA_REPEAT_MODES = frozenset({"off", "all", "one"})
 MEDIA_PLAYER_ACTIONS = frozenset(
     {
@@ -6199,9 +6066,6 @@ MEDIA_PLAYER_ACTIONS = frozenset(
         "media_player.shuffle_set",
         "media_player.repeat_set",
     }
-)
-MUSIC_ASSISTANT_ACTIONS = frozenset(
-    {"music_assistant.play_media", "music_assistant.transfer_queue", "music_assistant.get_queue"}
 )
 MEDIA_AGENT_ACTIONS = frozenset({"arvio.media_art", "arvio.media_browse", "arvio.media_search"})
 # The shopping list is a read-and-write of the household's own words. It is deliberately NOT
@@ -6240,7 +6104,7 @@ BLOCKED_INTEGRATION_HANDLERS = frozenset(
 INTEGRATION_HANDLER_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 INTEGRATION_SECRET_KEY_RE = re.compile(r"(password|secret|token|api_key|pin)", re.I)
 # Music is not dangerous: every media action is allowed on the relay AND the LAN path (§15.5).
-MEDIA_ACTIONS = MEDIA_PLAYER_ACTIONS | MUSIC_ASSISTANT_ACTIONS | MEDIA_AGENT_ACTIONS
+MEDIA_ACTIONS = MEDIA_PLAYER_ACTIONS | MEDIA_AGENT_ACTIONS
 # The LAN path forwards only these payload keys, and only for MEDIA_ACTIONS
 # (never confirm_dangerous / code / target / expires_at).
 LAN_MEDIA_PAYLOAD_KEYS = frozenset(
@@ -6256,13 +6120,6 @@ LAN_MEDIA_PAYLOAD_KEYS = frozenset(
         "enqueue",
         "shuffle",
         "repeat",
-        "media_id",
-        "media_type",
-        "artist",
-        "album",
-        "radio_mode",
-        "source_player",
-        "auto_play",
         "query",
         "client_command_id",
     }
@@ -6272,6 +6129,15 @@ LAN_CLIMATE_ACTIONS = frozenset({"climate.set_temperature", "climate.set_hvac_mo
 LAN_CLIMATE_PAYLOAD_KEYS = frozenset({"temperature", "hvac_mode"})
 LAN_VACUUM_PAYLOAD_KEYS = frozenset({"fan_speed", "level"})
 LAN_HUMIDIFIER_PAYLOAD_KEYS = frozenset({"humidity", "mode"})
+# What the LAN path lifts from a command's payload, by family. Nothing else: never confirm_dangerous, code,
+# target or expires_at, which only the cloud may say.
+LAN_PAYLOAD_KEYS = (
+    (MEDIA_ACTIONS, LAN_MEDIA_PAYLOAD_KEYS),
+    (frozenset({"arvio.trigger_scenario"}), LAN_SCENARIO_PAYLOAD_KEYS),
+    (LAN_CLIMATE_ACTIONS, LAN_CLIMATE_PAYLOAD_KEYS),
+    (VACUUM_ACTIONS, LAN_VACUUM_PAYLOAD_KEYS),
+    (HUMIDIFIER_ACTIONS, LAN_HUMIDIFIER_PAYLOAD_KEYS),
+)
 MEDIA_ART_MAX_PX = 256
 MEDIA_ART_JPEG_QUALITY = 80
 MEDIA_ART_WIRE_MAX_BYTES = 40 * 1024  # hard cap for data_base64's decoded bytes
@@ -6279,9 +6145,6 @@ MEDIA_ART_NO_PILLOW_MAX_BYTES = 60 * 1024  # without Pillow: originals above thi
 MEDIA_ART_FETCH_MAX_BYTES = 5 * 1024 * 1024
 MEDIA_ART_CACHE_SIZE = 50
 MEDIA_BROWSE_MAX_ITEMS = 200
-MEDIA_SEARCH_LIMIT = 10
-# Albums/artists/radio are extra Spotify round trips; the Home box is for song titles.
-MA_SEARCH_DEFAULT_TYPES = ("track", "playlist")
 MEDIA_POSITION_ONLY_KEYS = frozenset({"media_position", "media_position_updated_at"})
 
 # Services the agent executes for cloud / relay commands (spec §9.1 allowlist + §15.5 music).
@@ -6449,7 +6312,6 @@ LAN_ALLOWED_ACTIONS = frozenset(
     # album art (arvio.media_*) stay cloud-only: they are personal data and the
     # LAN path is unauthenticated until the HA-ingress hardening lands.
     | MEDIA_PLAYER_ACTIONS
-    | MUSIC_ASSISTANT_ACTIONS
     # Vacuum card: start / pause / stop / return_to_base / locate — comfort, like a cover.
     | VACUUM_ACTIONS
     # Dehumidifier card: on / off / target / mode — comfort, like a switch.
@@ -6580,6 +6442,12 @@ def lan_app_key(body: str) -> str:
     return base64.urlsafe_b64encode(hmac.new(key, body.encode(), hashlib.sha256).digest()).rstrip(b"=").decode()
 
 
+# The nonce lives on the monotonic clock and needs no date; the key's 30 days do. A box with no RTC and no
+# internet wakes up in 1970 and would take any key, also a revoked one, as unexpired. No clock reads before
+# the day ADR 017 was accepted (2026-11-06): until the box learns the time, the app has the cloud.
+LAN_CLOCK_FLOOR = 1_793_923_200.0
+
+
 def lan_app_claims_ok(body: str, now: float | None = None) -> bool:
     try:
         claims = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
@@ -6590,7 +6458,7 @@ def lan_app_claims_ok(body: str, now: float | None = None) -> bool:
     expires = claims.get("exp")
     if isinstance(expires, bool) or not isinstance(expires, (int, float)):
         return False
-    return (time.time() if now is None else now) < expires
+    return LAN_CLOCK_FLOOR <= (time.time() if now is None else now) < expires
 
 
 def lan_signer(nonce: str, method: str, target: str, body: bytes, signature: str, app_id: str | None):
@@ -6976,9 +6844,6 @@ def lan_door_refusal(action: str, entity_id: str, payload: dict, screen_secret: 
         return "a door needs a paired wall panel on the LAN path"
     return None
 
-HA_FLOORS_MIN_VERSION = (2024, 4)
-HA_KELVIN_MIN_VERSION = (2022, 12)
-
 COMMAND_LRU_SIZE = 500
 STATE_COALESCE_S = 1.0
 HEARTBEAT_INTERVAL_S = 30.0
@@ -7178,25 +7043,6 @@ def parse_iso_ts(value) -> float | None:
     return dt.timestamp()
 
 
-def parse_ha_version(version) -> tuple[int, int] | None:
-    """'2025.8.1' → (2025, 8); None when unknown."""
-    if not version:
-        return None
-    parts = str(version).split(".")
-    try:
-        return int(parts[0]), (int(parts[1]) if len(parts) > 1 else 0)
-    except (TypeError, ValueError):
-        return None
-
-
-def ha_version_at_least(version, minimum: tuple[int, int]) -> bool:
-    parsed = parse_ha_version(version)
-    if parsed is None:
-        # Unknown version: assume a current HA (the add-on ships against current HAOS).
-        return True
-    return parsed >= minimum
-
-
 def mireds_to_kelvin(mireds) -> int | None:
     try:
         m = float(mireds)
@@ -7205,16 +7051,6 @@ def mireds_to_kelvin(mireds) -> int | None:
     if m <= 0:
         return None
     return int(round(1_000_000 / m))
-
-
-def kelvin_to_mireds(kelvin) -> int | None:
-    try:
-        k = float(kelvin)
-    except (TypeError, ValueError):
-        return None
-    if k <= 0:
-        return None
-    return int(round(1_000_000 / k))
 
 
 # --- pure: registry normalisation --------------------------------------------
@@ -7325,7 +7161,7 @@ def normalize_entity_registry(raw) -> dict:
             "hidden": bool(it.get("hb") or it.get("hidden_by")),
             "name": it.get("name") or it.get("en") or it.get("original_name"),
             "original_device_class": it.get("original_device_class"),
-            # integration domain ("music_assistant", "cast", "sonos", …) — §15.2
+            # integration domain ("cast", "sonos", …) — §15.2
             "platform": it.get("pl") if "pl" in it else it.get("platform"),
         }
     return out
@@ -7942,13 +7778,10 @@ def build_hub_model(
     snapshot_version: int = 1,
     offset=0,
     limit=MODEL_LIMIT_DEFAULT,
-    ma_config_entry_id=None,
     weather=None,
     doorbell_call_ids=None,
 ) -> dict:
-    """HubModelPayload (home-model.ts) from raw HA data. Pure.
-
-    `ma_available` / `ma_config_entry_id` (0.1.21, §15.2) are not in home-model.ts yet."""
+    """HubModelPayload (home-model.ts) from raw HA data. Pure."""
     if doorbell_call_ids is None:
         doorbell_call_ids = doorbell_call_ids_from_cameras(
             str(st.get("entity_id") or "") for st in (states if isinstance(states, list) else []) if isinstance(st, dict)
@@ -8003,8 +7836,6 @@ def build_hub_model(
         "devices": sorted(devices.values(), key=lambda d: d["device_id"]),
         "entities": entities[off : off + lim],
         "scenarios": build_scenarios(states, automation_configs or {}),
-        "ma_available": bool(ma_config_entry_id),
-        "ma_config_entry_id": str(ma_config_entry_id) if ma_config_entry_id else None,
         "offset": off,
         "limit": lim,
         "total": total,
@@ -8043,11 +7874,9 @@ def resolve_target_entities(target: dict | None, domain: str, entity_regs: dict,
     return sorted(found)
 
 
-def native_target_data(target: dict, ha_version) -> dict | None:
+def native_target_data(target: dict) -> dict | None:
     """Service-data fragment for HA-native area/floor targeting, or None when not applicable."""
     if not isinstance(target, dict):
-        return None
-    if not ha_version_at_least(ha_version, HA_FLOORS_MIN_VERSION):
         return None
     data: dict = {}
     if target.get("area_id"):
@@ -8394,7 +8223,6 @@ def fetch_hub_model(payload: dict | None = None) -> dict:
         snapshot_version=get_snapshot_version(),
         offset=payload.get("offset"),
         limit=payload.get("limit"),
-        ma_config_entry_id=music_assistant_entry_id(),
         weather=weather_block(states, daily, hourly),
         doorbell_call_ids=doorbell_model_call_ids(states=states, entity_regs=snap.entity_regs),
     )
@@ -9049,8 +8877,8 @@ def browse_result_to_page(result, cap: int = MEDIA_BROWSE_MAX_ITEMS) -> dict:
     }
 
 
-def _empty_browse_page(eid: str, *, title: str = "Playlists", source: str | None = None) -> dict:
-    page = {
+def _empty_browse_page(eid: str, *, title: str = "Playlists") -> dict:
+    return {
         "ok": True,
         "entity_id": eid,
         "title": title,
@@ -9062,60 +8890,15 @@ def _empty_browse_page(eid: str, *, title: str = "Playlists", source: str | None
         "total": 0,
         "truncated": False,
     }
-    if source:
-        page["source"] = source
-    return page
-
-
-def _ma_library_playlists(eid: str, entry_id: str) -> dict:
-    data = {
-        "config_entry_id": entry_id,
-        "media_type": "playlist",
-        "limit": min(50, MEDIA_BROWSE_MAX_ITEMS),
-        "order_by": "name",
-    }
-    _ctx, response = ha_call_service_response("music_assistant", "get_library", data)
-    items = ma_library_items(response, "playlist")
-    return {
-        "ok": True,
-        "entity_id": eid,
-        "title": "Playlists",
-        "media_content_id": None,
-        "media_content_type": "playlist",
-        "media_class": "directory",
-        "thumbnail": None,
-        "items": items,
-        "total": len(items),
-        "truncated": False,
-        "source": "music_assistant",
-    }
 
 
 def media_browse(payload: dict, entity_id: str = "") -> dict:
-    """arvio.media_browse {entity_id, media_content_id?, media_content_type?}.
-
-    Root (no media_content_id) with Music Assistant in the house → documented
-    `music_assistant.get_library {config_entry_id, media_type: playlist}` so Playlists
-    is the connected library (Spotify & co.), not Cast's YouTube/TuneIn browse tree.
-    Expanding a node still uses HA WS `media_player/browse_media`.
-    """
+    """arvio.media_browse {entity_id, media_content_id?, media_content_type?}: HA WS `media_player/browse_media`."""
     payload = payload if isinstance(payload, dict) else {}
     eid = str(payload.get("entity_id") or entity_id or "")
     if not eid.startswith("media_player."):
         raise ValueError("media_player entity_id required")
     has_node = payload.get("media_content_id") not in (None, "")
-    entry_id = MA_INFO.get("entry_id") or music_assistant_entry_id()
-    if entry_id and not has_node:
-        try:
-            return _ma_library_playlists(eid, entry_id)
-        except (RuntimeError, TypeError, ValueError, KeyError):
-            entry_id = music_assistant_entry_id() or entry_id
-            try:
-                return _ma_library_playlists(eid, entry_id)
-            except (RuntimeError, TypeError, ValueError, KeyError):
-                # Group players (MA «Office speakers group») do not support browse_media —
-                # falling through would surface as Home «Το σπίτι απάντησε με σφάλμα».
-                return _empty_browse_page(eid, source="music_assistant")
     extra: dict = {"entity_id": eid}
     if has_node:
         extra["media_content_id"] = str(payload["media_content_id"])
@@ -9132,83 +8915,9 @@ def media_browse(payload: dict, entity_id: str = "") -> dict:
     return page
 
 
-# Tracks first: a song title in Home search must not drown under 10 matching artists.
-MA_SEARCH_KEYS = (("tracks", "track"), ("playlists", "playlist"), ("albums", "album"), ("artists", "artist"), ("radio", "radio"))
-
-
-def ma_item_to_browse(it, default_type: str, *, expand_playlists: bool = True) -> dict | None:
-    """One Music Assistant media item (search or library) → browse/search row. Pure."""
-    if not isinstance(it, dict) or not it.get("uri"):
-        return None
-    mtype = str(it.get("media_type") or default_type)
-    image = it.get("image")
-    image = str(image) if isinstance(image, str) and image else None
-    artists = it.get("artists") if isinstance(it.get("artists"), list) else []
-    artist_names = [str(a.get("name")) for a in artists if isinstance(a, dict) and a.get("name")]
-    album = it.get("album") if isinstance(it.get("album"), dict) else None
-    expand = mtype in ("artist", "album") or (expand_playlists and mtype == "playlist")
-    return {
-        "title": str(it.get("name") or ""),
-        "media_content_id": str(it["uri"]),
-        "media_content_type": mtype,
-        "media_class": mtype,
-        "can_play": True,
-        "can_expand": expand,
-        "thumbnail": image if image and image.startswith("https://") else None,
-        "thumbnail_hash": hashlib.sha1(image.encode("utf-8")).hexdigest() if image else None,
-        "artist": " · ".join(artist_names) or None,
-        "album": str(album.get("name")) if album and album.get("name") else None,
-    }
-
-
-def ma_search_items(response, cap: int = MEDIA_BROWSE_MAX_ITEMS, media_type: str | None = None, types=None) -> list:
-    """music_assistant.search response → items (media_content_id = MA uri, media_content_type = MA media_type). Pure.
-
-    Flatten order is tracks → playlists → albums → artists → radio so a title query
-    surfaces songs before the artist rows MA returns in parallel. `media_type` / `types`
-    keep only those buckets (HA still serialises every key).
-    """
-    response = response if isinstance(response, dict) else {}
-    keys = MA_SEARCH_KEYS
-    if media_type:
-        types = [media_type]
-    if types:
-        want = {str(t) for t in types}
-        keys = tuple((k, t) for k, t in MA_SEARCH_KEYS if t in want)
-    items: list = []
-    for key, default_type in keys:
-        for it in response.get(key) or []:
-            mapped = ma_item_to_browse(it, default_type)
-            if not mapped:
-                continue
-            items.append(mapped)
-            if len(items) >= cap:
-                return items
-    return items
-
-
-def ma_library_items(response, default_type: str, cap: int = MEDIA_BROWSE_MAX_ITEMS) -> list:
-    """music_assistant.get_library `{items: [...]}` → browse rows. Pure. Playlists play, they do not expand."""
-    response = response if isinstance(response, dict) else {}
-    raw = response.get("items")
-    if not isinstance(raw, list):
-        return []
-    items: list = []
-    for it in raw:
-        mapped = ma_item_to_browse(it, default_type, expand_playlists=False)
-        if not mapped:
-            continue
-        items.append(mapped)
-        if len(items) >= cap:
-            break
-    return items
-
-
 def media_search(payload: dict, entity_id: str = "") -> dict:
     """arvio.media_search {entity_id, query, media_type?, media_content_id?, media_content_type?} (§15.5):
-    Music Assistant in the house → `music_assistant.search` (return_response; default
-    media_type track+playlist so Spotify is not asked for albums/artists/radio);
-    else player has SEARCH_MEDIA → HA WS media_player/search_media (media_type → `media_filter_classes`,
+    player has SEARCH_MEDIA → HA WS media_player/search_media (media_type → `media_filter_classes`,
     media_content_id/type = the browse node to search within, passed through unchanged);
     else {items: [], reason: "search_unavailable"}."""
     payload = payload if isinstance(payload, dict) else {}
@@ -9220,12 +8929,6 @@ def media_search(payload: dict, entity_id: str = "") -> dict:
         raise ValueError("query required")
     media_type = str(payload.get("media_type") or "").strip() or None
     base = {"ok": True, "entity_id": eid, "query": query}
-    entry_id = MA_INFO.get("entry_id") or music_assistant_entry_id()
-    if entry_id:
-        types = [media_type] if media_type else list(MA_SEARCH_DEFAULT_TYPES)
-        data: dict = {"config_entry_id": entry_id, "name": query, "limit": MEDIA_SEARCH_LIMIT, "media_type": types}
-        _ctx, response = ha_call_service_response("music_assistant", "search", data)
-        return {**base, "source": "music_assistant", "items": ma_search_items(response, types=types)}
     st_obj = ha(f"/states/{eid}")
     attrs = st_obj.get("attributes") if isinstance(st_obj, dict) and isinstance(st_obj.get("attributes"), dict) else {}
     sf = _int_or_none(attrs.get("supported_features")) or 0
@@ -10121,143 +9824,6 @@ def relay_loop(sleep=time.sleep) -> None:
             sleep(RELAY_BACKOFF.next_sleep())
 
 
-def lab_bootstrap() -> dict:
-    lab = load_lab()
-    if lab.get("bootstrapped"):
-        return {
-            "ok": True,
-            "already": True,
-            "partner_org_id": lab.get("partner_org_id"),
-            "customer_org_id": lab.get("customer_org_id"),
-            "site_id": lab.get("site_id"),
-        }
-    partner_id = "org_partner_lab"
-    customer_id = "org_customer_lab"
-    site_id = "site_lab_home"
-    lab["orgs"][partner_id] = {
-        "org_id": partner_id,
-        "type": "partner",
-        "name": "SFK Lab Partner",
-    }
-    lab["orgs"][customer_id] = {
-        "org_id": customer_id,
-        "type": "customer",
-        "name": "Lab Customer",
-    }
-    lab["sites"][site_id] = {
-        "site_id": site_id,
-        "customer_org_id": customer_id,
-        "name": "Lab Home",
-    }
-    lab["support_grants"][site_id] = partner_id
-    lab["partner_org_id"] = partner_id
-    lab["customer_org_id"] = customer_id
-    lab["site_id"] = site_id
-    lab["bootstrapped"] = True
-    save_lab(lab)
-    return {
-        "ok": True,
-        "partner_org_id": partner_id,
-        "customer_org_id": customer_id,
-        "site_id": site_id,
-    }
-
-
-def issue_claim(hid: str) -> dict:
-    global hub_state
-    st = load_hub()
-    if st.get("hub_id") != hid:
-        raise ValueError("Hub not found")
-    state = st.get("state") or "prepared"
-    if state not in ("prepared", "assigned"):
-        raise ValueError(f"Cannot issue claim in hub state {state}")
-    lab = load_lab()
-    token = secrets.token_urlsafe(24)
-    claim_id = f"claim_{secrets.token_hex(4)}"
-    expires = time.time() + 30 * 60
-    claim = {
-        "claim_id": claim_id,
-        "hub_id": hid,
-        "token_hash": sha(token),
-        "state": "issued",
-        "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(expires)),
-        "presence_verified": False,
-    }
-    lab["claims"][claim_id] = claim
-    lab["claim_tokens"][claim_id] = token
-    save_lab(lab)
-    if state == "prepared":
-        hub_state = "assigned"
-        st["state"] = "assigned"
-        save_hub(st)
-    return {
-        "claim_id": claim_id,
-        "token": token,
-        "expires_at": claim["expires_at"],
-    }
-
-
-def confirm_presence(claim_id: str, user_code: str) -> dict:
-    lab = load_lab()
-    claim = lab["claims"].get(claim_id)
-    if not claim:
-        raise ValueError("Claim not found")
-    # Same-process presence: live code + expiry (also persisted hash for audit)
-    if time.time() > exp or user_code.strip() != code:
-        raise ValueError("Invalid or expired presence code")
-    claim["state"] = "presence_pending"
-    claim["presence_verified"] = True
-    lab["claims"][claim_id] = claim
-    save_lab(lab)
-    return {"claim_id": claim_id, "state": claim["state"]}
-
-
-def redeem_claim(claim_id: str, token: str, site_id: str, actor: dict) -> dict:
-    global hub_state, hub_id
-    lab = load_lab()
-    claim = lab["claims"].get(claim_id)
-    if not claim:
-        raise ValueError("Claim not found")
-    if lab["claim_tokens"].get(claim_id) != token:
-        raise ValueError("Invalid claim token")
-    if not claim.get("presence_verified"):
-        raise ValueError("Physical presence required before redeem")
-    site = lab["sites"].get(site_id)
-    if not site:
-        raise ValueError("Site not found")
-    org_type = actor.get("org_type", "partner")
-    org_id = actor.get("org_id", "")
-    if org_type == "partner":
-        if lab["support_grants"].get(site_id) != org_id:
-            raise ValueError("Forbidden: no support grant for site")
-    elif org_type == "customer":
-        if site.get("customer_org_id") != org_id:
-            raise ValueError("Forbidden")
-    elif org_type != "sfk":
-        raise ValueError("Forbidden")
-
-    claim["state"] = "redeemed"
-    claim["site_id"] = site_id
-    claim["actor_id"] = actor.get("user_id", "lab")
-    lab["claims"][claim_id] = claim
-    save_lab(lab)
-
-    st = load_hub()
-    hub_state = "claimed"
-    st["state"] = "claimed"
-    st["site_id"] = site_id
-    st["customer_org_id"] = site["customer_org_id"]
-    save_hub(st)
-    hub_id = st.get("hub_id")
-    return {
-        "hub_id": hub_id,
-        "serial": st.get("serial"),
-        "state": "claimed",
-        "site_id": site_id,
-        "customer_org_id": site["customer_org_id"],
-    }
-
-
 # A hub on the home network answers to its IP, `localhost`, a single-label name, mDNS (`.local`) and
 # the usual private suffixes. Any other name in `Host` is DNS rebinding: a public domain pointed at
 # the hub's LAN address so a web page can read and drive it (security review 2026-11-02).
@@ -10298,11 +9864,13 @@ def lan_request_ok(host: str, origin: str | None) -> bool:
 TV_CORS_PATHS = frozenset({"/tv", "/api/tv", "/v1/lan/nonce", "/api/screens/pair", "/api/screens/screenshot"})
 # ponytail: only the two Αφίσα families are inlined (~120 KB); other presets fall back to the TV's fonts.
 TV_FONTS = ("/panel/fonts/text-greek.woff2", "/panel/fonts/text-latin.woff2", "/panel/fonts/display-greek.woff2", "/panel/fonts/display-latin.woff2")
+LAN_SIGN_TAG = '<script src="/panel/lan-sign.js"></script>'
 _TV_PAGE: dict = {}
 
 
 def tv_page() -> tuple[bytes, str]:
-    """tv.html as one file: the fonts go in as data URLs, so a TV can keep the page and draw it with no hub."""
+    """tv.html as one file: the fonts go in as data URLs and the signing code inline, so a TV can keep the page
+    and draw it with no hub."""
     path = APP / "tv.html"
     stamp = path.stat().st_mtime_ns
     if _TV_PAGE.get("stamp") != stamp:
@@ -10311,6 +9879,7 @@ def tv_page() -> tuple[bytes, str]:
             f = APP / "panel-app" / "fonts" / font.rsplit("/", 1)[1]
             if f.is_file():
                 html = html.replace(f'"{font}"', '"data:font/woff2;base64,' + base64.b64encode(f.read_bytes()).decode("ascii") + '"')
+        html = html.replace(LAN_SIGN_TAG, "<script>\n" + (APP / "lan-sign.js").read_text(encoding="utf-8") + "</script>", 1)
         data = html.encode("utf-8")
         _TV_PAGE.update(stamp=stamp, data=data, etag='"' + hashlib.sha256(data).hexdigest() + '"')
     return _TV_PAGE["data"], _TV_PAGE["etag"]
@@ -10332,12 +9901,17 @@ class H(BaseHTTPRequestHandler):
     and the keypad and pairing routes, which each ask for their own code and lock after wrong tries.
     """
 
-    def _j(self, status: int, body: dict) -> None:
-        data = json.dumps(body, default=str).encode()
+    def _send(self, status: int, data: bytes, ctype: str, headers: dict | None = None) -> None:
         self.send_response(status)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(data)
+
+    def _j(self, status: int, body: dict, headers: dict | None = None) -> None:
+        self._send(status, json.dumps(body, default=str).encode(), "application/json", headers)
 
     def _raw_body(self) -> bytes:
         if self._body is None:
@@ -10355,11 +9929,7 @@ class H(BaseHTTPRequestHandler):
         if not path.exists():
             self.send_error(404)
             return
-        data = path.read_bytes()
-        self.send_response(200)
-        self.send_header("Content-Type", ctype)
-        self.end_headers()
-        self.wfile.write(data)
+        self._send(200, path.read_bytes(), ctype)
 
     def _ui(self) -> None:
         """Hub home page: the presence code is painted into the HTML, never returned as JSON, and only
@@ -10371,12 +9941,7 @@ class H(BaseHTTPRequestHandler):
         html = path.read_text(encoding="utf-8")
         if not hub_id or hub_state in HUB_STATES_WITHOUT_OWNER:
             html = html.replace('id="code">------', f'id="code">{html_lib.escape(code)}', 1)
-        data = html.encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
+        self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
 
     def end_headers(self) -> None:
         if urlparse(self.path).path in TV_CORS_PATHS:
@@ -10421,14 +9986,10 @@ class H(BaseHTTPRequestHandler):
             else:
                 self._j(403, {"ok": False, "error": "forbidden_origin"})
                 return False
-        # Not 403: a panel that gets three of those forgets its pairing. Each of these clears by itself,
-        # the old page within a minute when it sees the new version on /health.
-        if self.headers.get(OLD_PANEL_HEADER):
-            self._j(426, {"ok": False, "error": "reload_the_page"})
-            return False
         nonce, signature = self.headers.get(LAN_NONCE_HEADER), self.headers.get(LAN_SIG_HEADER)
         if nonce and signature:
             if not lan_nonce_spend(nonce):
+                # Not 403: a panel that gets three of those forgets its pairing. This one clears by itself.
                 self._j(409, {"ok": False, "error": "nonce_expired"})
                 return False
             self._signed = lan_signer(nonce, self.command, self.path, self._raw_body(), signature, self.headers.get(LAN_ID_HEADER))
@@ -10439,14 +10000,7 @@ class H(BaseHTTPRequestHandler):
             return
         path = urlparse(self.path).path
         if path == "/v1/lan/nonce":
-            data = json.dumps({"nonce": lan_nonce_new()}).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
-            return
+            return self._j(200, {"nonce": lan_nonce_new()}, {"Cache-Control": "no-store"})
         if path.rstrip("/") in ("/partner", "/home", "/remote"):  # old pages: all of it is on the hub's page now
             self.send_response(302)
             self.send_header("Location", "/")
@@ -10465,15 +10019,7 @@ class H(BaseHTTPRequestHandler):
                 self.send_header("ETag", etag)
                 self.end_headers()
                 return
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("ETag", etag)
-            self.send_header("Cache-Control", "no-cache")
-            self.send_header("X-Arvio-Tv-Page", AGENT_VERSION)
-            self.end_headers()
-            self.wfile.write(data)
-            return
+            return self._send(200, data, "text/html; charset=utf-8", {"ETag": etag, "Cache-Control": "no-cache", "X-Arvio-Tv-Page": AGENT_VERSION})
         if path == "/api/tv":
             qs = parse_qs(urlparse(self.path).query)
             try:
@@ -10497,25 +10043,16 @@ class H(BaseHTTPRequestHandler):
             return self._file("panel-app/fonts/" + path.rsplit("/", 1)[1], "font/woff2")
         if path == "/panel/hls.js":  # hls.js 1.7.3 light (Apache-2.0), only for a full-screen camera
             return self._file("panel-app/hls.light.min.js", "text/javascript; charset=utf-8")
+        if path == "/panel/lan-sign.js":  # SHA-256 and HMAC by hand, for the panel page and the Guest TV (ADR 017)
+            return self._file("lan-sign.js", "text/javascript; charset=utf-8")
         if path == "/panel/ipad.mobileconfig":
             # «Σύζευξη iPad»: the QR in Partner. Only with an open pair token; 410 once used or expired.
             token = (parse_qs(urlparse(self.path).query).get("t") or [""])[0]
             data = ipad_profile(token, self.headers.get("Host") or "")
             if data is None:
                 msg = "Ο σύνδεσμος έληξε ή χρησιμοποιήθηκε ήδη. Ζήτησε νέο QR από τον Partner.".encode("utf-8")
-                self.send_response(410)
-                self.send_header("Content-Type", "text/plain; charset=utf-8")
-                self.send_header("Content-Length", str(len(msg)))
-                self.end_headers()
-                self.wfile.write(msg)
-                return
-            self.send_response(200)
-            self.send_header("Content-Type", "application/x-apple-aspen-config")
-            self.send_header("Content-Disposition", 'attachment; filename="arvio-panel.mobileconfig"')
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
-            return
+                return self._send(410, msg, "text/plain; charset=utf-8")
+            return self._send(200, data, "application/x-apple-aspen-config", {"Content-Disposition": 'attachment; filename="arvio-panel.mobileconfig"'})
         if path == "/api/screens/wallpaper":
             qs = parse_qs(urlparse(self.path).query)
             sid = (qs.get("id") or [None])[0]
@@ -10533,13 +10070,7 @@ class H(BaseHTTPRequestHandler):
                 return self._j(404, {"error": "not_found"})
             data = path_file.read_bytes()
             mime = "image/webp" if data[:4] == b"RIFF" else "image/jpeg"
-            self.send_response(200)
-            self.send_header("Content-Type", mime)
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "private, max-age=3600")
-            self.end_headers()
-            self.wfile.write(data)
-            return
+            return self._send(200, data, mime, {"Cache-Control": "private, max-age=3600"})
         if path == "/api/screens/ring":
             sid = (parse_qs(urlparse(self.path).query).get("id") or [""])[0]
             try:
@@ -10562,26 +10093,14 @@ class H(BaseHTTPRequestHandler):
                 return self._j(404, {"error": "not_found"})
             except Exception:
                 return self._j(502, {"error": "camera_unavailable"})
-            self.send_response(200)
-            self.send_header("Content-Type", mime)
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(data)
-            return
+            return self._send(200, data, mime, {"Cache-Control": "no-store"})
         if path.startswith("/api/live/"):
             ticket, _, rest = path[len("/api/live/") :].partition("/")
             cam = live_camera_path(ticket, rest, urlparse(self.path).query)
             if not cam:
                 return self._j(404, {"error": "not_found"})
             status, headers, _, data = camera_http_via_supervisor("GET", cam)
-            self.send_response(status)
-            self.send_header("Content-Type", headers.get("content-type") or "application/octet-stream")
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(data)
-            return
+            return self._send(status, data, headers.get("content-type") or "application/octet-stream", {"Cache-Control": "no-store"})
         if path == "/api/screens/doorbell.jpg":
             qs = parse_qs(urlparse(self.path).query)
             sid = (qs.get("id") or [None])[0]
@@ -10600,13 +10119,7 @@ class H(BaseHTTPRequestHandler):
                 return self._j(404, {"error": "not_found"})
             except Exception:
                 return self._j(502, {"error": "camera_unavailable"})
-            self.send_response(200)
-            self.send_header("Content-Type", mime or "image/jpeg")
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(data)
-            return
+            return self._send(200, data, mime or "image/jpeg", {"Cache-Control": "no-store"})
         if path == "/api/screens":
             qs = parse_qs(urlparse(self.path).query)
             sid = (qs.get("screen_id") or [None])[0]
@@ -10630,7 +10143,6 @@ class H(BaseHTTPRequestHandler):
                     "agent_version": AGENT_VERSION,
                     "snapshot_version": get_snapshot_version(),
                     "ha_version": HA_INFO.get("version"),
-                    "ma_available": bool(MA_INFO.get("entry_id")),
                     "relay_url": RELAY_URL or None,
                     "relay_ok": relay_ok,
                     "relay_error": relay_err,
@@ -10649,11 +10161,6 @@ class H(BaseHTTPRequestHandler):
                 "relay_url": RELAY_URL or None,
                 "relay_ok": relay_ok,
                 "error": err,
-                "lab": {
-                    "bootstrapped": load_lab().get("bootstrapped", False),
-                    "site_id": load_lab().get("site_id"),
-                    "partner_org_id": load_lab().get("partner_org_id"),
-                },
             }
             if self._caller_ok():
                 status["entities"] = entities()
@@ -10701,13 +10208,6 @@ class H(BaseHTTPRequestHandler):
             return
         path = urlparse(self.path).path
         try:
-            if path == "/v1/lab/bootstrap":
-                if mode == "remote":
-                    boot = cloud_json("POST", "/v1/lab/bootstrap", {})
-                    cache_lab_boot(boot)
-                    return self._j(200, boot)
-                return self._j(200, lab_bootstrap())
-
             if path == "/api/screens/pair":
                 body = self._read_json()
                 if self._cross and not body.get("token"):
@@ -10805,39 +10305,14 @@ class H(BaseHTTPRequestHandler):
                 eid = str(body.get("entity_id") or "")
                 # Same safety checks as the relay path, plus the LAN allowlist
                 # (LAN_ALLOWED_ACTIONS: no security actions / arvio writes / batch / target).
-                # Payload is not forwarded here on purpose: confirm_dangerous can only
-                # come from the cloud.
+                # Of the payload only LAN_PAYLOAD_KEYS pass: confirm_dangerous can only come from the cloud.
                 cid = f"local_{secrets.token_hex(4)}"
                 cmd: dict = {"command_id": cid, "action": action, "entity_id": eid}
-                if action in MEDIA_ACTIONS:
-                    # §15.5: music payloads (volume / source / queue / query) are harmless; only
-                    # LAN_MEDIA_PAYLOAD_KEYS pass — never confirm_dangerous / code / target.
-                    raw_payload = body.get("payload") if isinstance(body.get("payload"), dict) else {}
-                    lan_payload = {k: v for k, v in raw_payload.items() if k in LAN_MEDIA_PAYLOAD_KEYS}
-                    for key in LAN_MEDIA_PAYLOAD_KEYS:
-                        if key in body and key not in lan_payload:
-                            lan_payload[key] = body[key]
-                    cmd["payload"] = lan_payload
-                elif action == "arvio.trigger_scenario":
-                    raw_payload = body.get("payload") if isinstance(body.get("payload"), dict) else {}
-                    cmd["payload"] = {
-                        k: v for k, v in raw_payload.items() if k in LAN_SCENARIO_PAYLOAD_KEYS
-                    }
-                elif action in LAN_CLIMATE_ACTIONS:
-                    raw_payload = body.get("payload") if isinstance(body.get("payload"), dict) else {}
-                    cmd["payload"] = {
-                        k: v for k, v in raw_payload.items() if k in LAN_CLIMATE_PAYLOAD_KEYS
-                    }
-                elif action in VACUUM_ACTIONS:
-                    raw_payload = body.get("payload") if isinstance(body.get("payload"), dict) else {}
-                    cmd["payload"] = {
-                        k: v for k, v in raw_payload.items() if k in LAN_VACUUM_PAYLOAD_KEYS
-                    }
-                elif action in HUMIDIFIER_ACTIONS:
-                    raw_payload = body.get("payload") if isinstance(body.get("payload"), dict) else {}
-                    cmd["payload"] = {
-                        k: v for k, v in raw_payload.items() if k in LAN_HUMIDIFIER_PAYLOAD_KEYS
-                    }
+                raw_payload = body.get("payload") if isinstance(body.get("payload"), dict) else {}
+                for family, keys in LAN_PAYLOAD_KEYS:
+                    if action in family:
+                        cmd["payload"] = {k: v for k, v in raw_payload.items() if k in keys}
+                        break
                 ack = handle_command(cmd, via="lan", screen_secret=self._panel(), lan_app=self._app())
                 if not ack.get("ok"):
                     msg = str(ack.get("error") or "command failed")
@@ -10899,6 +10374,7 @@ if __name__ == "__main__":
     threading.Thread(target=venue_loop, daemon=True).start()
     threading.Thread(target=panel_watch_loop, daemon=True).start()
     threading.Thread(target=device_watch_loop, daemon=True).start()
+    threading.Thread(target=home_event_loop, daemon=True).start()
     activity_note_system(f"agent {AGENT_VERSION} started")
     threading.Thread(target=activity_flush_loop, daemon=True).start()
     threading.Thread(target=standalone_trial_ok, daemon=True).start()
