@@ -368,9 +368,7 @@ def load_screens() -> dict:
 
 def save_screens(doc: dict) -> None:
     payload = {"screens": doc.get("screens") if isinstance(doc, dict) else {}}
-    tmp = SCREENS.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(SCREENS)
+    write_json_atomic(SCREENS, payload)
 
 
 FLOOR_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,120}$")
@@ -392,9 +390,7 @@ def load_floor_plans() -> dict:
 
 def save_floor_plans(doc: dict) -> None:
     payload = {"plans": doc.get("plans") if isinstance(doc, dict) else {}}
-    tmp = FLOOR_PLANS.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(FLOOR_PLANS)
+    write_json_atomic(FLOOR_PLANS, payload)
 
 
 def _int_cm(v) -> int:
@@ -629,8 +625,11 @@ def post_doorbell_ring(call_entity_id: str) -> None:
         )
         with urllib.request.urlopen(req, timeout=8) as r:
             r.read()
-    except Exception:
-        pass
+    except urllib.error.HTTPError as e:
+        print(f"doorbell ring: cloud answered {e.code}", flush=True)
+    except Exception as e:
+        # A ring nobody's phone got must at least be in the log.
+        print(f"doorbell ring: not sent ({type(e).__name__})", flush=True)
     if camera:
         keep_ring_photo(ring_id, camera)
 
@@ -1275,9 +1274,7 @@ def load_venue() -> dict:
 
 
 def save_venue(doc: dict) -> None:
-    tmp = VENUE.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(VENUE)
+    write_json_atomic(VENUE, doc)
 
 
 def _venue_hash_pin(pin: str, site_id: str, booking_id: str) -> str:
@@ -1917,9 +1914,7 @@ def load_guest_tv() -> dict | None:
 def put_guest_tv(payload: dict | None) -> dict:
     """`arvio.put_guest_tv`: the house's Guest TV profile with the Wi-Fi and logo of «Καλωσόρισμα»."""
     doc = guest_tv.parse_put_guest_tv(payload)
-    tmp = GUEST_TV.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(GUEST_TV)
+    write_json_atomic(GUEST_TV, doc)
     return {"ok": True, "version": guest_tv.tv_version(doc["tv"])}
 
 
@@ -10321,7 +10316,12 @@ def tv_page() -> tuple[bytes, str]:
     return _TV_PAGE["data"], _TV_PAGE["etag"]
 
 
+LAN_BODY_MAX = 1_000_000
+
+
 class H(BaseHTTPRequestHandler):
+    # A connection that stops sending is dropped, so its thread comes back; no route streams.
+    timeout = 30
     """LAN HTTP on :8099. Anyone on the network reaches it: the QR on the hub's screen leads here.
 
     Same-origin only: no CORS grants, so a page on another origin cannot drive the hub
@@ -10341,7 +10341,8 @@ class H(BaseHTTPRequestHandler):
 
     def _raw_body(self) -> bytes:
         if self._body is None:
-            n = int(self.headers.get("Content-Length") or 0)
+            # Nothing on the LAN sends more than a few KB; a bigger declared body is cut, and its JSON then refused.
+            n = min(int(self.headers.get("Content-Length") or 0), LAN_BODY_MAX)
             self._body = self.rfile.read(n) if n > 0 else b""
         return self._body
 

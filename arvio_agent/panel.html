@@ -2160,12 +2160,11 @@
       function clockText(d) {
         const date = d || new Date();
         try {
-          return new Intl.DateTimeFormat("el-GR", {
-            ...hourOpts(),
+          return new Intl.DateTimeFormat("el-GR", Object.assign(hourOpts(), {
             hour: "2-digit",
             minute: "2-digit",
-                        timeZone: tz(),
-          }).format(date);
+            timeZone: tz(),
+          })).format(date);
         } catch (e) {
           return String(date.getHours()).padStart(2, "0") + ":" + String(date.getMinutes()).padStart(2, "0");
         }
@@ -2266,12 +2265,11 @@
       function hourLabel(iso) {
         if (iso && hourKey(iso) === hourKey(new Date().toISOString())) return "Τώρα";
         try {
-          return new Intl.DateTimeFormat("el-GR", {
-            ...hourOpts(),
+          return new Intl.DateTimeFormat("el-GR", Object.assign(hourOpts(), {
             hour: "2-digit",
             minute: "2-digit",
-                        timeZone: tz(),
-          }).format(new Date(iso));
+            timeZone: tz(),
+          })).format(new Date(iso));
         } catch (e) {
           return "—";
         }
@@ -3227,7 +3225,7 @@
             var nx = new Date(venueWall.next_starts_at);
             var nlabel = venueWall.next_package_name || "Κράτηση";
             if (!Number.isNaN(nx.getTime())) {
-              nlabel += " " + new Intl.DateTimeFormat("el-GR", { ...hourOpts(), hour: "2-digit", minute: "2-digit", timeZone: tz() }).format(nx);
+              nlabel += " " + new Intl.DateTimeFormat("el-GR", Object.assign(hourOpts(), { hour: "2-digit", minute: "2-digit", timeZone: tz() })).format(nx);
             }
             pkg = nlabel;
           }
@@ -3392,7 +3390,7 @@
             var nx = new Date(venueWall.next_starts_at);
             var nlabel = (venueWall.next_package_name || "Κράτηση");
             if (!Number.isNaN(nx.getTime())) {
-              nlabel += " " + new Intl.DateTimeFormat("el-GR", { ...hourOpts(), hour: "2-digit", minute: "2-digit", timeZone: tz() }).format(nx);
+              nlabel += " " + new Intl.DateTimeFormat("el-GR", Object.assign(hourOpts(), { hour: "2-digit", minute: "2-digit", timeZone: tz() })).format(nx);
             }
             pkg = nlabel;
           }
