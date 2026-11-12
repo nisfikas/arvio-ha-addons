@@ -4041,14 +4041,15 @@
       setInterval(beat, 30000);
 
       // An agent update brings a new version of this page, and nothing else would reload it: the app
-      // loads it once. Without the app (an iPad, any browser) the page also looks after itself: a
-      // fresh start when the hub has answered nothing useful for 3 min, and every night at 04:00 (old
-      // Safari leaks memory over days). All only when /health answers, so no error page ever shows.
+      // loads it once. The page also looks after itself: a fresh start every night at 04:00, in the app
+      // too (a WebView left for days stopped painting, Κρέσνα 2026-11-12), and without the app (an iPad,
+      // any browser) when the hub has answered nothing useful for 3 min. All only when /health answers,
+      // so no error page ever shows.
       const PAGE_BORN = Date.now();
       setInterval(async () => {
         if (PREVIEW || !pairing.get(KEY)) return;
         const stale = !window.ArvioPanel && Date.now() - lastGood > 3 * 60000; // the app has its own watchdog
-        const nightly = !window.ArvioPanel && new Date().getHours() === 4 && Date.now() - PAGE_BORN > 3600000;
+        const nightly = new Date().getHours() === 4 && Date.now() - PAGE_BORN > 3600000;
         try {
           const r = await fetch("/health", { cache: "no-store" });
           if (!r.ok) return;
@@ -4057,6 +4058,50 @@
           if (stale || nightly || (v && v !== pageVersion)) location.reload();
         } catch (e) {}
       }, 60000);
+
+      // A WebView can stop painting while this script runs on: on the Κρέσνα NSPanel (2026-11-12) the
+      // screen showed only its background for hours, the app's heartbeat watchdog saw nothing wrong, and
+      // the page's own picture («Στιγμιότυπο») came back black from edge to edge. A restart brought it
+      // back. So every 5 min the page draws itself the same way; black twice in a row, it restarts the
+      // panel as Partner's «Επανεκκίνηση» does. At most once in 6 h, in case black is ever real.
+      // ponytail: it checks the page's own picture, not the glass; a WebView that draws one and not the other waits for 04:00.
+      const PAINT_RESET_KEY = "arvio.panel.paint_reset";
+      let paintMisses = 0;
+      async function pageIsBlack() {
+        const img = new Image();
+        img.src = await pageShot();
+        await img.decode();
+        const canvas = document.createElement("canvas");
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0);
+        const px = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+        for (let i = 0; i < px.length; i += 4) if (px[i] > 8 || px[i + 1] > 8 || px[i + 2] > 8) return false;
+        return true;
+      }
+      setInterval(async () => {
+        // Only in the app, which can restart the panel. A camera, the doorbell or a sheet draw no picture of theirs.
+        if (PREVIEW || !window.ArvioPanel || !screen || document.hidden) return;
+        if (!doorbellEl.classList.contains("hidden") || sheet || camView || cameraOnPage()) return;
+        let black;
+        try {
+          black = await pageIsBlack();
+        } catch (e) {
+          return; // could not tell: not a miss
+        }
+        paintMisses = black ? paintMisses + 1 : 0;
+        if (paintMisses < 2) return;
+        paintMisses = 0;
+        try {
+          if (Date.now() - (Number(localStorage.getItem(PAINT_RESET_KEY)) || 0) < 6 * 3600000) return;
+          localStorage.setItem(PAINT_RESET_KEY, String(Date.now()));
+        } catch (e) {
+          return; // no memory of the last restart: never risk a loop
+        }
+        if (window.ArvioPanel.reboot) window.ArvioPanel.reboot();
+        else location.reload();
+      }, 5 * 60000);
     </script>
   </body>
 </html>

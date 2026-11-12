@@ -1482,6 +1482,19 @@ class ScreenLanHttpTest(unittest.TestCase):
         self.assertIn("Δεν έχει πλακίδια ακόμα.", html)
         self.assertEqual(html.count("hideStatus();"), 2)
 
+    def test_a_panel_that_stops_painting_restarts_itself(self):
+        """Κρέσνα 2026-11-12: the script ran, the WebView painted nothing, and the app's watchdog only hears the script."""
+        html = (ROOT / "panel.html").read_text(encoding="utf-8")
+        # the 04:00 fresh start holds in the app too
+        self.assertIn("const nightly = new Date().getHours() === 4", html)
+        watch = html[html.index("async function pageIsBlack()") : html.index("</script>", html.index("async function pageIsBlack()"))]
+        self.assertIn("await pageShot()", watch)
+        self.assertIn("if (paintMisses < 2) return;", watch)  # one black picture is not enough
+        self.assertIn("6 * 3600000", watch)  # and never a restart loop
+        self.assertIn("window.ArvioPanel.reboot()", watch)
+        self.assertIn("return; // could not tell: not a miss", watch)
+        self.assertIn("if (PREVIEW || !window.ArvioPanel", watch)  # never Partner's preview, never an iPad
+
     def test_panel_fits_its_big_numbers_on_an_old_safari(self):
         """iPad Air 2 on iPadOS 15 (no cqh): the clock overflowed its tile; the weather showed a lone «—»."""
         html = (ROOT / "panel.html").read_text(encoding="utf-8")
