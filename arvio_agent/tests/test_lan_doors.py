@@ -213,6 +213,41 @@ class LanDoorsTest(unittest.TestCase):
         page = (pathlib.Path(__file__).resolve().parents[1] / "panel.html").read_text(encoding="utf-8")
         self.assertIn('(e.domain === "switch" && !e.door_marked && LIGHT_ICONS.indexOf(e.icon) >= 0)', page)
 
+    def test_camera_buttons_reach_the_panel_without_the_doorbells_relay(self):
+        doc = agent.load_screens()
+        doc["screens"]["scr_door"]["doorbell"]["buttons"] = [
+            {"target": RELAY, "press": "on"},  # «Άνοιγμα πόρτας» after a ring is its only way
+            {"target": "cover.garage", "press": "open", "label": "Γκαράζ", "status": "binary_sensor.garage_contact"},
+            {"target": "light.porch", "press": "toggle", "status": "binary_sensor.gone"},
+            {"target": "scenario:welcome", "press": "run"},
+            {"target": "light.gone", "press": "toggle"},
+            {"target": "lock.front", "press": "run"},
+            {"target": "switch.plain", "press": "run"},
+        ]
+        agent.save_screens(doc)
+        states = [
+            {"entity_id": RELAY, "state": "off", "attributes": {"friendly_name": "Ρελέ 1"}},
+            {"entity_id": "cover.garage", "state": "closed", "attributes": {"device_class": "garage"}},
+            {"entity_id": "binary_sensor.garage_contact", "state": "off", "attributes": {"device_class": "garage_door"}},
+            {"entity_id": "light.porch", "state": "on", "attributes": {"friendly_name": "Φως εισόδου"}},
+            {"entity_id": "automation.welcome", "state": "on", "attributes": {"id": "welcome", "friendly_name": "Καλωσόρισμα"}},
+        ]
+        with mock.patch.object(agent, "ha", side_effect=lambda path, *a, **k: states if path == "/states" else None), \
+             mock.patch.object(agent, "entities", return_value=[]), \
+             mock.patch.object(agent, "registries_for_commands", return_value={}):
+            out = agent.panel_snapshot("scr_door", SECRET)
+        self.assertEqual(
+            out["screens"][0]["doorbell"]["buttons"],
+            [
+                {"target": "cover.garage", "press": "open", "status": "binary_sensor.garage_contact", "name": "Γκαράζ"},
+                {"target": "light.porch", "press": "toggle", "name": "Φως εισόδου"},
+                {"target": "scenario:welcome", "press": "run", "name": "Καλωσόρισμα"},
+            ],
+        )
+        # The garage opens for this panel because it is paired, as any of its tiles would.
+        self.assert_allowed("cover.open_cover", "cover.garage", secret=SECRET)
+        self.assert_refused("cover.open_cover", "cover.garage")
+
     def test_the_panel_sends_its_secret_with_commands(self):
         page = (pathlib.Path(__file__).resolve().parents[1] / "panel.html").read_text(encoding="utf-8")
         start = page.index("async function cmd(action, entityId, payload)")

@@ -230,20 +230,30 @@
       }
       .floor3d__pin.on circle { fill: var(--on); }
       .floor3d__pin.sel circle { stroke: var(--on); }
-      .floor3d__name {
+      /* A tap only picks a device; its one command is the button here (3d-home-design, 2026-11-06). */
+      .floor3d__card {
         position: absolute;
         left: 12px;
         right: 12px;
         bottom: 10px;
+        display: flex;
+        gap: 8px;
+      }
+      .floor3d__name, .floor3d__act {
         border: 0;
-        background: rgba(var(--bg-rgb), 0.72);
-        color: var(--ink);
         font: inherit;
         font-weight: 600;
         padding: 8px 10px;
         border-radius: var(--r, 12px);
+      }
+      .floor3d__name {
+        flex: 1;
+        min-width: 0;
+        background: rgba(var(--bg-rgb), 0.72);
+        color: var(--ink);
         text-align: left;
       }
+      .floor3d__act { flex: none; background: var(--ink); color: var(--bg); }
       @media (prefers-reduced-motion: reduce) {
         .floor3d__room, .floor3d__pin circle { transition: none; }
       }
@@ -959,6 +969,12 @@
       #camview-bar p { flex: 1 1 auto; min-width: 0; margin: 0; }
       #camview-state { display: block; font-size: 0.95rem; opacity: 0.75; }
       #camview-close { min-height: 64px; border-radius: var(--r, 28px); padding: 0 1.2rem; font-size: 1.1rem; color: #f2f2f2; background: #121212; border-color: #333; }
+      /* Up to 10 on a 480×480 panel: the picture keeps its share, the buttons scroll. */
+      #doorbell-buttons { flex: 1 1 100%; display: flex; flex-wrap: wrap; gap: 12px; max-height: 40vh; overflow-y: auto; }
+      #doorbell-buttons:empty { display: none; }
+      #doorbell-buttons button { flex: 1 1 10rem; display: flex; flex-direction: column; justify-content: center; text-align: left; }
+      #doorbell-buttons button.on { color: var(--on-text); border-color: var(--on); }
+      #doorbell-buttons small { font-size: 0.9rem; color: var(--muted); }
       /* Pairing, in the look of Partner's sign-in: a flat card, condensed capitals, one orange
          signal. Orange never carries text here (2.4:1 on ink); the focus ring is paper. */
       #gate .gate-card, .notice .gate-card { width: min(22rem, 100%); display: flex; flex-direction: column; text-align: left; }
@@ -1026,8 +1042,9 @@
       .no-flex-gap .wx-day-temps > * + * { margin-left: 10px; }
       .no-flex-gap .wx-hours > * + * { margin-left: 2px; }
       .no-flex-gap .clima-chips div > * { margin: 0 8px 8px 0; }
-      .no-flex-gap #doorbell-bar > * { margin: 0 12px 12px 0; }
+      .no-flex-gap #doorbell-bar > *, .no-flex-gap #doorbell-buttons > * { margin: 0 12px 12px 0; }
       .no-flex-gap #camview-bar > * + * { margin-left: 12px; }
+      .no-flex-gap .floor3d__card > * + * { margin-left: 8px; }
       /* aspect-ratio arrived in Safari 15: a square from padding on older iPads. */
       @supports not (aspect-ratio: 1) {
         .wx-orb { height: 0; padding-bottom: min(34%, 5.4rem); }
@@ -1555,6 +1572,7 @@
         <button type="button" id="doorbell-open" class="hidden">Άνοιγμα πόρτας</button>
         <button type="button" id="doorbell-yes" class="hidden">Ναι, άνοιξε</button>
         <button type="button" id="doorbell-dismiss">Κλείσιμο</button>
+        <div id="doorbell-buttons" role="group" aria-label="Κουμπιά κάμερας"></div>
       </div>
     </aside>
     <aside id="camview" class="hidden">
@@ -1838,6 +1856,8 @@
       const doorbellOpen = document.getElementById("doorbell-open");
       const doorbellYes = document.getElementById("doorbell-yes");
       const doorbellTitle = document.getElementById("doorbell-title");
+      const doorbellButtons = document.getElementById("doorbell-buttons");
+      const camPressed = {}; // "target|press" → "busy" | "failed", for a moment after a press
 
       // The pairing secret never leaves the panel: every request signs a one-time code from the hub (ADR 017),
       // with the SHA-256 and HMAC of /panel/lan-sign.js.
@@ -2596,15 +2616,15 @@
       }
 
       async function cmd(action, entityId, payload) {
-        if (!hubId) return;
+        if (!hubId) return false;
         const body = { action, entity_id: entityId || "" };
         if (payload) body.payload = payload;
         // With the pairing secret: a garage door or a gate moves on the LAN path only for a paired panel.
-        screenFetch("/v1/hubs/" + encodeURIComponent(hubId) + "/commands", {
+        return screenFetch("/v1/hubs/" + encodeURIComponent(hubId) + "/commands", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
-        }).catch(() => {});
+        }).then((r) => r.ok, () => false);
       }
       function toggleEntity(e) {
         if (!e) return;
@@ -2734,21 +2754,41 @@
         }
         if (e.area_id) openSheet(roomSheet(e.area_id));
       }
-      async function tapPin(eid) {
+      // A tap never sends: it picks the device, and only the card's button sends (Νικόλας, 2026-11-06:
+      // one stray tap could open a garage). Same words as Home's pinVerb (3d-home/model.ts).
+      function tapPin(eid) {
         armFloorIdle();
         if (floor3dSel === eid) {
           openPinSheet(eid);
           return;
         }
         floor3dSel = eid;
-        const e = byId(eid) || { entity_id: eid, domain: String(eid).split(".")[0], state: "off" };
-        if (SHEET_DOMAINS[e.domain]) {
-          openSheet({ kind: e.domain, ref: eid });
-          render();
-          return;
-        }
-        await toggleEntity(e);
         render();
+      }
+      function pinVerb(e) {
+        if (!e || !e.state || e.state === "unavailable" || e.state === "unknown") return "";
+        if (e.domain === "light" || e.domain === "switch") return e.state === "on" ? "Σβήσε το" : "Άναψέ το";
+        if (e.domain === "cover") {
+          if (e.state === "opening" || e.state === "closing") return "Σταμάτα το";
+          return e.state === "closed" ? "Άνοιξέ το" : "Κλείσε το";
+        }
+        if (e.domain === "media_player") return e.state === "playing" ? "Παύση" : "Παίξε";
+        if (e.domain === "climate") return e.state === "off" ? "Άναψέ το" : "Σβήσε το";
+        return "";
+      }
+      function pinAct(eid) {
+        armFloorIdle();
+        const e = byId(eid);
+        if (!pinVerb(e)) return;
+        if (e.domain === "cover") coverCommand(e, e.state === "opening" || e.state === "closing" ? "stop" : e.state === "closed" ? "open" : "close");
+        else toggleEntity(e);
+        render();
+      }
+      function unpickPin() {
+        if (!floor3dSel) return false;
+        floor3dSel = null;
+        render();
+        return true;
       }
 
       function armSheet() {
@@ -3388,11 +3428,15 @@
             pins +
             "</svg>" +
             (selected
-              ? '<button type="button" class="floor3d__name" data-pin-name="' +
+              ? '<div class="floor3d__card"><button type="button" class="floor3d__name" data-pin-name="' +
                 esc(floor3dSel) +
                 '">' +
                 esc(selected.name || floor3dSel) +
-                "</button>"
+                "</button>" +
+                (pinVerb(selected)
+                  ? '<button type="button" class="floor3d__act" data-pin-act="' + esc(floor3dSel) + '">' + esc(pinVerb(selected)) + "</button>"
+                  : "") +
+                "</div>"
               : "")
           );
         }
@@ -3541,12 +3585,20 @@
                   openPinSheet(el.getAttribute("data-pin-name"));
                 });
               });
+              wrap.querySelectorAll("[data-pin-act]").forEach((el) => {
+                el.addEventListener("click", (ev) => {
+                  ev.stopPropagation();
+                  pinAct(el.getAttribute("data-pin-act"));
+                });
+              });
+              // With a device picked, a tap anywhere else only puts it down: no room opens.
               wrap.querySelectorAll("[data-room]").forEach((el) => {
                 el.addEventListener("click", (ev) => {
                   ev.stopPropagation();
-                  tap({ kind: "room", ref: el.getAttribute("data-room") });
+                  if (!unpickPin()) tap({ kind: "room", ref: el.getAttribute("data-room") });
                 });
               });
+              wrap.addEventListener("click", unpickPin);
               el.appendChild(wrap);
               continue;
             }
@@ -3774,6 +3826,7 @@
           return;
         }
         showDoorbell();
+        renderDoorbellButtons();
       }
 
       // Cameras on the wall (docs/plans/2026-11-08-panel-camera-tiles.md). A tile's still comes every 10 s, only
@@ -3988,6 +4041,76 @@
           ringWaiting = false;
         }
       }
+
+      // The installer's buttons on the doorbell's camera, as in Home: one press each. The hub sends only
+      // what it has, never the doorbell's relay, and still checks every press like any LAN command.
+      function camButtonOn(e) {
+        if (!e) return false;
+        if (e.domain === "climate") return Boolean(e.state) && e.state !== "off" && e.state !== "unavailable" && e.state !== "unknown";
+        return e.state === "on";
+      }
+      function camButtonPress(b) {
+        if (b.target.indexOf("scenario:") === 0) return cmd("arvio.trigger_scenario", "", { scenario_id: b.target.slice(9) });
+        const domain = b.target.split(".")[0];
+        if (domain === "cover") return cmd(b.press === "close" ? "cover.close_cover" : "cover.open_cover", b.target);
+        if (domain === "scene" || domain === "script") return cmd(domain + ".turn_on", b.target);
+        const on = b.press === "toggle" ? !camButtonOn(byId(b.target)) : b.press === "on";
+        return cmd(domain + (on ? ".turn_on" : ".turn_off"), b.target);
+      }
+      function doorWord(e) {
+        // No reading says so: never a guess that the door is closed.
+        if (e && e.state === "on") return "Ανοιχτή";
+        if (e && e.state === "off") return "Κλειστή";
+        return "Άγνωστο";
+      }
+      function doorbellButtonList() {
+        const db = screen && screen.doorbell;
+        return (db && Array.isArray(db.buttons) && db.buttons) || [];
+      }
+      let doorbellButtonsHtml = "";
+      function renderDoorbellButtons() {
+        const html = doorbellButtonList()
+          .map((b) => {
+            const key = b.target + "|" + b.press;
+            const e = byId(b.target);
+            const lit = b.press === "toggle" && camButtonOn(e);
+            const busy = camPressed[key] === "busy" || Boolean(e && e.state === "unavailable");
+            return (
+              '<button type="button" data-cam-button="' + esc(key) + '"' +
+              (lit ? ' class="on"' : "") +
+              (b.press === "toggle" ? ' aria-pressed="' + lit + '"' : "") +
+              (busy ? " disabled" : "") +
+              "><span>" + esc(b.name) + "</span>" +
+              (b.status ? '<small role="status">' + esc(doorWord(byId(b.status))) + "</small>" : "") +
+              (camPressed[key] === "failed" ? '<small role="status">Δεν έγινε</small>' : "") +
+              "</button>"
+            );
+          })
+          .join("");
+        // The hub answers every 4 s: a button swapped for an equal one under a finger loses the tap.
+        if (html === doorbellButtonsHtml) return;
+        doorbellButtonsHtml = html;
+        doorbellButtons.innerHTML = html;
+      }
+      doorbellButtons.addEventListener("click", async (ev) => {
+        const el = ev.target.closest ? ev.target.closest("[data-cam-button]") : null;
+        const key = el && el.getAttribute("data-cam-button");
+        const b = doorbellButtonList().filter((x) => x.target + "|" + x.press === key)[0];
+        if (!b || camPressed[key] === "busy") return;
+        camPressed[key] = "busy";
+        renderDoorbellButtons();
+        const ok = await camButtonPress(b);
+        if (ok) delete camPressed[key];
+        else camPressed[key] = "failed";
+        renderDoorbellButtons();
+        if (!ok) {
+          setTimeout(() => {
+            if (camPressed[key] !== "failed") return;
+            delete camPressed[key];
+            renderDoorbellButtons();
+          }, 4000);
+        }
+      });
 
       async function load(keepPage) {
         const sid = pairing.get(KEY);
