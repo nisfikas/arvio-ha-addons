@@ -109,7 +109,7 @@
         padding: 1.5rem;
         text-align: center;
       }
-      #gate.hidden, #board.hidden, #status.hidden, #sheet.hidden, #doorbell.hidden, #camview.hidden, #doorbell-open.hidden, #doorbell-yes.hidden { display: none; }
+      #gate.hidden, #board.hidden, #status.hidden, #sheet.hidden, #doorbell.hidden, #camview.hidden, #doorbell-open.hidden, #doorbell-yes.hidden, #ask.hidden, #ask-no.hidden { display: none; }
       h1 { margin: 0; font-size: 1.4rem; font-weight: 600; letter-spacing: -0.03em; }
       p { margin: 0; color: var(--muted); }
       input {
@@ -938,6 +938,14 @@
       #doorbell-bar p { flex: 1 1 8rem; color: var(--ink); }
       #doorbell-confirm { color: var(--on-text); }
       #doorbell-bar button { min-height: 72px; border-radius: var(--r, 28px); padding: 0 1.2rem; font-size: 1.1rem; }
+      /* ΡΩΤΑ ΣΤΟ ΠΑΝΕΛ: a flow's question over the board and a camera (z 7, later in the page), under the doorbell (z 8). */
+      #ask { position: absolute; top: 0; right: 0; bottom: 0; left: 0; z-index: 7; background: var(--bg); }
+      #ask .gate-card { width: min(36rem, 100%); }
+      #ask h1 { font-size: 2.2rem; font-size: clamp(1.8rem, 6vmin, 2.6rem); line-height: 1.05; text-transform: none; } /* 160 characters on a 480×480 NSPanel */
+      #ask-bar { display: flex; gap: 12px; margin-top: 1.2rem; }
+      #ask-bar button { flex: 1; min-height: 80px; border-radius: var(--r, 28px); padding: 0 1rem; font-size: 1.3rem; font-weight: 600; }
+      #ask-yes { background: var(--ink); color: var(--bg); border: 0; }
+      #ask .err { margin-top: 0.8rem; color: var(--ink); }
       /* A camera on the wall (docs/plans/2026-11-08-panel-camera-tiles.md): the still fills its tile; full screen
          shows the whole frame, the picture first, the video over it once it moves. */
       .tile--camera { padding: 0; background: #121212; }
@@ -1027,6 +1035,7 @@
       .no-flex-gap .wx-hours > * + * { margin-left: 2px; }
       .no-flex-gap .clima-chips div > * { margin: 0 8px 8px 0; }
       .no-flex-gap #doorbell-bar > * { margin: 0 12px 12px 0; }
+      .no-flex-gap #ask-bar > * + * { margin-left: 12px; }
       .no-flex-gap #camview-bar > * + * { margin-left: 12px; }
       /* aspect-ratio arrived in Safari 15: a square from padding on older iPads. */
       @supports not (aspect-ratio: 1) {
@@ -1565,6 +1574,17 @@
         <button type="button" id="camview-close">Κλείσιμο</button>
       </div>
     </aside>
+    <section id="ask" class="notice hidden" role="alertdialog" aria-labelledby="ask-title">
+      <div class="gate-card">
+        <p class="gate-kicker" id="ask-from"></p>
+        <h1 id="ask-title"></h1>
+        <div id="ask-bar">
+          <button type="button" id="ask-yes"></button>
+          <button type="button" id="ask-no"></button>
+        </div>
+        <p class="err" id="ask-err"></p>
+      </div>
+    </section>
     <script src="/panel/lan-sign.js"></script>
     <script>
       // Flex gap arrived in Safari 14.1: older iPads get margins (.no-flex-gap in the CSS).
@@ -1838,6 +1858,12 @@
       const doorbellOpen = document.getElementById("doorbell-open");
       const doorbellYes = document.getElementById("doorbell-yes");
       const doorbellTitle = document.getElementById("doorbell-title");
+      const askEl = document.getElementById("ask");
+      const askYes = document.getElementById("ask-yes");
+      const askNo = document.getElementById("ask-no");
+      const askErr = document.getElementById("ask-err");
+      let askToken = "";
+      let askAnswered = "";
 
       // The pairing secret never leaves the panel: every request signs a one-time code from the hub (ADR 017),
       // with the SHA-256 and HMAC of /panel/lan-sign.js.
@@ -2757,6 +2783,7 @@
       }
       function homeBusy() {
         if (doorbellEl && !doorbellEl.classList.contains("hidden")) return true;
+        if (!askEl.classList.contains("hidden")) return true;
         if (camView) return true;
         const rec = timerRec();
         return Boolean(rec && rec.ringing);
@@ -3961,6 +3988,49 @@
       });
       setInterval(camTiles, 2000);
 
+      // ΡΩΤΑ ΣΤΟ ΠΑΝΕΛ: what a flow asks, until someone presses here or on another panel, or it expires.
+      function syncAsk() {
+        const a = screen && screen.ask;
+        if (!a || a.token === askAnswered) {
+          askToken = "";
+          askEl.classList.add("hidden");
+          return;
+        }
+        if (a.token !== askToken) {
+          askToken = a.token;
+          document.getElementById("ask-from").textContent = a.alias || "Αυτοματισμός";
+          document.getElementById("ask-title").textContent = a.message;
+          askYes.textContent = a.yes;
+          askNo.textContent = a.no || "";
+          askNo.classList.toggle("hidden", !a.no);
+          askErr.textContent = "";
+          askYes.disabled = askNo.disabled = false;
+        }
+        askEl.classList.remove("hidden");
+      }
+      async function answerAsk(choice) {
+        const token = askToken;
+        if (!screen || !token) return;
+        askYes.disabled = askNo.disabled = true;
+        let status = 0;
+        try {
+          const r = await screenFetch("/api/screens/ask", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ screen_id: screen.screen_id, token: token, choice: choice }),
+          });
+          status = r.status;
+        } catch (e) {}
+        // 410: answered on another panel, or the time ran out. Either way nothing is left to press.
+        if (status === 200 || status === 410) {
+          askAnswered = token;
+          syncAsk();
+          return;
+        }
+        askYes.disabled = askNo.disabled = false;
+        askErr.textContent = "Δεν έφτασε στο hub. Πάτησε ξανά.";
+      }
+
       // The doorbell at once: the hub answers this request the moment it rings (agent `doorbell_ring_wait`), where
       // the 4 s poll alone took up to 4 s. Only while nothing rings here; the poll still ends a ring.
       let ringWaiting = false;
@@ -3999,6 +4069,7 @@
           applyTheme(null);
           applyWallpaper(null);
           hideDoorbell();
+          syncAsk();
           closeCamView();
           closeSheet();
           return;
@@ -4059,6 +4130,7 @@
         if (sheet) renderSheet();
         syncDoorbell();
         waitForRing();
+        syncAsk();
         paintTime();
         if (found.screenshot) takeScreenshot(sid);
       }
@@ -4287,6 +4359,8 @@
           toggleEntity(ent);
         }
       });
+      askYes.addEventListener("click", () => answerAsk("yes"));
+      askNo.addEventListener("click", () => answerAsk("no"));
       document.getElementById("doorbell-dismiss").addEventListener("click", () => {
         doorbellDismissed = true;
         hideDoorbell();

@@ -1559,7 +1559,7 @@ class ScreenLanHttpTest(unittest.TestCase):
         self.assertEqual(re.findall(r'(?<![A-Za-z])fetch\(\s*"/api/screens', html), [])
         self.assertNotIn("url('/api/screens", html)
         self.assertNotRegex(html, r'\.src\s*=\s*"/api/screens')
-        self.assertEqual(len(re.findall(r'screen(?:Fetch|BlobUrl)\(\s*"/api/screens', html)), 9)  # + camera.jpg, camera/live, ring
+        self.assertEqual(len(re.findall(r'screen(?:Fetch|BlobUrl)\(\s*"/api/screens', html)), 10)  # + camera.jpg, camera/live, ring, ask
         self.assertNotRegex(html, r'[?&]secret=')
         # the hub's refusals become calm Greek lines, not silence
         self.assertIn("repair_required:", html)
