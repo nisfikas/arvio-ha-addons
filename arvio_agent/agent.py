@@ -63,7 +63,7 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
-AGENT_VERSION = "0.1.93"
+AGENT_VERSION = "0.1.94"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -4542,7 +4542,39 @@ def _backup_size_bytes(b: dict):
     return int(size)
 
 
+# Arvio Core names its sealed backups arvio-<hub>-<ISO time with : and . as ->.arviobk (core/src/backup.ts).
+CORE_BACKUP_TIME = re.compile(r"(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z\.arviobk$")
+
+
+def core_backups() -> list:
+    """Arvio Core keeps its own nightly backups; there is no Supervisor to ask. Home Assistant in a container answers no list."""
+    out = core_v1("/v1/backups")
+    rows = out.get("backups") if isinstance(out, dict) else None
+    backups = []
+    for b in rows if isinstance(rows, list) else []:
+        name = str(b.get("file") or "") if isinstance(b, dict) else ""
+        t = CORE_BACKUP_TIME.search(name)
+        if not t:
+            continue
+        size = b.get("size")
+        backups.append(
+            {
+                "slug": name,
+                "name": name,
+                "date": f"{t[1]}T{t[2]}:{t[3]}:{t[4]}.{t[5]}Z",
+                "size_bytes": int(size) if isinstance(size, (int, float)) and size >= 0 else None,
+                "protected": True,  # sealed for the owner's key and SFK's (ADR 011 §5c)
+            }
+        )
+    return backups
+
+
 def list_local_backups() -> list:
+    if core_origin():
+        try:
+            return core_backups()
+        except Exception:
+            return []
     resp = supervisor("/backups", "GET", timeout=30)
     if not isinstance(resp, dict):
         return []
@@ -4567,6 +4599,11 @@ def list_local_backups() -> list:
 
 
 def create_full_backup(name: str | None = None) -> dict:
+    if core_origin():
+        out = core_v1("/v1/backups", "POST")
+        if not out.get("file"):
+            raise RuntimeError(str(out.get("error") or out.get("reason") or "backup create failed")[:80])
+        return {"ok": True, "slug": out["file"], "name": out["file"]}
     stamp = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime())
     body = {
         "name": name or f"Arvio {stamp}",
