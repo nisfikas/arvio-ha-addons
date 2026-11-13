@@ -243,8 +243,12 @@ SCREEN_TILE_KINDS = frozenset(
         "energy",
         "camera",
         "camera_button",
+        # The house at a glance across the top of a «Πίνακας» page (arvio packages/domain screens.ts).
+        "summary",
     }
 )
+# «Πίνακας»: four columns on a landscape panel, `m` half the width, `l` a 2×2 block.
+SCREEN_PAGE_LAYOUTS = frozenset({"dashboard"})
 # A camera's picture, or a button that opens it full screen (docs/plans/2026-11-08-panel-camera-tiles.md).
 SCREEN_CAMERA_KINDS = frozenset({"camera", "camera_button"})
 SCREEN_SECURITY_DOMAINS = frozenset({"lock", "alarm_control_panel"})
@@ -253,7 +257,7 @@ SHUTDOWN_SCRIPT_RE = re.compile(r"^script\.\d+_scene_shutdown$")
 SHUTDOWN_SCENARIO_RE = re.compile(r"^scenario:[A-Za-z0-9_\-.]+$")
 SCREEN_ORIENTATIONS = frozenset({"landscape", "portrait", "square"})
 SCREEN_THEME_PRESETS = frozenset(
-    {"afisa", "grafitis", "penteli", "drys", "lino", "beton", "aigaio", "elia", "vasaltis", "galini"}
+    {"afisa", "grafitis", "penteli", "drys", "lino", "beton", "aigaio", "elia", "vasaltis", "galini", "lykofos"}
 )
 SCREEN_THEME_MODES = frozenset({"light", "dark"})
 SCREEN_ICON_STYLES = frozenset({"line", "filled"})
@@ -1836,7 +1840,7 @@ def _parse_screen_pages(raw) -> list:
             elif span == 2:
                 tile["span"] = 2
             ref = t.get("ref")
-            if kind in ("clock", "weather", "security", "session_countdown", "occupancy", "session_now", "energy") and ref:
+            if kind in ("clock", "weather", "security", "session_countdown", "occupancy", "session_now", "energy", "summary") and ref:
                 raise ValueError("invalid_tile_ref")
             if kind in ("room", "entity", "scene", "floor3d", "shutdown"):
                 if not isinstance(ref, str) or not ref:
@@ -1883,7 +1887,10 @@ def _parse_screen_pages(raw) -> list:
                     ids.append(s)
                 tile["lights"] = ids
             tiles.append(tile)
-        pages.append({"id": pid, "tiles": tiles})
+        layout = page.get("layout")
+        if layout not in (None, "") and layout not in SCREEN_PAGE_LAYOUTS:
+            raise ValueError("invalid_page_layout")
+        pages.append({"id": pid, "tiles": tiles, **({"layout": layout} if layout else {})})
     return pages
 
 
@@ -2036,7 +2043,10 @@ def delete_wall_screen(payload: dict | None, entity_id: str = "") -> dict:
 def list_wall_screens() -> dict:
     doc = load_screens()
     screens = [public_screen(r) for r in doc["screens"].values() if isinstance(r, dict)]
-    return {"ok": True, "screens": screens}
+    # What this hub's panel page can draw: Partner offers nothing else, because one unknown theme or
+    # tile makes the hub refuse the whole screen (invalid_theme, Κρέσνα 2026-11-01).
+    can = {"themes": sorted(SCREEN_THEME_PRESETS), "tiles": sorted(SCREEN_TILE_KINDS), "layouts": sorted(SCREEN_PAGE_LAYOUTS)}
+    return {"ok": True, "screens": screens, "panel": can}
 
 
 # ---- Arvio Panel app: the hub finds, installs and pairs wall panels (arvio docs/ADR/012) ----

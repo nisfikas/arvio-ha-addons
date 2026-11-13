@@ -213,6 +213,24 @@ class ScreenStoreTest(unittest.TestCase):
             )
         self.assertIn("tile_security_forbidden", str(cm.exception))
 
+    def test_dashboard_page_summary_and_lykofos(self):
+        """«Πίνακας» page, «Σύνοψη» tile and the Λυκόφως theme (2026-11-13), and Partner learns that this hub draws them."""
+        page = {"id": "pg_aaaaaaaa", "layout": "dashboard", "tiles": [{"kind": "summary", "size": "m"}, {"kind": "clock"}]}
+        out = agent.put_wall_screen(self._row(pages=[page], theme={"preset": "lykofos", "mode": "dark"}))["screen"]
+        self.assertEqual(out["pages"][0]["layout"], "dashboard")
+        self.assertEqual(out["pages"][0]["tiles"][0]["kind"], "summary")
+        self.assertEqual(out["theme"]["preset"], "lykofos")
+        # a plain page stays plain, an unknown layout or a summary with a ref is refused
+        plain = agent.put_wall_screen(self._row(pages=[{"id": "pg_aaaaaaaa", "tiles": [{"kind": "clock"}]}]))["screen"]
+        self.assertNotIn("layout", plain["pages"][0])
+        for bad in ({"layout": "mosaic"}, {"tiles": [{"kind": "summary", "ref": "light.x"}]}):
+            with self.assertRaises(ValueError):
+                agent.put_wall_screen(self._row(pages=[{**page, **bad}]))
+        can = agent.list_wall_screens()["panel"]
+        self.assertIn("lykofos", can["themes"])
+        self.assertIn("summary", can["tiles"])
+        self.assertEqual(can["layouts"], ["dashboard"])
+
     def test_floor3d_needs_ref(self):
         with self.assertRaises(ValueError) as cm:
             agent.put_wall_screen(
@@ -764,17 +782,17 @@ class ScreenLanHttpTest(unittest.TestCase):
         self.assertRegex(html, r'class="gate-mark" alt="Arvio" src="data:image/png;base64,[A-Za-z0-9+/=]{2000,}"')
 
     def test_panel_themes_are_each_their_own(self):
-        """Ten identities: each has its own CSS block, and no two share the same colours."""
+        """Eleven identities (Λυκόφως, 2026-11-13): each has its own CSS block, and no two share the same colours."""
         html = (ROOT / "panel.html").read_text(encoding="utf-8")
         table = html[html.index("const THEMES = {") : html.index("function hexRgb")]
         names = re.findall(r"^        (\w+): \{$", table, flags=re.M)
-        self.assertEqual(len(names), 10)
+        self.assertEqual(sorted(names), sorted(agent.SCREEN_THEME_PRESETS))
         for name in names:
             if name != "afisa":
                 self.assertIn(f'html[data-preset="{name}"] {{', html)
         palettes = re.findall(r'bg: "(#\w+)", tile: "(#\w+)", ink: "(#\w+)"', table)
-        self.assertEqual(len(palettes), 20)
-        self.assertEqual(len(set(palettes)), 20)
+        self.assertEqual(len(palettes), 2 * len(names))
+        self.assertEqual(len(set(palettes)), 2 * len(names))
 
     def test_panel_hidden_class_really_hides(self):
         # «Ναι, άνοιξε» once stayed on screen: `.hidden` only hid the ids the rule names, so the

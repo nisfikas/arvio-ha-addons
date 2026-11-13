@@ -1317,6 +1317,64 @@
         --on-shadow: 0 0 26px rgba(9, 111, 137, 0.25);
         --key-border: 1px solid rgba(18, 54, 69, 0.35);
       }
+
+      /* Λυκόφως, a dashboard at dusk (2026-11-13): slate glass cards, light numbers, small labels in the brand's one orange. */
+      html[data-preset="lykofos"] {
+        --r: 18px;
+        --r-tile: 22px;
+        --f-display: "Geologica", sans-serif;
+        --f-text: "Geologica", sans-serif;
+        --w-face: 300;
+        --w-face-bold: 400;
+        --w-name: 500;
+        --case: none;
+        --track: -0.02em;
+        --page: linear-gradient(160deg, #17202d, #0f1520 60%, #0b1017);
+        --tile-bg: rgba(255, 255, 255, 0.06);
+        --tile-border: 1px solid rgba(255, 255, 255, 0.12);
+        --tile-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+        --on-bg: rgba(252, 198, 135, 0.14);
+        --on-shadow: 0 0 0 1px rgba(252, 198, 135, 0.45), 0 0 26px rgba(252, 198, 135, 0.16);
+        --pick-bg: var(--on);
+        --pick-ink: var(--on-ink);
+        --key-border: 1px solid rgba(255, 255, 255, 0.28);
+      }
+      html[data-preset="lykofos"] .kicker { color: #ef774b; text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.8rem; }
+      html[data-preset="lykofos"][data-mode="light"] {
+        --page: linear-gradient(160deg, #eef1f5, #e6eaef 50%, #dbe1e8);
+        --tile-bg: rgba(255, 255, 255, 0.7);
+        --tile-border: 1px solid rgba(255, 255, 255, 0.9);
+        --tile-shadow: 0 8px 22px rgba(19, 26, 36, 0.1);
+        --on-bg: rgba(194, 61, 20, 0.1);
+        --on-shadow: 0 0 0 1px rgba(194, 61, 20, 0.4);
+        --key-border: 1px solid rgba(19, 26, 36, 0.3);
+      }
+      html[data-preset="lykofos"][data-mode="light"] .kicker { color: #c23d14; }
+
+      /* «Πίνακας» (2026-11-13): on a landscape panel four columns, `m` half the width, `l` a 2×2 block, and the
+         summary across the top. On a square or portrait panel it is the usual grid. */
+      html[data-orientation="landscape"] .page--dashboard { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+      html[data-orientation="landscape"] .page--dashboard .tile[data-size="m"],
+      html[data-orientation="landscape"] .page--dashboard .tile.wide { grid-column: span 2; }
+      html[data-orientation="landscape"] .page--dashboard .tile[data-size="l"] { grid-column: span 2; grid-row: span 2; }
+      .page .tile.tile--summary, html[data-orientation="landscape"] .page--dashboard .tile.tile--summary { grid-column: 1 / -1; grid-row: auto; }
+      .tile--summary { flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 0.6rem 1.6rem; }
+      /* On a square or portrait panel two rows: the time and the weather, then the house. */
+      html:not([data-orientation="landscape"]) .page .tile.tile--summary { grid-row: span 2; align-content: center; }
+      .sum-time { display: flex; flex-direction: column; }
+      .tile--summary .face { font-size: 2.6rem; font-size: clamp(2.2rem, 9vmin, 3.6rem); line-height: 1; }
+      .sum-wx { display: flex; align-items: center; gap: 0.6rem; }
+      .sum-wx svg { width: 2.4rem; height: 2.4rem; display: block; color: var(--on); }
+      .sum-wx b { font-family: var(--f-display); font-weight: var(--w-face); font-size: 2rem; line-height: 1; }
+      .sum-wx small { color: var(--muted); }
+      .sum-facts { display: flex; flex-wrap: wrap; gap: 0.5rem 1.4rem; margin-left: auto; }
+      .sum-fact { display: flex; flex-direction: column; min-width: 0; }
+      .sum-fact small { color: var(--muted); font-size: 0.8rem; }
+      .sum-fact b { font-weight: var(--w-name); font-size: 1.15rem; white-space: nowrap; }
+      .sum-fact[data-alert] b { color: #e55551; }
+      .no-flex-gap .tile--summary > * { margin: 0 1.6rem 0.6rem 0; }
+      .no-flex-gap .sum-facts > * { margin: 0 1.4rem 0.5rem 0; }
+      .no-flex-gap .sum-wx > * + * { margin-left: 0.6rem; }
     </style>
   </head>
   <body>
@@ -1488,6 +1546,10 @@
         galini: {
           dark: { bg: "#0b2b3a", tile: "#123a4c", ink: "#eaf8fb", muted: "#b1d4de", on: "#8fe9ff", line: "#ffffff2e", onInk: "#062230" },
           light: { bg: "#fbdcc9", tile: "#fff1e8", ink: "#123645", muted: "#3c6371", on: "#096f89", line: "#ffffff80", onInk: "#ffffff" },
+        },
+        lykofos: {
+          dark: { bg: "#0f1520", tile: "#1a2230", ink: "#eef2f7", muted: "#a3afbf", on: "#fcc687", line: "#ffffff1f", onInk: "#0f1520" },
+          light: { bg: "#e6eaef", tile: "#f7f9fb", ink: "#131a24", muted: "#4b5767", on: "#c23d14", line: "#131a241f", onInk: "#ffffff" },
         },
       };
       const ICONS = {
@@ -2928,7 +2990,12 @@
         }
       }
 
-      async function tap(t) {
+      async function tap(t, ev) {
+        if (t.kind === "summary") {
+          const part = ev && ev.target && ev.target.closest ? ev.target.closest("[data-sum]") : null;
+          if (part) openSheet({ kind: part.getAttribute("data-sum") });
+          return;
+        }
         if ((t.kind === "camera" || t.kind === "camera_button") && t.ref) {
           openCamView(t.ref);
           return;
@@ -2982,7 +3049,34 @@
         }
       }
 
+      // «Σύνοψη»: the house at a glance. Each part opens its own sheet; nothing here sends a command.
+      function summaryInner() {
+        const w = snap.weather;
+        const inside = snap.entities
+          .filter((e) => e.domain === "climate" && typeof e.current_temperature === "number" && isFinite(e.current_temperature))
+          .map((e) => e.current_temperature);
+        const lit = lightsIn(null).filter((e) => e.state === "on").length;
+        const fact = (part, label, value, alert) =>
+          '<span class="sum-fact"' + (part ? ' data-sum="' + part + '"' : "") + (alert ? " data-alert" : "") + "><small>" +
+          esc(label) + "</small><b>" + esc(value) + "</b></span>";
+        return (
+          '<span class="sum-time" data-sum="clock"><span class="face" data-clock="1">' + clockFaceHtml(clockText(), true) +
+          '</span><span class="state" data-clock-sub="1">' + esc(dateText()) + "</span></span>" +
+          (w
+            ? '<span class="sum-wx" data-sum="weather">' + ico(wxIcon(w.condition)) + "<b>" + esc(weatherTemp() || "—") +
+              "</b><small>" + esc(weatherWord()) + "</small></span>"
+            : "") +
+          '<span class="sum-facts">' +
+          (inside.length ? fact("", "Μέσα", formatTemp(inside.reduce((a, b) => a + b, 0) / inside.length)) : "") +
+          (w && typeof w.humidity === "number" ? fact("weather", "Υγρασία", Math.round(w.humidity) + "%") : "") +
+          fact("", "Φώτα", lit ? lit + " αναμμένα" : "σβηστά") +
+          fact("security", "Ασφάλεια", securityWord(), securityAlert()) +
+          (snap.energy && snap.energy.now_w !== null && snap.energy.now_w !== undefined ? fact("energy", "Ενέργεια", energyNowText()) : "") +
+          "</span>"
+        );
+      }
       function tileInner(t) {
+        if (t.kind === "summary") return summaryInner();
         if (t.kind === "clock") {
           const remain = timerRemain();
           const rec = timerRec();
@@ -3183,7 +3277,7 @@
         }
         for (const page of screen.pages || []) {
           const el = document.createElement("section");
-          el.className = "page";
+          el.className = "page" + (page.layout === "dashboard" ? " page--dashboard" : "");
           for (const t of page.tiles || []) {
             const size = tileSize(t);
             if (t.kind === "floor3d") {
@@ -3228,7 +3322,7 @@
               }
             }
             b.innerHTML = tileInner(t);
-            b.addEventListener("click", () => tap(t));
+            b.addEventListener("click", (ev) => tap(t, ev));
             el.appendChild(b);
           }
           pagesEl.appendChild(el);
