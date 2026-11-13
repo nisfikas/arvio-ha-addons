@@ -135,6 +135,8 @@
       .page {
         flex: 0 0 100%;
         scroll-snap-align: start;
+        /* One swipe, one page: without it a quick swipe flings past the next page (Κρέσνα, 2026-11-13). */
+        scroll-snap-stop: always;
         display: grid;
         gap: var(--gap);
         padding: var(--gap);
@@ -3263,8 +3265,21 @@
         return '<span class="name">' + esc(t.kind) + "</span>";
       }
 
+      let renderLater = 0;
+      let renderWaits = 0;
       function render() {
         if (!screen) return;
+        // The 4 s poll rebuilds the pages and puts the strip back on a page: mid-swipe that stops the swipe.
+        // The strip between two pages means a finger or a snap is moving it, so wait until it rests, but
+        // never past 2 s, in case it rests between pages (a resize the browser did not snap after).
+        const w = pagesEl.clientWidth || 1;
+        clearTimeout(renderLater);
+        if (renderWaits < 8 && Math.abs(pagesEl.scrollLeft - Math.round(pagesEl.scrollLeft / w) * w) > 2) {
+          renderWaits += 1;
+          renderLater = setTimeout(render, 250);
+          return;
+        }
+        renderWaits = 0;
         document.documentElement.dataset.orientation = screen.orientation || "square";
         pagesEl.innerHTML = "";
         if (!(screen.pages || []).some((p) => (p.tiles || []).length)) {
