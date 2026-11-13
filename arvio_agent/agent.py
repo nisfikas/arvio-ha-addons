@@ -257,7 +257,7 @@ SHUTDOWN_SCRIPT_RE = re.compile(r"^script\.\d+_scene_shutdown$")
 SHUTDOWN_SCENARIO_RE = re.compile(r"^scenario:[A-Za-z0-9_\-.]+$")
 SCREEN_ORIENTATIONS = frozenset({"landscape", "portrait", "square"})
 SCREEN_THEME_PRESETS = frozenset(
-    {"afisa", "grafitis", "penteli", "drys", "lino", "beton", "aigaio", "elia", "vasaltis", "galini", "lykofos"}
+    {"afisa", "grafitis", "penteli", "drys", "lino", "beton", "aigaio", "elia", "vasaltis", "galini", "lykofos", "omichli"}
 )
 SCREEN_THEME_MODES = frozenset({"light", "dark"})
 SCREEN_ICON_STYLES = frozenset({"line", "filled"})
@@ -525,7 +525,11 @@ def parse_screen_theme(raw) -> dict | None:
         icons = "line"
     if icons not in SCREEN_ICON_STYLES:
         raise ValueError("invalid_theme")
-    return {"preset": preset, "mode": mode, "icons": icons}
+    out = {"preset": preset, "mode": mode, "icons": icons}
+    # «Σταθερή μπάρα»: numbers above, pages and time below (2026-11-13). Only true is kept.
+    if raw.get("bar") is True:
+        out["bar"] = True
+    return out
 
 
 def doorbell_watched_call_ids() -> set[str]:
@@ -2045,7 +2049,12 @@ def list_wall_screens() -> dict:
     screens = [public_screen(r) for r in doc["screens"].values() if isinstance(r, dict)]
     # What this hub's panel page can draw: Partner offers nothing else, because one unknown theme or
     # tile makes the hub refuse the whole screen (invalid_theme, Κρέσνα 2026-11-01).
-    can = {"themes": sorted(SCREEN_THEME_PRESETS), "tiles": sorted(SCREEN_TILE_KINDS), "layouts": sorted(SCREEN_PAGE_LAYOUTS)}
+    can = {
+        "themes": sorted(SCREEN_THEME_PRESETS),
+        "tiles": sorted(SCREEN_TILE_KINDS),
+        "layouts": sorted(SCREEN_PAGE_LAYOUTS),
+        "bar": True,
+    }
     return {"ok": True, "screens": screens, "panel": can}
 
 

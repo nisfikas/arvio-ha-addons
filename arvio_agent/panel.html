@@ -1353,6 +1353,121 @@
       }
       html[data-preset="lykofos"][data-mode="light"] .kicker { color: #c23d14; }
 
+      /* Ομίχλη, smoked glass (2026-11-13): grey frosted tiles, bold white numbers, and what is on turns to
+         brighter glass, so the house stays monochrome. */
+      html[data-preset="omichli"] {
+        --r: 12px;
+        --r-tile: 14px;
+        --f-display: "Geologica", sans-serif;
+        --f-text: "Geologica", sans-serif;
+        --w-face: 600;
+        --w-face-bold: 700;
+        --w-name: 600;
+        --case: none;
+        --track: -0.01em;
+        --page: radial-gradient(120% 90% at 30% 0%, #2d2d31, #1e1e21 55%, #161618);
+        --tile-bg: rgba(255, 255, 255, 0.13);
+        --tile-border: 1px solid rgba(255, 255, 255, 0.08);
+        --tile-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 6px 18px rgba(0, 0, 0, 0.28);
+        --on-bg: rgba(255, 255, 255, 0.3);
+        --on-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 6px 18px rgba(0, 0, 0, 0.28);
+        --pick-bg: var(--on);
+        --pick-ink: var(--on-ink);
+        --key-border: 1px solid rgba(255, 255, 255, 0.3);
+      }
+      /* Bolder letters than the other themes: names a little smaller, so «Θερμοσίφωνας» fits a square panel's tile. */
+      html[data-preset="omichli"] .name { font-size: 4.4vw; font-size: clamp(1.1rem, 4.4vw, 1.65rem); }
+      html[data-preset="omichli"][data-mode="light"] {
+        --page: radial-gradient(120% 90% at 30% 0%, #f1f2f4, #e3e4e7 55%, #d5d7db);
+        --tile-bg: rgba(255, 255, 255, 0.55);
+        --tile-border: 1px solid rgba(255, 255, 255, 0.85);
+        --tile-shadow: 0 4px 14px rgba(29, 29, 32, 0.08);
+        --on-bg: rgba(42, 97, 177, 0.12);
+        --on-shadow: 0 0 0 1px rgba(42, 97, 177, 0.35), 0 4px 14px rgba(29, 29, 32, 0.08);
+        --key-border: 1px solid rgba(29, 29, 32, 0.3);
+      }
+
+      /* «Σταθερή μπάρα» (2026-11-13): the house's numbers above, the pages and the time below, still while
+         the pages turn. Any theme; the screen's theme.bar turns it on. Grid, not flex gap: old iPads. */
+      .bar-top, .bar-dock { display: none; }
+      html[data-bar] #board:not(.hidden) { display: flex; flex-direction: column; }
+      html[data-bar] .pages { height: auto; flex: 1 1 auto; min-height: 0; }
+      html[data-bar] .bar-top:not(:empty) {
+        display: grid;
+        grid-auto-flow: column;
+        grid-auto-columns: minmax(0, 1fr);
+        gap: var(--gap);
+        padding: var(--gap) var(--gap) 0;
+        flex: 0 0 auto;
+      }
+      .bar-cell {
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        min-width: 0;
+        height: 4.6rem;
+        height: clamp(3.8rem, 17vmin, 6.5rem);
+        padding: 0.55rem 0.8rem 0.6rem;
+        border-radius: var(--r-tile);
+        border: var(--tile-border);
+        background: var(--tile-bg);
+        box-shadow: var(--tile-shadow);
+        text-align: left;
+      }
+      .bar-cell small { color: var(--muted); font-size: 0.85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .bar-cell b {
+        align-self: flex-end;
+        font-family: var(--f-display);
+        font-weight: var(--w-face-bold);
+        font-size: 2rem;
+        font-size: clamp(1.5rem, 8vmin, 3rem);
+        line-height: 1;
+        letter-spacing: var(--track);
+        white-space: nowrap;
+      }
+      html[data-bar] .bar-dock {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        align-items: center;
+        gap: var(--gap);
+        margin: 0 var(--gap) var(--gap);
+        margin-bottom: max(var(--gap), env(safe-area-inset-bottom));
+        padding: 0.45rem 0.7rem;
+        border-radius: var(--r-tile);
+        border: var(--tile-border);
+        background: var(--tile-bg);
+        box-shadow: var(--tile-shadow);
+        flex: 0 0 auto;
+      }
+      .bar-mark { display: block; width: 2.1rem; height: 2.1rem; object-fit: contain; filter: brightness(0) invert(1); opacity: 0.9; }
+      html[data-mode="light"] .bar-mark { filter: brightness(0); }
+      .bar-pages { display: flex; justify-content: center; min-width: 0; overflow: hidden; }
+      .bar-page {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex: 0 1 3rem;
+        min-width: 1.8rem;
+        height: 2.6rem;
+        height: clamp(2.2rem, 10vmin, 3.2rem);
+        margin: 0 0.2rem;
+        border-radius: var(--r);
+        border: var(--tile-border);
+        background: transparent;
+        color: var(--muted);
+        font-weight: var(--w-name);
+      }
+      .bar-page[aria-current="page"] { background: var(--pick-bg); color: var(--pick-ink); border-color: transparent; }
+      .bar-time {
+        font-family: var(--f-display);
+        font-weight: var(--w-face-bold);
+        font-size: 1.9rem;
+        font-size: clamp(1.4rem, 7vmin, 2.6rem);
+        line-height: 1;
+        letter-spacing: var(--track);
+        white-space: nowrap;
+      }
+
       /* «Πίνακας» (2026-11-13): on a landscape panel four columns, `m` half the width, `l` a 2×2 block, and the
          summary across the top. On a square or portrait panel it is the usual grid. */
       html[data-orientation="landscape"] .page--dashboard { grid-template-columns: repeat(4, minmax(0, 1fr)); }
@@ -1399,7 +1514,9 @@
       </div>
     </section>
     <main id="board" class="hidden">
+      <div class="bar-top" id="bar-top"></div>
       <div class="pages" id="pages"></div>
+      <nav class="bar-dock" id="bar-dock" aria-label="Σελίδες"></nav>
     </main>
     <section id="sheet" class="hidden">
       <div id="sheet-top">
@@ -1552,6 +1669,10 @@
         lykofos: {
           dark: { bg: "#0f1520", tile: "#1a2230", ink: "#eef2f7", muted: "#a3afbf", on: "#fcc687", line: "#ffffff1f", onInk: "#0f1520" },
           light: { bg: "#e6eaef", tile: "#f7f9fb", ink: "#131a24", muted: "#4b5767", on: "#c23d14", line: "#131a241f", onInk: "#ffffff" },
+        },
+        omichli: {
+          dark: { bg: "#1e1e21", tile: "#38383c", ink: "#ffffff", muted: "#c9c9ce", on: "#f2eee3", line: "#ffffff26", onInk: "#1e1e21" },
+          light: { bg: "#e3e4e7", tile: "#f6f6f8", ink: "#1d1d20", muted: "#56575d", on: "#2a61b1", line: "#1d1d201f", onInk: "#ffffff" },
         },
       };
       const ICONS = {
@@ -1986,6 +2107,8 @@
         root.dataset.preset = preset;
         root.dataset.mode = mode;
         root.dataset.icons = icons;
+        if (t.bar === true) root.dataset.bar = "1";
+        else delete root.dataset.bar;
         root.style.setProperty("--bg", pal.bg);
         root.style.setProperty("--tile", pal.tile);
         root.style.setProperty("--ink", pal.ink);
@@ -3265,6 +3388,68 @@
         return '<span class="name">' + esc(t.kind) + "</span>";
       }
 
+      // «Σταθερή μπάρα»: the same numbers as the «Σύνοψη» tile above, the pages and the time below.
+      const barTop = document.getElementById("bar-top");
+      const barDock = document.getElementById("bar-dock");
+      function barCell(part, label, value) {
+        return (
+          '<button type="button" class="bar-cell"' + (part ? ' data-sum="' + part + '"' : "") + "><small>" + esc(label) +
+          "</small><b>" + esc(value) + "</b></button>"
+        );
+      }
+      function renderBars() {
+        if (document.documentElement.dataset.bar !== "1") {
+          barTop.innerHTML = "";
+          barDock.innerHTML = "";
+          return;
+        }
+        const w = snap.weather;
+        const inside = snap.entities
+          .filter((e) => e.domain === "climate" && typeof e.current_temperature === "number" && isFinite(e.current_temperature))
+          .map((e) => e.current_temperature);
+        barTop.innerHTML =
+          (inside.length
+            ? barCell("", "Θερμοκρασία", formatTemp(inside.reduce((a, b) => a + b, 0) / inside.length))
+            : w && w.temperature != null
+              ? barCell("weather", "Έξω", weatherTemp())
+              : "") +
+          (w && typeof w.humidity === "number" ? barCell("weather", "Υγρασία", Math.round(w.humidity) + "%") : "") +
+          (snap.energy && snap.energy.now_w !== null && snap.energy.now_w !== undefined ? barCell("energy", "Κατανάλωση", energyNowText()) : "");
+        const pages = screen.pages || [];
+        const mark = document.querySelector(".gate-mark");
+        barDock.innerHTML =
+          '<img class="bar-mark" alt="Arvio" src="' + (mark ? mark.getAttribute("src") : "") + '" />' +
+          '<span class="bar-pages">' +
+          (pages.length > 1
+            ? pages
+                .map(
+                  (p, i) =>
+                    '<button type="button" class="bar-page" data-bar-page="' + i + '" aria-label="Σελίδα ' + (i + 1) + '"' +
+                    (i === pageIx ? ' aria-current="page"' : "") + ">" + (i === 0 ? ico("home", 20) : i + 1) + "</button>",
+                )
+                .join("")
+            : "") +
+          '</span><b class="bar-time" data-clock="1">' + clockFaceHtml(clockText(), true) + "</b>";
+      }
+      function markBarPage() {
+        barDock.querySelectorAll("[data-bar-page]").forEach((b) => {
+          if (Number(b.getAttribute("data-bar-page")) === pageIx) b.setAttribute("aria-current", "page");
+          else b.removeAttribute("aria-current");
+        });
+      }
+      barTop.addEventListener("click", (ev) => {
+        const part = ev.target.closest ? ev.target.closest("[data-sum]") : null;
+        if (part) openSheet({ kind: part.getAttribute("data-sum") });
+      });
+      barDock.addEventListener("click", (ev) => {
+        const b = ev.target.closest ? ev.target.closest("[data-bar-page]") : null;
+        if (!b) return;
+        // Straight to the page, as a render puts it back: one jump, not a swipe through the pages between.
+        pageIx = Number(b.getAttribute("data-bar-page")) || 0;
+        pagesEl.scrollLeft = pageIx * pagesEl.clientWidth;
+        markBarPage();
+      });
+
       let renderLater = 0;
       let renderWaits = 0;
       function render() {
@@ -3281,6 +3466,7 @@
         }
         renderWaits = 0;
         document.documentElement.dataset.orientation = screen.orientation || "square";
+        renderBars();
         pagesEl.innerHTML = "";
         if (!(screen.pages || []).some((p) => (p.tiles || []).length)) {
           const name = esc(screen.name || "Οθόνη");
@@ -4091,6 +4277,7 @@
       pagesEl.addEventListener("scroll", () => {
         const w = pagesEl.clientWidth || 1;
         pageIx = Math.round(pagesEl.scrollLeft / w);
+        markBarPage();
       });
       // Pointer events arrived in iOS 13; older iPads only send touches.
       document.addEventListener("pointerdown", armHomeIdle, { passive: true });

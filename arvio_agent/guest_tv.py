@@ -19,7 +19,7 @@ BLOCK_KINDS = (
 )
 SINGLE_KINDS = frozenset({"logo", "stay", "wifi", "guest_pass", "clock", "weather", "apps"})
 APP_IDS = ("live_tv", "hdmi", "netflix", "youtube", "prime_video", "disney_plus", "spotify", "plex", "browser")
-THEME_PRESETS = frozenset({"afisa", "grafitis", "penteli", "drys", "lino", "beton", "aigaio", "elia", "vasaltis", "galini", "lykofos"})
+THEME_PRESETS = frozenset({"afisa", "grafitis", "penteli", "drys", "lino", "beton", "aigaio", "elia", "vasaltis", "galini", "lykofos", "omichli"})
 BLOCKS_MAX = 16
 ITEMS_MAX = 8
 RULES_MAX = 12

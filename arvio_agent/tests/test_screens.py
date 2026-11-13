@@ -231,6 +231,18 @@ class ScreenStoreTest(unittest.TestCase):
         self.assertIn("summary", can["tiles"])
         self.assertEqual(can["layouts"], ["dashboard"])
 
+    def test_omichli_and_the_fixed_bar(self):
+        """Ομίχλη and «Σταθερή μπάρα» (2026-11-13): only a true bar is kept, and Partner learns that this hub draws it."""
+        page = {"id": "pg_aaaaaaaa", "tiles": [{"kind": "clock"}]}
+        out = agent.put_wall_screen(self._row(pages=[page], theme={"preset": "omichli", "mode": "dark", "bar": True}))["screen"]
+        self.assertEqual(out["theme"], {"preset": "omichli", "mode": "dark", "icons": "line", "bar": True})
+        for bar in (False, "yes", 1, None):
+            out = agent.put_wall_screen(self._row(pages=[page], theme={"preset": "afisa", "bar": bar}))["screen"]
+            self.assertNotIn("bar", out["theme"])
+        can = agent.list_wall_screens()["panel"]
+        self.assertIn("omichli", can["themes"])
+        self.assertIs(can["bar"], True)
+
     def test_floor3d_needs_ref(self):
         with self.assertRaises(ValueError) as cm:
             agent.put_wall_screen(
