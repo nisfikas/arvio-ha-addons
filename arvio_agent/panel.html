@@ -1492,6 +1492,24 @@
       .no-flex-gap .tile--summary > * { margin: 0 1.6rem 0.6rem 0; }
       .no-flex-gap .sum-facts > * { margin: 0 1.4rem 0.5rem 0; }
       .no-flex-gap .sum-wx > * + * { margin-left: 0.6rem; }
+      /* Device motion (2026-11-13), as on Home: blades turn, a flame flickers, air or water flows, heat rises.
+         Plain selectors, no :is(), for the old iPads in wall mode. */
+      .glyph .ar-i-spin, .glyph .ar-i-turn, .glyph .ar-i-sweep, .glyph .ar-i-arm, .glyph .ar-i-swing { transform-box: view-box; }
+      .glyph .ar-i-flame, .glyph .ar-i-slide, .glyph .ar-i-lift, .glyph .ar-i-rise { transform-box: fill-box; transform-origin: 50% 100%; }
+      @media (prefers-reduced-motion: no-preference) {
+        .tile.on .glyph .ar-i-spin, .lamp.on .glyph .ar-i-spin { animation: ar-i-spin 1.1s linear infinite; }
+        .tile.on .glyph .ar-i-sweep, .lamp.on .glyph .ar-i-sweep { animation: ar-i-sweep 0.5s ease-in-out infinite; }
+        .tile.on .glyph .ar-i-flow, .lamp.on .glyph .ar-i-flow { stroke-dasharray: 2.4 2.2; animation: ar-i-flow 0.9s linear infinite; }
+        .tile.on .glyph .ar-i-flame, .lamp.on .glyph .ar-i-flame { animation: ar-i-flame 0.9s ease-in-out infinite alternate; }
+        .tile.on .glyph .ar-i-rise, .lamp.on .glyph .ar-i-rise { animation: ar-i-rise 1.8s ease-in-out infinite; }
+        .tile.on .glyph .ar-i-pulse, .lamp.on .glyph .ar-i-pulse { animation: ar-i-pulse 1.4s ease-in-out infinite; }
+      }
+      @keyframes ar-i-spin { to { transform: rotate(360deg); } }
+      @keyframes ar-i-sweep { 50% { transform: scaleX(0.12); } }
+      @keyframes ar-i-flow { to { stroke-dashoffset: -4.6; } }
+      @keyframes ar-i-flame { 0% { transform: scale(1, 1); } 50% { transform: scale(0.9, 1.08); } 100% { transform: scale(1.06, 0.94); } }
+      @keyframes ar-i-rise { 0% { transform: translateY(2px); opacity: 0; } 35%, 65% { opacity: 1; } 100% { transform: translateY(-2px); opacity: 0; } }
+      @keyframes ar-i-pulse { 50% { opacity: 0.3; } }
     </style>
   </head>
   <body>
@@ -1702,6 +1720,19 @@
         film: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v16"/><path d="M17 4v16"/><path d="M3 9h4"/><path d="M3 15h4"/><path d="M17 9h4"/><path d="M17 15h4"/>',
         fridge: '<rect x="6" y="2.5" width="12" height="19" rx="2"/><path d="M6 9.5h12"/><path d="M9 5.5V7"/><path d="M9 12.5v3"/>',
         gate: '<path d="M3 21V8"/><path d="M21 21V8"/><path d="M3 12h18"/><path d="M8 9v12"/><path d="M13 9v12"/><path d="M18 9v12"/>',
+        "fan-ceiling": '<path d="M12 3v3.5"/><rect x="9.5" y="6.5" width="5" height="3.5" rx="1.5"/><g class="ar-i-sweep" style="transform-origin:12px 9px"><path d="M9.5 7.9 3.6 8.4a.7.7 0 0 0 0 1.4l5.9.5"/><path d="M14.5 7.9l5.9.5a.7.7 0 0 1 0 1.4l-5.9.5"/></g><path d="M10.75 10v1.1a1.25 1.25 0 0 0 2.5 0V10"/><g class="ar-i-flow"><path d="M7.5 16c1.5.9 3 .9 4.5 0s3-.9 4.5 0"/><path d="M7.5 19.5c1.5.9 3 .9 4.5 0s3-.9 4.5 0"/></g>',
+        "fan-coil": '<rect x="2.5" y="4.5" width="19" height="10" rx="2"/><circle cx="7.5" cy="9.5" r="2.75"/><g class="ar-i-spin" style="transform-origin:7.5px 9.5px"><path d="M7.5 9.5V7.25"/><path d="M7.5 9.5l1.95 1.12"/><path d="M7.5 9.5l-1.95 1.12"/></g><path d="M12.75 7v5"/><path d="M15 7v5"/><path d="M17.25 7v5"/><path d="M19.5 7v5"/><g class="ar-i-flow"><path d="M5 17.5h14"/><path d="M7.5 20.5h9"/></g>',
+        thermostat: '<rect x="3.5" y="3.5" width="17" height="17" rx="4.5"/><path d="M8.1 15.9a5.5 5.5 0 1 1 7.8 0"/><circle class="ar-i-pulse" cx="15.9" cy="8.1" r="1.15" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="2.25"/>',
+        "heat-pump": '<rect x="2.5" y="4.5" width="19" height="14" rx="1.75"/><circle cx="9" cy="11.5" r="4.25"/><g class="ar-i-spin" style="transform-origin:9px 11.5px"><path d="M9 11.5V8.25"/><path d="M9 11.5l2.8 1.62"/><path d="M9 11.5l-2.8 1.62"/></g><path d="M15.75 8h3"/><path d="M15.75 11.5h3"/><path d="M15.75 15h3"/><path d="M5 18.5v2"/><path d="M19 18.5v2"/>',
+        radiator: '<rect x="3.25" y="8.5" width="3.5" height="10" rx="1.75"/><rect x="7.75" y="8.5" width="3.5" height="10" rx="1.75"/><rect x="12.25" y="8.5" width="3.5" height="10" rx="1.75"/><rect x="16.75" y="8.5" width="3.5" height="10" rx="1.75"/><path d="M5 18.5v2"/><path d="M18.5 18.5v2"/><g class="ar-i-rise"><path d="M7.5 6c-.9-.9.9-1.8 0-2.7"/><path d="M12 6c-.9-.9.9-1.8 0-2.7"/><path d="M16.5 6c-.9-.9.9-1.8 0-2.7"/></g>',
+        underfloor: '<path d="M3 11.5h18"/><path d="M4 14h14.25a1.75 1.75 0 0 1 0 3.5H5.75a1.75 1.75 0 0 0 0 3.5H20"/><g class="ar-i-rise"><path d="M7 8.5c-.9-.9.9-1.8 0-2.7"/><path d="M12 8.5c-.9-.9.9-1.8 0-2.7"/><path d="M17 8.5c-.9-.9.9-1.8 0-2.7"/></g>',
+        fireplace: '<path d="M2.5 4.5h19"/><path d="M4 4.5v16"/><path d="M20 4.5v16"/><path d="M2.5 20.5h19"/><path d="M8 20.5v-6a4 4 0 0 1 8 0v6"/><path class="ar-i-flame" d="M12 19.5c-1.55 0-2.4-1.05-2.4-2.25 0-1.45 1.35-2.25 1.6-3.75 1.05.75 2.6 2.05 2.6 3.85 0 1.2-.75 2.15-1.8 2.15Z"/>',
+        gas: '<path d="M2.5 15h5.5"/><path d="M16 15h5.5"/><path d="M8 12.5l4 2.5-4 2.5v-5Z"/><path d="M16 12.5l-4 2.5 4 2.5v-5Z"/><path d="M12 15v-4.5"/><path d="M9.5 10.5h5"/><path class="ar-i-flame" d="M12 7.9c-1.3 0-2-.9-2-1.95 0-1.2 1.15-1.85 1.35-3.15.85.6 2.05 1.65 2.05 3.15 0 1.05-.6 1.95-1.4 1.95Z"/>',
+        lpg: '<path d="M4 11.5a5 5 0 0 1 10 0v8a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 4 19.5v-8Z"/><path d="M7.5 6.5V4h3v2.5"/><path d="M4 14.5h10"/><path d="M15.5 14h6"/><path class="ar-i-flame" d="M18.5 11.5c-1.35 0-2.1-.95-2.1-2.05 0-1.25 1.2-1.95 1.4-3.3.9.65 2.15 1.75 2.15 3.3 0 1.1-.65 2.05-1.45 2.05Z"/>',
+        valve: '<g class="ar-i-flow"><path d="M2.5 15h5.5"/><path d="M16 15h5.5"/></g><path d="M8 12.5l4 2.5-4 2.5v-5Z"/><path d="M16 12.5l-4 2.5 4 2.5v-5Z"/><path d="M12 15v-5"/><circle cx="12" cy="6.5" r="3.25"/><path d="M8.75 6.5h6.5"/><path d="M12 3.25v6.5"/>',
+        "gate-sliding": '<path d="M2 20.5h20"/><path d="M20.5 5.5v15"/><g class="ar-i-slide"><rect x="2.5" y="8.5" width="14.5" height="10" rx=".75"/><path d="M6.1 8.5v10"/><path d="M9.75 8.5v10"/><path d="M13.4 8.5v10"/></g><path d="M10 4.5H3.5"/><path d="M5.5 2.5l-2 2 2 2"/>',
+        "gate-swing": '<path d="M3 4.5v16"/><path d="M21 4.5v16"/><path d="M2 20.5h20"/><g class="ar-i-swing" style="transform-origin:3px 12px"><path d="M3 7l7.5 1.75v9.75L3 20"/><path d="M6.75 7.9v11.2"/></g><g class="ar-i-swing ar-i-swing--r" style="transform-origin:21px 12px"><path d="M21 7l-7.5 1.75v9.75L21 20"/><path d="M17.25 7.9v11.2"/></g>',
+        barrier: '<rect x="2.75" y="9.5" width="4.5" height="10.5" rx="1"/><path d="M1.75 20.5h6.5"/><circle class="ar-i-blink" cx="5" cy="6.5" r="1.4"/><g class="ar-i-arm" style="transform-origin:5px 12px"><rect x="7.25" y="10.75" width="14.25" height="2.5" rx="1.25"/><path d="M11.25 10.75l-1.25 2.5"/><path d="M15.25 10.75l-1.25 2.5"/><path d="M19.25 10.75l-1.25 2.5"/></g>',
         gauge: '<path d="M4 18a9 9 0 1 1 16 0"/><path d="M12 14l4-5"/><circle cx="12" cy="14" r="1.25" fill="currentColor" stroke="none"/>',
         hallway: '<path d="M9 4h6v12H9z"/><path d="M9 16l-5 5"/><path d="M15 16l5 5"/><path d="M3 4h6"/><path d="M15 4h6"/>',
         home: '<path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/>',
@@ -1935,14 +1966,19 @@
         "mdi:battery": "battery",
         "mdi:solar-panel": "solar",
         "mdi:ev-station": "ev",
-        "mdi:thermostat": "climate",
+        "mdi:thermostat": "thermostat",
         "mdi:air-conditioner": "ac",
-        "mdi:radiator": "flame",
+        "mdi:radiator": "radiator",
+        "mdi:heating-coil": "underfloor",
+        "mdi:heat-pump": "heat-pump",
+        "mdi:hvac": "fan-coil",
         "mdi:snowflake": "snowflake",
         "mdi:thermometer": "thermometer",
         "mdi:water": "drop",
         "mdi:weather-windy": "wind",
         "mdi:fan": "fan",
+        "mdi:ceiling-fan": "fan-ceiling",
+        "mdi:fireplace": "fireplace",
         "mdi:water-boiler": "boiler",
         "mdi:blinds": "blind",
         "mdi:window-shutter": "shutter",
@@ -1950,6 +1986,9 @@
         "mdi:awning": "awning",
         "mdi:garage": "garage",
         "mdi:gate": "gate",
+        "mdi:gate-arrow-right": "gate-sliding",
+        "mdi:gate-open": "gate-swing",
+        "mdi:boom-gate": "barrier",
         "mdi:door": "door",
         "mdi:window-closed": "window",
         "mdi:shield": "shield",
@@ -1967,6 +2006,9 @@
         "mdi:coffee-maker": "coffee",
         "mdi:water-pump": "pump",
         "mdi:sprinkler": "sprinkler",
+        "mdi:meter-gas": "gas",
+        "mdi:gas-cylinder": "lpg",
+        "mdi:valve": "valve",
       };
       function pickedGlyph(icon) {
         const g = icon && PICKED_ICONS[icon];
