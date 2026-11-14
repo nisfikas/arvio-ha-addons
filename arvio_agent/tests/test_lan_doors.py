@@ -23,6 +23,7 @@ STATES = {
     "switch.named_front": {"friendly_name": "Εξώπορτα"},
     "switch.relay_1": {"friendly_name": "Ρελέ 2"},
     "switch.garage_relay": {"friendly_name": "Relay"},
+    "switch.ajax_relay": {"device_class": "door", "friendly_name": "Ρελέ 3"},
     "cover.garage": {"device_class": "garage", "friendly_name": "Χ"},
     "cover.ha_garage": {"device_class": "garage_door", "friendly_name": "Χ"},
     "cover.gate": {"device_class": "gate", "friendly_name": "Χ"},
@@ -145,7 +146,7 @@ class LanDoorsTest(unittest.TestCase):
             self.assert_allowed("cover.open_cover", eid, secret=SECRET)
 
     def test_a_relay_named_like_a_door_needs_a_paired_panel(self):
-        for eid in ("switch.named_door", "switch.named_front", "switch.garage_relay", "cover.named_garage"):
+        for eid in ("switch.named_door", "switch.named_front", "switch.garage_relay", "switch.ajax_relay", "cover.named_garage"):
             action = "cover.open_cover" if eid.startswith("cover.") else "switch.turn_on"
             self.assert_refused(action, eid)
             self.assert_allowed(action, eid, secret=SECRET)
