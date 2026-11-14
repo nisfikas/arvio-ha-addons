@@ -7546,6 +7546,9 @@ def typed_attrs(
         out["available_modes"] = [str(m)[:40] for m in modes[:12]] if isinstance(modes, list) else []
         action = attrs.get("action")
         out["action"] = str(action) if action in HUMIDIFIER_ACTION_VALUES else None
+    # A state nothing read back (IR, RF, RTS): what was sent, so Home says «στάλθηκε», not «ενημερώθηκε» (ADR 005's exceptions).
+    if attrs.get("assumed_state") is True:
+        out["assumed_state"] = True
     return out
 
 
