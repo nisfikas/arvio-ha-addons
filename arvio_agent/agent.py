@@ -65,7 +65,7 @@ RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
 # Arvio Core on the customer's own machine: the one-time code from Arvio Home (arvio docs/plans/2026-11-14-core-self-hosted.md §5).
 ACTIVATION_CODE = ""
-AGENT_VERSION = "0.1.98"
+AGENT_VERSION = "0.1.99"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -2807,6 +2807,9 @@ def panel_snapshot(screen_id: str | None = None, secret: str | None = None) -> d
     if shot:
         screens[0]["screenshot"] = True
     attach_doorbell_live(screens, states, door_relays)
+    ask = panel_ask_now() if row.get("screen_secret_hash") else None  # a panel paired before 0.1.50 could not answer
+    if ask:
+        screens[0]["ask"] = ask
     plans = load_floor_plans().get("plans") or {}
     return {
         "ok": True,
@@ -9453,7 +9456,62 @@ NOTIFY_EVENT = "arvio_notify"
 NOTIFY_MESSAGE_MAX = 200
 NOTIFY_TITLE_MAX = 60
 NOTIFY_MEMBER_RE = re.compile(r"^mem_[a-z0-9]{8,64}$")
-HA_EVENT_TYPES = ("state_changed", "homeassistant_started", NOTIFY_EVENT)
+# ΡΩΤΑ ΣΤΟ ΠΑΝΕΛ (plan §9 Η of the automations): Arvio Core fires it, every signed panel shows it, the first
+# press answers. In memory on both sides: a restart of either is ΕΛΗΞΕ for the flow.
+PANEL_ASK_EVENT = "arvio_panel_ask"
+PANEL_ASK_MAX_S = 600
+PANEL_ASK_TOKEN_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+PANEL_ASKS: dict[str, dict] = {}
+PANEL_ASKS_LOCK = threading.Lock()
+HA_EVENT_TYPES = ("state_changed", "homeassistant_started", NOTIFY_EVENT, PANEL_ASK_EVENT)
+
+
+def note_panel_ask(data) -> None:
+    if not isinstance(data, dict) or not PANEL_ASK_TOKEN_RE.fullmatch(str(data.get("token") or "")):
+        return
+    token = str(data["token"])
+    with PANEL_ASKS_LOCK:
+        if data.get("done"):  # answered on another panel, expired, or the flow stopped
+            PANEL_ASKS.pop(token, None)
+            return
+        message = str(data.get("message") or "").strip()[:160]
+        yes = str(data.get("yes") or "").strip()[:20]
+        no = str(data.get("no") or "").strip()[:20]
+        try:
+            seconds = min(PANEL_ASK_MAX_S, max(1.0, float(data.get("seconds") or 0)))
+        except (TypeError, ValueError):
+            return
+        if message and yes:
+            ask = {"token": token, "alias": str(data.get("alias") or "")[:60], "message": message, "yes": yes}
+            PANEL_ASKS[token] = {**ask, **({"no": no} if no else {}), "until": time.monotonic() + seconds}
+
+
+def panel_ask_now() -> dict | None:
+    """The oldest question still open: one at a time on the wall."""
+    now = time.monotonic()
+    with PANEL_ASKS_LOCK:
+        for t in [t for t, a in PANEL_ASKS.items() if a["until"] <= now]:
+            del PANEL_ASKS[t]
+        first = next(iter(PANEL_ASKS.values()), None)
+    return {k: v for k, v in first.items() if k != "until"} if first else None
+
+
+def panel_ask_answer(screen_id: str, secret, token: str, choice: str) -> None:
+    """POST /api/screens/ask: a signed panel's press, passed on to Core. ScreenDenied, or LookupError when gone."""
+    row = load_screens()["screens"].get(str(screen_id))
+    if not isinstance(row, dict):
+        raise ScreenDenied("screen_not_found")
+    check_screen_secret(row, secret, door=True)  # only a panel that signs: the LAN is not a key (ADR 017)
+    with PANEL_ASKS_LOCK:
+        ask = PANEL_ASKS.get(token)
+    if not ask or ask["until"] <= time.monotonic() or choice not in (("yes", "no") if ask.get("no") else ("yes",)):
+        raise LookupError("ask_gone")
+    start = ha_or_raise("/config/config_entries/flow", "POST", {"handler": "arvio_panel_answer"})
+    out = ha_or_raise(f"/config/config_entries/flow/{start.get('flow_id')}", "POST", {"token": token, "choice": choice})
+    with PANEL_ASKS_LOCK:
+        PANEL_ASKS.pop(token, None)
+    if not isinstance(out, dict) or out.get("type") != "create_entry":
+        raise LookupError("ask_gone")
 
 REGISTRY_EVENT_TYPES = (
     "area_registry_updated",
@@ -9491,6 +9549,9 @@ def handle_ha_event(event: dict) -> None:
     etype = str(event.get("event_type") or "")
     if etype == "homeassistant_started":
         occupancy_restore()
+        return
+    if etype == PANEL_ASK_EVENT:
+        note_panel_ask(event.get("data"))
         return
     if etype == NOTIFY_EVENT:
         body = notify_body(event.get("data"))
@@ -10537,6 +10598,18 @@ class H(BaseHTTPRequestHandler):
                 except ValueError:
                     return self._j(403, {"ok": False, "error": "doorbell_unlock_unavailable"})
                 return self._j(200, {"ok": True, **(out if isinstance(out, dict) else {})})
+
+            if path == "/api/screens/ask":
+                body = self._read_json()
+                try:
+                    panel_ask_answer(str(body.get("screen_id") or ""), self._panel(), str(body.get("token") or ""), str(body.get("choice") or ""))
+                except ScreenDenied as e:
+                    return self._j(403, {"ok": False, "error": str(e)})
+                except LookupError:
+                    return self._j(410, {"ok": False, "error": "ask_gone"})
+                except Exception:  # Core did not answer: the panel says so and the button stays
+                    return self._j(502, {"ok": False, "error": "core_unreachable"})
+                return self._j(200, {"ok": True})
 
             if path == "/api/venue/pin":
                 body = self._read_json()
