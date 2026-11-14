@@ -5048,7 +5048,9 @@ def os_status() -> dict:
     image = os_state.get("image") if isinstance(os_state.get("image"), dict) else {}
     progress = os_state.get("progress") if isinstance(os_state.get("progress"), dict) else None
     # image: a core before builds had a number reports only /etc/arvio-os, whose keys it lower-cases.
-    return {"ok": True, "last": last, "version": os_state.get("version") or image.get("version"), "progress": progress}
+    # board: which images fit (x86, pi4, pi5), so Console never offers one this box would refuse.
+    board = image.get("board") if isinstance(image.get("board"), str) else None
+    return {"ok": True, "last": last, "version": os_state.get("version") or image.get("version"), "progress": progress, "board": board}
 
 
 def network_status() -> dict:
