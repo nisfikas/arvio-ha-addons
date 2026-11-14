@@ -274,6 +274,13 @@ SCREEN_ICON_STYLES = frozenset({"line", "filled"})
 CAMERA_STREAM_SUFFIXES = ("_main", "_sub", "_high", "_low")
 DOORBELL_CALL_RE = re.compile(r"^binary_sensor\.[a-z0-9_]+$")
 DOORBELL_UNLOCK_RE = re.compile(r"^(lock|switch)\.[a-z0-9_]+$")
+# Buttons on the doorbell's camera (cloud entity_meta.camera_buttons, packages/domain parseCameraButtons).
+# Never a lock or an alarm: the regex has neither.
+CAMERA_BUTTON_TARGET_RE = re.compile(
+    r"^(?:(?:light|switch|climate|cover|script|scene)\.[A-Za-z0-9_]{1,100}|scenario:[A-Za-z0-9_\-.]{1,100})$"
+)
+CAMERA_BUTTON_STATUS_RE = re.compile(r"^binary_sensor\.[A-Za-z0-9_]{1,100}$")
+CAMERA_BUTTONS_MAX = 10
 DOORBELL_LATCH_S = 45.0
 # Woken on every ring: a wall panel waits on it (GET /api/screens/ring) instead of finding out at its next 4 s poll.
 DOORBELL_RING = threading.Condition()
@@ -512,6 +519,65 @@ def parse_screen_doorbell(raw) -> dict | None:
         if not isinstance(unlock, str) or not DOORBELL_UNLOCK_RE.fullmatch(unlock):
             raise ValueError("invalid_doorbell_unlock")
         out["unlock_entity_id"] = unlock
+    if "buttons" in raw:
+        out["buttons"] = parse_camera_buttons(raw.get("buttons"))
+    return out
+
+
+def camera_button_presses(target: str) -> tuple:
+    kind = re.split(r"[.:]", target, maxsplit=1)[0]
+    if kind == "cover":
+        return ("open", "close")
+    if kind == "switch":
+        return ("on", "off", "toggle")
+    if kind in ("light", "climate"):
+        return ("toggle", "on", "off")
+    return ("run",)
+
+
+def parse_camera_buttons(raw) -> list:
+    """The cloud already checked them; a button the hub cannot read is dropped, never the doorbell."""
+    out = []
+    for b in raw[:CAMERA_BUTTONS_MAX] if isinstance(raw, list) else []:
+        target = b.get("target") if isinstance(b, dict) else None
+        if not isinstance(target, str) or not CAMERA_BUTTON_TARGET_RE.fullmatch(target):
+            continue
+        if b.get("press") not in camera_button_presses(target):
+            continue
+        item = {"target": target, "press": b["press"]}
+        label = b.get("label")
+        if isinstance(label, str) and label.strip():
+            item["label"] = label.strip()[:40]
+        status = b.get("status")
+        if isinstance(status, str) and CAMERA_BUTTON_STATUS_RE.fullmatch(status):
+            item["status"] = status
+        out.append(item)
+    return out
+
+
+def doorbell_button_views(buttons: list, states_by_id: dict, door_relays: set) -> list:
+    """What the panel draws: a name, and only what this hub has. A doorbell's relay has its own
+    «Άνοιγμα πόρτας», after a ring and a «Ναι»: a button never opens it from the LAN."""
+    automations = {}
+    for st in states_by_id.values():
+        attrs = st.get("attributes") if isinstance(st.get("attributes"), dict) else {}
+        if str(st.get("entity_id") or "").startswith("automation.") and attrs.get("id"):
+            automations[str(attrs["id"])] = st
+    out = []
+    for b in buttons:
+        target = b["target"]
+        if target.startswith("scenario:"):
+            st = automations.get(target[len("scenario:"):])
+        else:
+            st = None if target in door_relays else states_by_id.get(target)
+        if not st:
+            continue
+        attrs = st.get("attributes") if isinstance(st.get("attributes"), dict) else {}
+        view = {**b, "name": b.get("label") or str(attrs.get("friendly_name") or target)}
+        view.pop("label", None)
+        if view.get("status") not in states_by_id:
+            view.pop("status", None)
+        out.append(view)
     return out
 
 
@@ -1106,7 +1172,7 @@ def doorbell_is_ringing(call_entity_id: str | None, states_by_id: dict) -> bool:
     return False
 
 
-def attach_doorbell_live(screens: list, states) -> None:
+def attach_doorbell_live(screens: list, states, door_relays: set = frozenset()) -> None:
     states_by_id: dict = {}
     have: set[str] = set()
     if isinstance(states, list):
@@ -1128,6 +1194,8 @@ def attach_doorbell_live(screens: list, states) -> None:
         if call:
             live["call_entity_id"] = call
         live["ringing"] = doorbell_is_ringing(call, states_by_id)
+        if live.get("buttons"):
+            live["buttons"] = doorbell_button_views(live["buttons"], states_by_id, door_relays)
         screen["doorbell"] = live
 
 
@@ -2647,7 +2715,7 @@ def panel_snapshot(screen_id: str | None = None, secret: str | None = None) -> d
         screens[0]["restart"] = True
     if shot:
         screens[0]["screenshot"] = True
-    attach_doorbell_live(screens, states)
+    attach_doorbell_live(screens, states, door_relays)
     plans = load_floor_plans().get("plans") or {}
     return {
         "ok": True,

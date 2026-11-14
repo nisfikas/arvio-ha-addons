@@ -436,6 +436,37 @@ class ScreenStoreTest(unittest.TestCase):
         agent.put_wall_screen(self._row(doorbell=None))
         self.assertNotIn("doorbell", agent.list_wall_screens()["screens"][0])
 
+    def test_doorbell_keeps_the_cameras_buttons(self):
+        cam = {"camera_entity_id": "camera.front"}
+        buttons = [
+            {"target": "switch.gate", "press": "on", "label": "  Αυλόπορτα  ", "status": "binary_sensor.gate"},
+            {"target": "lock.front", "press": "run"},
+            {"target": "alarm_control_panel.home", "press": "run"},
+            {"target": "cover.garage", "press": "toggle"},
+            {"target": "scene.night", "press": "run", "status": "sensor.not_a_contact"},
+        ]
+        agent.put_wall_screen(self._row(doorbell={**cam, "buttons": buttons}))
+        self.assertEqual(
+            agent.list_wall_screens()["screens"][0]["doorbell"]["buttons"],
+            [
+                {"target": "switch.gate", "press": "on", "label": "Αυλόπορτα", "status": "binary_sensor.gate"},
+                {"target": "scene.night", "press": "run"},
+            ],
+        )
+        # An old cloud sends no buttons: none on the hub either, and the doorbell stays.
+        agent.put_wall_screen(self._row(doorbell=cam))
+        self.assertNotIn("buttons", agent.list_wall_screens()["screens"][0]["doorbell"])
+
+    def test_a_tap_on_the_model_only_picks(self):
+        """3d-home-design, 2026-11-06: no tap sends a command; the card's one button does."""
+        html = (ROOT / "panel.html").read_text(encoding="utf-8")
+        tap = html[html.index("function tapPin(eid)") : html.index("function pinVerb(e)")]
+        self.assertNotIn("cmd(", tap)
+        self.assertNotIn("toggleEntity", tap)
+        self.assertNotIn("openSheet", tap)
+        self.assertIn("data-pin-act", html)
+        self.assertIn("if (!unpickPin()) tap(", html)
+
     def test_doorbell_rising_edge_notifies_cloud(self):
         watched = {"binary_sensor.vto_button_pressed"}
         with mock.patch.object(agent, "post_doorbell_ring") as post:
@@ -1537,7 +1568,8 @@ class ScreenLanHttpTest(unittest.TestCase):
         """SFK HQ iPad 2026-11-09: a press on a speaker only paused it, and then nothing else could be done."""
         html = (ROOT / "panel.html").read_text(encoding="utf-8")
         self.assertIn("const SHEET_DOMAINS = { climate: 1, cover: 1, vacuum: 1, media_player: 1 };", html)
-        self.assertEqual(html.count("SHEET_DOMAINS["), 4)  # tile, room row, pin, second pin tap
+        # tile, room row, and a second tap on a pin: the first tap on the model only picks (Νικόλας, 2026-11-06)
+        self.assertEqual(html.count("SHEET_DOMAINS["), 3)
         self.assertIn('} else if (sheet.kind === "media_player") {', html)
         self.assertIn('["play_media", "Παίξε ξανά"]', html)
         self.assertIn('cmd("media_player.volume_set", sheet.ref, { volume_level: level });', html)
