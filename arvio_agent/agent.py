@@ -65,7 +65,7 @@ RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
 # Arvio Core on the customer's own machine: the one-time code from Arvio Home (arvio docs/plans/2026-11-14-core-self-hosted.md §5).
 ACTIVATION_CODE = ""
-AGENT_VERSION = "0.1.97"
+AGENT_VERSION = "0.1.98"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
