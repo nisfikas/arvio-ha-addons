@@ -63,6 +63,8 @@ SERIAL = "rpi-lab-1"
 PORT = 8099
 RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
+# Arvio Core on the customer's own machine: the one-time code from Arvio Home (arvio docs/plans/2026-11-14-core-self-hosted.md §5).
+ACTIVATION_CODE = ""
 AGENT_VERSION = "0.1.97"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
@@ -152,7 +154,7 @@ def token_missing() -> str:
 
 
 def opts() -> None:
-    global CLOUD, SERIAL, mode, RELAY_URL, RELAY_TOKEN
+    global CLOUD, SERIAL, mode, RELAY_URL, RELAY_TOKEN, ACTIVATION_CODE
     p = DATA / "options.json"
     if p.exists():
         o = json.loads(p.read_text())
@@ -170,6 +172,14 @@ def opts() -> None:
     env_serial = (os.environ.get("ARVIO_SERIAL") or "").strip()
     if env_serial:
         SERIAL = env_serial
+    ACTIVATION_CODE = (os.environ.get("ARVIO_ACTIVATION_CODE") or "").strip()
+    if ACTIVATION_CODE and not env_serial:
+        # A box nobody named: its own serial, made once and kept with its identity (never the lab default).
+        st = load_hub()
+        SERIAL = str(st.get("serial") or "core-" + secrets.token_hex(4))
+        if st.get("serial") != SERIAL:
+            st["serial"] = SERIAL
+            save_hub(st)
     env_relay = os.environ.get("ARVIO_RELAY_URL")
     if env_relay is not None and env_relay.strip():
         RELAY_URL = env_relay.strip().rstrip("/")
@@ -5055,12 +5065,55 @@ def close_relay_ws() -> None:
         pass
 
 
+def activate_remote(st: dict, pk: str) -> bool:
+    """Arvio Core on the customer's own machine: the code from Arvio Home registers this box in the cloud
+    and gives it to that person's house, so nobody at SFK types a serial into Console. True once the box
+    has a hub. A code the cloud refused is not sent again until a different one is set."""
+    global err
+    if st.get("hub_id"):
+        return True
+    if st.get("activation_refused") == ACTIVATION_CODE:
+        return False
+    try:
+        req = urllib.request.Request(
+            f"{CLOUD}/v1/hubs/activate",
+            data=json.dumps({"code": ACTIVATION_CODE, "serial": SERIAL, "enroll_public_key": pk}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=12) as r:
+            body = json.loads(r.read().decode() or "{}")
+    except urllib.error.HTTPError as e:
+        if 400 <= e.code < 500 and e.code != 429:
+            st["activation_refused"] = ACTIVATION_CODE
+            save_hub(st)
+        try:
+            why = json.loads(e.read().decode() or "{}").get("error") or e.reason
+        except (OSError, ValueError):
+            why = e.reason
+        err = f"activate:{why}"
+        return False
+    except Exception as e:
+        err = f"activate:{e}"
+        return False
+    if not body.get("hub_id"):
+        err = "activate:no hub in the answer"
+        return False
+    st.update({"hub_id": body["hub_id"], "state": body.get("state") or "claimed"})
+    st.pop("activation_refused", None)
+    save_hub(st)
+    return True
+
+
 def enroll_remote() -> None:
     global hub_id, err, hub_state
     st = load_hub()
     pk = st.get("enroll_public_key") or secrets.token_hex(8)
     st.update({"enroll_public_key": pk, "serial": SERIAL})
     save_hub(st)
+    if ACTIVATION_CODE and not activate_remote(st, pk):
+        hub_id = st.get("hub_id")
+        return
     try:
         req = urllib.request.Request(
             f"{CLOUD}/v1/hubs/enroll",
@@ -5112,7 +5165,7 @@ def enroll_remote() -> None:
                 hb = {}
             if apply_heartbeat_reply(hb):
                 close_relay_ws()
-        if err.startswith("enroll:") or err.startswith("heartbeat:"):
+        if err.startswith(("enroll:", "heartbeat:", "activate:")):
             err = ""
     except Exception as e:
         err = f"heartbeat:{e}"
