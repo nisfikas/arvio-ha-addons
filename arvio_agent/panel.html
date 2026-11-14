@@ -1451,7 +1451,7 @@
         letter-spacing: var(--track);
         white-space: nowrap;
       }
-      html[data-bar] .bar-dock {
+      html[data-bar] .bar-dock:not(:empty) {
         display: grid;
         grid-template-columns: auto minmax(0, 1fr) auto;
         align-items: center;
@@ -2102,7 +2102,7 @@
       }
       function coverPos(e) {
         if (!e) return 0;
-        const n = Number(e.current_position);
+        const n = num(e.current_position);
         if (isFinite(n)) return Math.max(0, Math.min(100, n));
         if (e.state === "open" || e.state === "opening") return 100;
         return 0;
@@ -2114,7 +2114,7 @@
         if (!e) return "";
         if (e.state === "opening") return "Ανοίγει";
         if (e.state === "closing") return "Κλείνει";
-        const n = Number(e.current_position);
+        const n = num(e.current_position);
         if (isFinite(n) && (e.state === "open" ? n < 100 : e.state !== "closed")) {
           return Math.round(n) + " % ανοιχτό";
         }
@@ -2476,6 +2476,11 @@
         } catch (e) {
           return "";
         }
+      }
+      // Number(null) is 0: a reading the hub does not have stays missing, never 0° or a 0 to step from
+      // (Κρέσνα's climate tile read «0°» and its + would have sent 16°, 2026-11-14).
+      function num(v) {
+        return v === null || v === undefined || v === "" ? NaN : Number(v);
       }
       function formatTemp(n, digits) {
         const v = typeof n === "number" ? n : n == null || n === "" ? NaN : Number(n);
@@ -3276,8 +3281,8 @@
           const e = byId(sheet.ref);
           const modes = (e && Array.isArray(e.hvac_modes) && e.hvac_modes.length ? e.hvac_modes : ["off", "heat", "cool"]);
           const mode = (e && (e.hvac_mode || e.state)) || "";
-          const cur = e ? Number(e.current_temperature) : NaN;
-          const target = e ? Number(e.temperature) : NaN;
+          const cur = e ? num(e.current_temperature) : NaN;
+          const target = e ? num(e.temperature) : NaN;
           const nowWord = formatTemp(cur);
           sheetEl.dataset.hvac = mode || "off";
           sheetTitle.textContent = e && e.name ? e.name : "Κλιματιστικό";
@@ -3469,7 +3474,7 @@
               "</span>"
             );
           }
-          const climateTemp = e && e.domain === "climate" ? formatTemp(Number(e.current_temperature)) : "";
+          const climateTemp = e && e.domain === "climate" && isFinite(num(e.current_temperature)) ? formatTemp(num(e.current_temperature)) : "";
           return (
             tileGlyph(glyphForEntity(e)) +
             '<span class="kicker"></span><span class="name">' +
@@ -3609,32 +3614,59 @@
           return;
         }
         const w = snap.weather;
+        const t = screen.theme || {};
         const inside = snap.entities
           .filter((e) => e.domain === "climate" && typeof e.current_temperature === "number" && isFinite(e.current_temperature))
           .map((e) => e.current_temperature);
-        barTop.innerHTML =
-          (inside.length
-            ? barCell("", "Θερμοκρασία", formatTemp(inside.reduce((a, b) => a + b, 0) / inside.length))
-            : w && w.temperature != null
-              ? barCell("weather", "Έξω", weatherTemp())
-              : "") +
-          (w && typeof w.humidity === "number" ? barCell("weather", "Υγρασία", Math.round(w.humidity) + "%") : "") +
-          (snap.energy && snap.energy.now_w !== null && snap.energy.now_w !== undefined ? barCell("energy", "Κατανάλωση", energyNowText()) : "");
+        const insideText = inside.length ? formatTemp(inside.reduce((a, b) => a + b, 0) / inside.length) : "—";
+        const humid = w && typeof w.humidity === "number" ? Math.round(w.humidity) + "%" : "";
+        const power = snap.energy && snap.energy.now_w !== null && snap.energy.now_w !== undefined ? energyNowText() : "";
+        // Above: what Partner picked (theme.bar_top, 2026-11-14), in its order, «—» for what has no reading.
+        function topCell(k) {
+          if (k === "inside") return barCell("", "Μέσα", insideText);
+          if (k === "outside") return barCell("weather", "Έξω", weatherTemp() || "—");
+          if (k === "humidity") return barCell("weather", "Υγρασία έξω", humid || "—");
+          if (k === "power") return barCell("energy", "Κατανάλωση", power || "—");
+          const e = byId(k);
+          return barCell("", e && e.name ? e.name : k, sensorText(e));
+        }
+        barTop.innerHTML = Array.isArray(t.bar_top)
+          ? t.bar_top.map(topCell).join("")
+          : (inside.length
+              ? barCell("", "Θερμοκρασία", insideText)
+              : w && w.temperature != null
+                ? barCell("weather", "Έξω", weatherTemp())
+                : "") +
+            (humid ? barCell("weather", "Υγρασία έξω", humid) : "") +
+            (power ? barCell("energy", "Κατανάλωση", power) : "");
         const pages = screen.pages || [];
         const mark = document.querySelector(".gate-mark");
-        barDock.innerHTML =
-          '<img class="bar-mark" alt="Arvio" src="' + (mark ? mark.getAttribute("src") : "") + '" />' +
-          '<span class="bar-pages">' +
-          (pages.length > 1
-            ? pages
-                .map(
-                  (p, i) =>
-                    '<button type="button" class="bar-page" data-bar-page="' + i + '" aria-label="Σελίδα ' + (i + 1) + '"' +
-                    (i === pageIx ? ' aria-current="page"' : "") + ">" + (i === 0 ? ico("home", 20) : i + 1) + "</button>",
-                )
-                .join("")
-            : "") +
-          '</span><b class="bar-time" data-clock="1">' + clockFaceHtml(clockText(), true) + "</b>";
+        const dock = Array.isArray(t.bar_dock) ? t.bar_dock : ["mark", "pages", "time"];
+        const has = (k) => dock.indexOf(k) >= 0;
+        barDock.innerHTML = !dock.length
+          ? ""
+          : (has("mark") ? '<img class="bar-mark" alt="Arvio" src="' + (mark ? mark.getAttribute("src") : "") + '" />' : "<span></span>") +
+            '<span class="bar-pages">' +
+            (has("pages") && pages.length > 1
+              ? pages
+                  .map(
+                    (p, i) =>
+                      '<button type="button" class="bar-page" data-bar-page="' + i + '" aria-label="Σελίδα ' + (i + 1) + '"' +
+                      (i === pageIx ? ' aria-current="page"' : "") + ">" + (i === 0 ? ico("home", 20) : i + 1) + "</button>",
+                  )
+                  .join("")
+              : "") +
+            "</span>" +
+            (has("time") ? '<b class="bar-time" data-clock="1">' + clockFaceHtml(clockText(), true) + "</b>" : "<span></span>");
+      }
+      /** A sensor in the bar: °C as the house writes it, % whole, anything else with its unit. */
+      function sensorText(e) {
+        const v = e ? num(e.state) : NaN;
+        if (!isFinite(v)) return "—";
+        const unit = String(e.unit_of_measurement || "");
+        if (e.device_class === "temperature" || unit === "°C") return formatTemp(v);
+        if (e.device_class === "humidity" || unit === "%") return Math.round(v) + "%";
+        return new Intl.NumberFormat("el-GR", { maximumFractionDigits: 1 }).format(v) + (unit ? " " + unit : "");
       }
       function markBarPage() {
         barDock.querySelectorAll("[data-bar-page]").forEach((b) => {
@@ -4363,7 +4395,7 @@
             // The app's own pixels when it can (Arvio Panel 0.1.2); else the page draws itself.
             body = window.ArvioPanel && window.ArvioPanel.screenshot
               ? { screen_id: sid, image: await nativeShot(), source: "app" }
-              : { screen_id: sid, image: await pageShot(), source: "page" };
+              : { screen_id: sid, image: await pageShot(true), source: "page" };
           } catch (e) {
             body = { screen_id: sid, refused: "capture_failed" };
           }
@@ -4379,13 +4411,30 @@
         }
         shotBusy = false;
       }
-      // The page as it stands, through an SVG <foreignObject>: what the WebView shows, without its fonts and
-      // pictures (an SVG image loads nothing), so the type and the wallpaper may differ a little.
-      async function pageShot() {
+      // The page as it stands, through an SVG <foreignObject>. Inside it :root is the <svg>, so every colour
+      // the sheet derives there (--tile-bg: var(--tile)…) came out in the dark defaults, whatever the theme
+      // (Κρέσνα 2026-11-14): the clone carries the live values. An SVG image loads nothing, so the wallpaper
+      // goes in as data, for «Στιγμιότυπο» only: the 5′ paint check needs no wallpaper. The fonts still do not
+      // load: the type may differ a little.
+      async function pageShot(withWallpaper) {
         const w = Math.max(1, innerWidth);
         const h = Math.max(1, innerHeight);
         const page = document.documentElement.cloneNode(true);
         page.querySelectorAll("script").forEach((el) => el.remove());
+        const live = getComputedStyle(document.documentElement);
+        const names = {};
+        document.querySelectorAll("style").forEach((s) => {
+          (s.textContent.match(/--[\w-]+(?=\s*:)/g) || []).forEach((n) => (names[n] = 1));
+        });
+        Object.keys(names).forEach((n) => {
+          const v = live.getPropertyValue(n).trim();
+          if (v) page.style.setProperty(n, v);
+        });
+        const body = page.querySelector("body");
+        if (body && wallpaperUrl && withWallpaper) {
+          const data = await blobData(wallpaperUrl).catch(() => "");
+          if (data) body.style.backgroundImage = body.style.backgroundImage.split(wallpaperUrl).join(data);
+        }
         const xml = new XMLSerializer().serializeToString(page);
         const svg =
           '<svg xmlns="http://www.w3.org/2000/svg" width="' + w + '" height="' + h + '">' +
@@ -4402,6 +4451,16 @@
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
         return canvas.toDataURL("image/jpeg", 0.75);
+      }
+      function blobData(url) {
+        return fetch(url)
+          .then((r) => r.blob())
+          .then((b) => new Promise((ok, no) => {
+            const f = new FileReader();
+            f.onload = () => ok(f.result);
+            f.onerror = no;
+            f.readAsDataURL(b);
+          }));
       }
       function nativeShot() {
         return new Promise((resolve, reject) => {
@@ -4478,10 +4537,10 @@
         const stepBtn = e.target.closest && e.target.closest("[data-temp-step]");
         if (stepBtn && sheet && sheet.kind === "climate") {
           const ent = byId(sheet.ref);
-          const cur = ent ? Number(ent.temperature) : NaN;
+          const cur = ent ? num(ent.temperature) : NaN;
           const next = (isFinite(cur) ? cur : 21) + Number(stepBtn.getAttribute("data-temp-step"));
-          const lo = ent ? Number(ent.min_temp) : NaN;
-          const hi = ent ? Number(ent.max_temp) : NaN;
+          const lo = ent ? num(ent.min_temp) : NaN;
+          const hi = ent ? num(ent.max_temp) : NaN;
           const clamped = Math.min(isFinite(hi) ? hi : 32, Math.max(isFinite(lo) ? lo : 16, next));
           const temp = Math.round(clamped * 2) / 2;
           const eid = sheet.ref;

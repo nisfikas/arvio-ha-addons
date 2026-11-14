@@ -320,6 +320,21 @@ class ScreenStoreTest(unittest.TestCase):
         self.assertNotIn("?.", body)
         self.assertNotIn("??", body)
 
+    def test_what_the_fixed_bar_shows(self):
+        """Partner picks what the bar shows (2026-11-14): a sensor among four at most above, the dock's parts below.
+        What this page does not know is left out, never the whole screen."""
+        page = {"id": "pg_aaaaaaaa", "tiles": [{"kind": "clock"}]}
+        theme = {"preset": "afisa", "bar": True, "bar_top": ["sensor.stardust_20l_humidity", "outside", "rain", "light.x", "outside", "power", "inside"],
+                 "bar_dock": ["time", "pages", "clock"]}
+        out = agent.put_wall_screen(self._row(pages=[page], theme=theme))["screen"]
+        self.assertEqual(out["theme"]["bar_top"], ["sensor.stardust_20l_humidity", "outside", "power", "inside"])
+        self.assertEqual(out["theme"]["bar_dock"], ["pages", "time"])
+        out = agent.put_wall_screen(self._row(pages=[page], theme={"preset": "afisa", "bar": True, "bar_top": [], "bar_dock": []}))["screen"]
+        self.assertEqual((out["theme"]["bar_top"], out["theme"]["bar_dock"]), ([], []))
+        out = agent.put_wall_screen(self._row(pages=[page], theme={"preset": "afisa", "bar": True}))["screen"]
+        self.assertNotIn("bar_top", out["theme"])
+        self.assertIn("sensor", agent.list_wall_screens()["panel"]["bar_items"])
+
     def test_floor3d_needs_ref(self):
         with self.assertRaises(ValueError) as cm:
             agent.put_wall_screen(
@@ -803,6 +818,34 @@ class ScreenLanHttpTest(unittest.TestCase):
         self.assertEqual(by_id["scene.vradi"]["name"], "Βράδυ")
         self.assertEqual(by_id["scene.vradi"]["scene_look"], [{"on": True, "pct": 50}])
         self.assertNotIn("scene_look", by_id["scene.hue"])
+
+    def test_panel_snapshot_sends_only_the_bars_sensors(self):
+        """A sensor reaches the panel only when its «Σταθερή μπάρα» shows it, with its kind and unit."""
+        agent.put_wall_screen(
+            {
+                "screen_id": self.PANEL_ID,
+                "site_id": "site_1",
+                "name": "Πάνελ",
+                "hardware": "generic_square",
+                "orientation": "square",
+                "theme": {"preset": "afisa", "bar": True, "bar_top": ["sensor.stardust_20l_humidity"]},
+                "pages": [{"id": "pg_pppppppp", "tiles": [{"kind": "clock"}]}],
+            }
+        )
+        states = [
+            {"entity_id": "sensor.stardust_20l_humidity", "state": "56",
+             "attributes": {"friendly_name": "Υγρασία σαλονιού", "device_class": "humidity", "unit_of_measurement": "%"}},
+            {"entity_id": "sensor.power", "state": "430", "attributes": {"friendly_name": "Ισχύς", "unit_of_measurement": "W"}},
+        ]
+        with mock.patch.object(agent, "hub_id", "hub_lan"), mock.patch.object(agent, "entities", return_value=[]), mock.patch.object(
+            agent, "registries_for_commands", return_value={"entity_regs": {}, "devices": {}, "areas": {}}
+        ), mock.patch.object(agent, "ha", return_value=states):
+            status, raw = self.panel_get()
+        self.assertEqual(status, 200)
+        by_id = {e["entity_id"]: e for e in json.loads(raw.decode())["entities"]}
+        hum = by_id["sensor.stardust_20l_humidity"]
+        self.assertEqual((hum["state"], hum["device_class"], hum["unit_of_measurement"]), ("56", "humidity", "%"))
+        self.assertNotIn("sensor.power", by_id)
 
     def test_panel_snapshot_includes_hourly_weather(self):
         states = [
@@ -1529,7 +1572,7 @@ class ScreenLanHttpTest(unittest.TestCase):
         self.assertIn("if (found.screenshot) takeScreenshot(sid);", html)
         self.assertIn('body = { screen_id: sid, refused: "private" };', html)
         # an app without the picture (0.1.1, whose key may be gone) still answers: the page draws itself
-        self.assertIn(': { screen_id: sid, image: await pageShot(), source: "page" };', html)
+        self.assertIn(': { screen_id: sid, image: await pageShot(true), source: "page" };', html)
 
     def test_panel_restart_is_one_order_taken_once(self):
         """Partner's «Επανεκκίνηση»: never a boot loop, never a surprise for a panel back later."""

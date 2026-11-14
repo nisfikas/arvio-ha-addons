@@ -581,6 +581,12 @@ def doorbell_button_views(buttons: list, states_by_id: dict, door_relays: set) -
     return out
 
 
+SCREEN_BAR_TOP_ITEMS = ("inside", "outside", "humidity", "power")
+SCREEN_BAR_TOP_MAX = 4
+SCREEN_BAR_DOCK_ITEMS = ("mark", "pages", "time")
+BAR_SENSOR_RE = re.compile(r"sensor\.[a-z0-9_]{1,100}")
+
+
 def parse_screen_theme(raw) -> dict | None:
     if raw in (None, "", False):
         return None
@@ -611,6 +617,17 @@ def parse_screen_theme(raw) -> dict | None:
         palette = parse_screen_palette(raw.get("palette"))
         if palette:
             out["palette"] = palette
+    # What the bar shows (2026-11-14), from Partner. What this page does not know is left out, never the screen.
+    top = raw.get("bar_top")
+    if isinstance(top, list):
+        keep = []
+        for v in top:
+            if isinstance(v, str) and (v in SCREEN_BAR_TOP_ITEMS or BAR_SENSOR_RE.fullmatch(v)) and v not in keep:
+                keep.append(v)
+        out["bar_top"] = keep[:SCREEN_BAR_TOP_MAX]
+    dock = raw.get("bar_dock")
+    if isinstance(dock, list):
+        out["bar_dock"] = [k for k in SCREEN_BAR_DOCK_ITEMS if k in dock]
     return out
 
 
@@ -2223,6 +2240,7 @@ def list_wall_screens() -> dict:
         "bar": True,
         # A partner's own theme on top of its base (parse_screen_custom); an older agent draws the base.
         "custom": True,
+        "bar_items": list(SCREEN_BAR_TOP_ITEMS) + ["sensor"],
     }
     return {"ok": True, "screens": screens, "panel": can}
 
@@ -2705,6 +2723,7 @@ def panel_snapshot(screen_id: str | None = None, secret: str | None = None) -> d
     weather = None
     states = []
     door_relays = door_relay_ids()  # no tile and no entity: the LAN path refuses them, the doorbell opens them
+    bar_sensors = {v for v in ((row.get("theme") or {}).get("bar_top") or []) if str(v).startswith("sensor.")}
     marked = door_marks() or set()  # a marked door is never drawn as a light, whatever its icon
     try:
         snap = registries_for_commands()
@@ -2777,6 +2796,9 @@ def panel_snapshot(screen_id: str | None = None, secret: str | None = None) -> d
                 dc = str(attrs.get("device_class") or "")
                 if dc not in HOME_BINARY_SENSOR_DEVICE_CLASSES:
                     continue
+            elif domain == "sensor":
+                if eid not in bar_sensors:  # only the ones this panel's «Σταθερή μπάρα» shows
+                    continue
             elif domain not in ("camera", "scene"):
                 continue
             entities_out.append(
@@ -2790,6 +2812,8 @@ def panel_snapshot(screen_id: str | None = None, secret: str | None = None) -> d
                     "icon": picked_icons()["entities"].get(eid) or (entity_regs.get(eid) or {}).get("icon"),
                 }
             )
+            if domain == "sensor" and attrs.get("unit_of_measurement"):
+                entities_out[-1]["unit_of_measurement"] = attrs["unit_of_measurement"]
             # A scene tile's name and lights: `entities()` has no scenes.
             if isinstance(attrs.get("scene_look"), list):
                 entities_out[-1]["scene_look"] = attrs["scene_look"]
