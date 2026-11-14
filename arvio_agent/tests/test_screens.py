@@ -243,6 +243,83 @@ class ScreenStoreTest(unittest.TestCase):
         self.assertIn("omichli", can["themes"])
         self.assertIs(can["bar"], True)
 
+    def test_a_partners_own_theme(self):
+        """A partner's theme (arvio docs/plans/2026-11-13-partner-custom-themes.md): only known words and bounded numbers
+        reach panel.html; anything else is left out, and never refuses the screen."""
+        dark = {"bg": "#101820", "tile": "#1C2836", "ink": "#eef2f7", "muted": "#a3afbf", "on": "#fcc687", "line": "#ffffff1f", "onInk": "#0f1520"}
+        theme = {
+            "preset": "lykofos",
+            "mode": "dark",
+            "custom": {
+                "id": "ct_0123456789abcdef",
+                "name": " Μπλε ",
+                "base": "lykofos",
+                "colors": {"dark": {"canvas": "#101820"}},
+                "type": {"display": "garamond", "weight": 500, "case": "as_written", "tracking": -0.0123, "italic": True, "font": "Comic Sans"},
+                "shape": {"radius": 8, "pill": 999},
+                "surface": {"edge": "heavy", "shadow": "soft", "glass": False, "grain": 0.3},
+                "on": "glow",
+                "space": {"density": "compact", "gap": 6},
+                "from": {"org_id": "org_1", "theme_id": "ct_ffffffffffffffff", "updated_at": "2026-11-13T18:00:00.000Z"},
+            },
+            "palette": {"dark": dark, "light": {"bg": "#ffffff"}},
+        }
+        out = agent.put_wall_screen(self._row(theme=theme))["screen"]["theme"]
+        self.assertEqual(
+            out["custom"],
+            {
+                "id": "ct_0123456789abcdef",
+                "name": "Μπλε",
+                "base": "lykofos",
+                "type": {"display": "garamond", "weight": 500, "case": "as_written", "tracking": -0.012, "italic": True},
+                "shape": {"radius": 8, "pill": 999},
+                "surface": {"edge": "heavy", "shadow": "soft", "glass": False},
+                "on": "glow",
+                "space": {"density": "compact", "gap": 6},
+            },
+        )
+        # A whole mode or none: the light one lacks six colours.
+        self.assertEqual(out["palette"], {"dark": {**dark, "tile": "#1c2836"}})
+        self.assertIs(agent.list_wall_screens()["panel"]["custom"], True)
+
+    def test_a_partners_theme_never_refuses_the_screen(self):
+        good = {"id": "ct_0123456789abcdef", "name": "Χ", "base": "afisa"}
+        for bad in (
+            {**good, "base": "lykofos"},
+            {**good, "id": "ct_1"},
+            {**good, "name": ""},
+            {**good, "name": "x" * 41},
+            "afisa",
+        ):
+            out = agent.put_wall_screen(self._row(theme={"preset": "afisa", "custom": bad}))["screen"]["theme"]
+            self.assertEqual(out, {"preset": "afisa", "mode": "dark", "icons": "line"}, bad)
+        css = {
+            "type": {"display": "url(x)", "weight": 450, "case": "uppercase;}", "tracking": "1em", "italic": "yes"},
+            "shape": {"radius": 41, "pill": -1},
+            "surface": {"edge": "dashed", "shadow": "0 0 9px red", "glass": 1},
+            "space": {"density": "tiny", "gap": 4.5},
+            "on": "blink",
+        }
+        out = agent.put_wall_screen(self._row(theme={"preset": "afisa", "custom": {**good, **css}, "palette": {"dark": "red"}}))["screen"]["theme"]
+        self.assertEqual(out["custom"], good)
+        self.assertNotIn("palette", out)
+        # No palette without a theme to draw it with.
+        out = agent.put_wall_screen(self._row(theme={"preset": "afisa", "palette": {"dark": {}}}))["screen"]["theme"]
+        self.assertNotIn("palette", out)
+
+    def test_panel_draws_a_partners_theme(self):
+        """panel.html knows every face the hub keeps and every base's «αναμμένο»; the whole page stays ES2017."""
+        html = (ROOT / "panel.html").read_text(encoding="utf-8")
+        fonts = html[html.index("// fonts:start") : html.index("// fonts:end")]
+        self.assertEqual(set(re.findall(r"^\s+(\w+): \{ family:", fonts, re.M)), agent.THEME_FONT_IDS)
+        looks = html[html.index("// looks:start") : html.index("// looks:end")]
+        self.assertEqual(set(re.findall(r"^\s+(\w+): \{ on:", looks, re.M)), set(agent.SCREEN_THEME_PRESETS))
+        self.assertIn("applyCustom(root, custom, pal, mode, own);", html)
+        # Optional chaining and ?? are ES2020: the NSPanel Pro's WebView 107 has them, a Safari 12 iPad does not.
+        body = html[html.index("// fonts:start") : html.index("function tz()")]
+        self.assertNotIn("?.", body)
+        self.assertNotIn("??", body)
+
     def test_floor3d_needs_ref(self):
         with self.assertRaises(ValueError) as cm:
             agent.put_wall_screen(

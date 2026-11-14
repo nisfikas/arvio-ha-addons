@@ -2139,12 +2139,103 @@
         if (h.length !== 6) return "5,5,5";
         return parseInt(h.slice(0, 2), 16) + "," + parseInt(h.slice(2, 4), 16) + "," + parseInt(h.slice(4, 6), 16);
       }
+      // A partner's own theme (arvio docs/plans/2026-11-13-partner-custom-themes.md): the base's look, then only what the
+      // partner changed, written into the tokens at the top of this sheet. The hub kept only known words and bounded
+      // numbers (parse_screen_custom); the cloud solved the colours with the same engine as THEMES.
+      // fonts:start
+      const FONTS = {
+        geologica: { family: '"Geologica", sans-serif', min: 200, max: 800 },
+        sofia: { family: '"Sofia Sans Extra Condensed", "Arial Narrow", sans-serif', min: 200, max: 800 },
+        didot: { family: '"GFS Didot", "EB Garamond", serif', min: 400, max: 400 },
+        garamond: { family: '"EB Garamond", serif', min: 400, max: 600 },
+        alegreya: { family: '"Alegreya", serif', min: 400, max: 800 },
+        comfortaa: { family: '"Comfortaa", sans-serif', min: 300, max: 700 },
+        firacode: { family: '"Fira Code", monospace', min: 400, max: 700 },
+        commissioner: { family: '"Commissioner", sans-serif', min: 200, max: 800 },
+        firacond: { family: '"Fira Sans Extra Condensed", "Arial Narrow", sans-serif', min: 700, max: 700 },
+      };
+      // fonts:end
+      // Each theme's «αναμμένο» and whether its tiles are glass: what a partner's own colours are drawn with.
+      // looks:start
+      const LOOKS = {
+        afisa: { on: "text", glass: false },
+        grafitis: { on: "fill", glass: false },
+        penteli: { on: "rule", glass: false },
+        drys: { on: "fill", glass: false },
+        lino: { on: "fill", glass: false },
+        beton: { on: "fill", glass: false },
+        aigaio: { on: "fill", glass: false },
+        elia: { on: "fill", glass: false },
+        vasaltis: { on: "fill", glass: false },
+        galini: { on: "glow", glass: true },
+        lykofos: { on: "glow", glass: true },
+        omichli: { on: "glow", glass: true },
+      };
+      // looks:end
+      const CUSTOM_VARS = ["--f-display", "--f-text", "--w-face", "--w-face-bold", "--w-name", "--case", "--track", "--style", "--r", "--r-tile",
+        "--tile-border", "--tile-shadow", "--page", "--tile-bg", "--on-bg", "--on-face", "--on-shadow", "--on-text", "--gap", "font-size"];
+      const CASES = { upper: "uppercase", lower: "lowercase", as_written: "none" };
+      const EDGES = { none: "0 solid transparent", hairline: "1px solid var(--line)", heavy: "3px solid var(--ink)" };
+      const SHADOWS = { none: "none", soft: "0 14px 30px rgba(0, 0, 0, 0.16)", deep: "0 10px 28px rgba(0, 0, 0, 0.35)" };
+      function applyCustom(root, c, pal, mode, own) {
+        const st = root.style;
+        for (const k of CUSTOM_VARS) st.removeProperty(k);
+        if (!c) return;
+        const set = (k, v) => st.setProperty(k, String(v));
+        const type = c.type || {};
+        const shape = c.shape || {};
+        const surface = c.surface || {};
+        const space = c.space || {};
+        const look = LOOKS[c.base] || LOOKS.afisa;
+        const display = FONTS[type.display];
+        if (display) set("--f-display", display.family);
+        if (FONTS[type.text]) set("--f-text", FONTS[type.text].family);
+        const w = type.weight || (display ? Math.min(display.max, Math.max(display.min, 600)) : 0);
+        if (w) {
+          set("--w-face", w);
+          set("--w-name", w);
+          set("--w-face-bold", display ? Math.max(w, display.max) : Math.min(900, w + 200));
+        }
+        if (CASES[type.case]) set("--case", CASES[type.case]);
+        if (typeof type.tracking === "number") set("--track", type.tracking + "em");
+        if (typeof type.italic === "boolean") set("--style", type.italic ? "italic" : "normal");
+        if (typeof shape.radius === "number") set("--r-tile", shape.radius + "px");
+        if (typeof shape.pill === "number") set("--r", shape.pill + "px");
+        if (EDGES[surface.edge]) set("--tile-border", EDGES[surface.edge]);
+        if (SHADOWS[surface.shadow]) set("--tile-shadow", SHADOWS[surface.shadow]);
+        // The base's own gradients and glows carry its colours: with the partner's colours, they are drawn again from them.
+        const glass = typeof surface.glass === "boolean" ? surface.glass : look.glass;
+        const dark = mode === "dark";
+        if (glass && (surface.glass === true || own)) {
+          set("--page", "linear-gradient(160deg, " + pal.tile + ", " + pal.bg + " 60%)");
+          set("--tile-bg", dark ? "rgba(255, 255, 255, 0.08)" : "rgba(255, 255, 255, 0.55)");
+          if (!EDGES[surface.edge]) set("--tile-border", dark ? "1px solid rgba(255, 255, 255, 0.14)" : "1px solid rgba(255, 255, 255, 0.7)");
+        } else if (!glass && look.glass) {
+          set("--page", pal.bg);
+          set("--tile-bg", pal.tile);
+          if (!EDGES[surface.edge]) set("--tile-border", EDGES.hairline);
+        }
+        const on = c.on || look.on;
+        if (c.on || own || look.glass !== glass) {
+          const rgb = hexRgb(pal.on);
+          set("--on-text", pal.on);
+          set("--on-face", on === "fill" ? pal.onInk : pal.on);
+          set("--on-bg", on === "fill" ? pal.on : on === "glow" ? "rgba(" + rgb + ", 0.16)" : "var(--tile-bg)");
+          set("--on-shadow", on === "rule" ? "inset 0 -6px 0 " + pal.on : on === "glow" ? "0 0 0 1px rgba(" + rgb + ", 0.45), 0 0 26px rgba(" + rgb + ", 0.18)" : "var(--tile-shadow)");
+        }
+        // «Στοίβαξη»: the rem sizes and the gap. Tiles are grid cells and keep their size; a sheet's 48px buttons stay ≥ 44px.
+        if (space.density === "compact" || space.density === "roomy") set("font-size", space.density === "compact" ? "94%" : "106%");
+        if (typeof space.gap === "number") set("--gap", space.gap + "px");
+        else if (space.density === "compact" || space.density === "roomy") set("--gap", space.density === "compact" ? "8px" : "16px");
+      }
       function applyTheme(s) {
         const t = (s && s.theme) || {};
         const preset = THEMES[t.preset] ? t.preset : "afisa";
         const mode = t.mode === "light" ? "light" : "dark";
         const icons = t.icons === "filled" ? "filled" : "line";
-        const pal = THEMES[preset][mode];
+        const custom = t.custom && t.custom.base === preset ? t.custom : null;
+        const own = !!(custom && t.palette && t.palette[mode]);
+        const pal = own ? t.palette[mode] : THEMES[preset][mode];
         const root = document.documentElement;
         root.dataset.preset = preset;
         root.dataset.mode = mode;
@@ -2159,6 +2250,7 @@
         root.style.setProperty("--line", pal.line);
         root.style.setProperty("--on-ink", pal.onInk);
         for (const k of ["bg", "tile", "ink", "on"]) root.style.setProperty("--" + k + "-rgb", hexRgb(pal[k]));
+        applyCustom(root, custom, pal, mode, own);
         const meta = document.querySelector('meta[name="theme-color"]');
         if (meta) meta.setAttribute("content", pal.bg);
       }

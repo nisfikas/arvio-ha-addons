@@ -529,7 +529,96 @@ def parse_screen_theme(raw) -> dict | None:
     # «Σταθερή μπάρα»: numbers above, pages and time below (2026-11-13). Only true is kept.
     if raw.get("bar") is True:
         out["bar"] = True
+    custom = parse_screen_custom(raw.get("custom"), preset)
+    if custom:
+        out["custom"] = custom
+        palette = parse_screen_palette(raw.get("palette"))
+        if palette:
+            out["palette"] = palette
     return out
+
+
+# A partner's own theme (arvio docs/plans/2026-11-13-partner-custom-themes.md): the base preset plus what the partner
+# changed. Only what panel.html draws is kept, and each value is a known word or a bounded number, so nothing else
+# reaches its CSS. A value this agent does not know is left out, never the screen refused (invalid_theme, Κρέσνα
+# 2026-11-01): the panel draws the base's there, as an agent before this one does with the whole theme.
+THEME_FONT_IDS = frozenset({"geologica", "sofia", "didot", "garamond", "alegreya", "comfortaa", "firacode", "commissioner", "firacond"})
+CUSTOM_THEME_ID_RE = re.compile(r"^ct_[0-9a-f]{16}$")
+PALETTE_HEX_RE = re.compile(r"^#[0-9a-f]{6}$")
+PALETTE_LINE_RE = re.compile(r"^#[0-9a-f]{8}$")
+PALETTE_KEYS = ("bg", "tile", "ink", "muted", "on", "line", "onInk")
+
+
+def _custom_int(lo: int, hi: int, step: int = 1):
+    return lambda v: v if isinstance(v, int) and not isinstance(v, bool) and lo <= v <= hi and v % step == 0 else None
+
+
+def _custom_word(*words: str):
+    return lambda v: v if isinstance(v, str) and v in words else None
+
+
+def _custom_tracking(v):
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not -0.05 <= v <= 0.1:
+        return None
+    return round(float(v), 3)
+
+
+def _custom_flag(v):
+    return v if isinstance(v, bool) else None
+
+
+CUSTOM_THEME_FIELDS = {
+    "type": {
+        "display": _custom_word(*THEME_FONT_IDS),
+        "text": _custom_word(*THEME_FONT_IDS),
+        "weight": _custom_int(100, 900, 100),
+        "case": _custom_word("upper", "lower", "as_written"),
+        "tracking": _custom_tracking,
+        "italic": _custom_flag,
+    },
+    "shape": {"radius": _custom_int(0, 40), "pill": _custom_int(0, 999)},
+    "surface": {"edge": _custom_word("none", "hairline", "heavy"), "shadow": _custom_word("none", "soft", "deep"), "glass": _custom_flag},
+    "space": {"density": _custom_word("compact", "normal", "roomy"), "gap": _custom_int(0, 32)},
+}
+
+
+def parse_screen_custom(raw, preset: str) -> dict | None:
+    if not isinstance(raw, dict) or raw.get("base") != preset or not CUSTOM_THEME_ID_RE.match(str(raw.get("id") or "")):
+        return None
+    name = raw.get("name").strip() if isinstance(raw.get("name"), str) else ""
+    if not name or len(name) > 40 or any(ord(ch) < 32 or ord(ch) == 127 for ch in name):
+        return None
+    out: dict = {"id": raw["id"], "name": name, "base": preset}
+    for section, fields in CUSTOM_THEME_FIELDS.items():
+        given = raw.get(section)
+        if not isinstance(given, dict):
+            continue
+        kept = {}
+        for key, check in fields.items():
+            value = check(given.get(key)) if key in given else None
+            if value is not None:
+                kept[key] = value
+        if kept:
+            out[section] = kept
+    on = _custom_word("fill", "text", "rule", "glow")(raw.get("on"))
+    if on:
+        out["on"] = on
+    return out
+
+
+def parse_screen_palette(raw) -> dict | None:
+    """The colours the cloud solved for the partner's theme, in the shape of panel.html's THEMES; a whole mode or none."""
+    if not isinstance(raw, dict):
+        return None
+    out = {}
+    for mode in ("light", "dark"):
+        pal = raw.get(mode)
+        if not isinstance(pal, dict) or set(pal) != set(PALETTE_KEYS):
+            continue
+        values = {k: str(pal[k]).lower() if isinstance(pal[k], str) else "" for k in PALETTE_KEYS}
+        if all((PALETTE_LINE_RE if k == "line" else PALETTE_HEX_RE).match(values[k]) for k in PALETTE_KEYS):
+            out[mode] = values
+    return out or None
 
 
 def doorbell_watched_call_ids() -> set[str]:
@@ -2054,6 +2143,8 @@ def list_wall_screens() -> dict:
         "tiles": sorted(SCREEN_TILE_KINDS),
         "layouts": sorted(SCREEN_PAGE_LAYOUTS),
         "bar": True,
+        # A partner's own theme on top of its base (parse_screen_custom); an older agent draws the base.
+        "custom": True,
     }
     return {"ok": True, "screens": screens, "panel": can}
 
