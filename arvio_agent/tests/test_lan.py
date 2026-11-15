@@ -200,7 +200,7 @@ class LanPathTest(unittest.TestCase):
         self.assertNotIn("presence_code", html)
 
     def test_the_lan_cannot_send_an_os_update(self):
-        for action in ("arvio.os_update", "arvio.os_status"):
+        for action in ("arvio.os_update", "arvio.os_status", "arvio.os_cancel", "arvio.reboot"):
             self.assertNotIn(action, agent.LAN_ALLOWED_ACTIONS)
             with mock.patch.object(agent, "hub_id", "hub_lan"), mock.patch.object(agent, "execute_action") as run:
                 status, _headers, raw = self.request("POST", "/v1/hubs/hub_lan/commands", {"action": action, "payload": {"request": "x", "signature": "y"}})
@@ -215,6 +215,18 @@ class LanPathTest(unittest.TestCase):
             self.assertEqual(agent.os_update({"request": "r", "signature": "s"}), {"ok": False, "error": "bad_signature"})
         with self.assertRaises(ValueError):
             agent.os_update({"request": "r"})
+
+    def test_reboot_and_cancel_pass_on_what_the_core_says(self):
+        with mock.patch.object(agent, "core_v1", return_value={"status": "staged", "scope": "box"}) as core:
+            self.assertEqual(agent.execute_action("arvio.reboot", "", {}), {"ok": True, "status": "staged", "scope": "box"})
+        core.assert_called_once_with("/v1/power/reboot", "POST", {})
+        with mock.patch.object(agent, "core_v1", return_value={"status": "rejected", "reason": "not_supported"}):
+            self.assertEqual(agent.reboot_box(), {"ok": False, "error": "not_supported"})
+        with mock.patch.object(agent, "core_v1", return_value={"status": "staged", "id": "os-1"}) as core:
+            self.assertEqual(agent.execute_action("arvio.os_cancel", "", {}), {"ok": True, "status": "staged", "id": "os-1"})
+        core.assert_called_once_with("/v1/update/os/cancel", "POST", {})
+        with mock.patch.object(agent, "core_v1", return_value={"status": "rejected", "reason": "past_download"}):
+            self.assertEqual(agent.os_cancel(), {"ok": False, "error": "past_download"})
 
     def test_os_status_says_what_runs_and_how_far_an_update_has_got(self):
         os_part = {"image": {"board": "x86", "version": "2026.11.05.2"}, "last": {"status": "applied"}, "progress": {"phase": "download", "percent": 42, "idle_s": 3}}

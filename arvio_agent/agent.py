@@ -5041,6 +5041,22 @@ def os_update(payload: dict | None = None) -> dict:
     return {"ok": False, "error": str(out.get("reason") or out.get("error") or "rejected")[:80]}
 
 
+def os_cancel() -> dict:
+    """«Ακύρωση ενημέρωσης», from Console only: the root helper stops the download; once it writes the other slot it cannot."""
+    out = core_v1("/v1/update/os/cancel", "POST", {})
+    if out.get("status") == "staged":
+        return {"ok": True, "status": "staged", "id": out.get("id")}
+    return {"ok": False, "error": str(out.get("reason") or out.get("error") or "rejected")[:80]}
+
+
+def reboot_box() -> dict:
+    """«Επανεκκίνηση», from Console or Partner: Arvio OS restarts the whole box a few seconds after this answer, a NAS only Arvio Core."""
+    out = core_v1("/v1/power/reboot", "POST", {})
+    if out.get("status") == "staged":
+        return {"ok": True, "status": "staged", "scope": out.get("scope")}
+    return {"ok": False, "error": str(out.get("reason") or out.get("error") or "rejected")[:80]}
+
+
 def os_status() -> dict:
     out = core_v1("/v1/update")
     os_state = out.get("os") if isinstance(out.get("os"), dict) else {}
@@ -6092,6 +6108,10 @@ def execute_action(
         return os_update(payload)
     if action == "arvio.os_status":
         return os_status()
+    if action == "arvio.os_cancel":
+        return os_cancel()
+    if action == "arvio.reboot":
+        return reboot_box()
     if action == "arvio.network_status":
         return network_status()
     if action == "arvio.network_set":
@@ -6596,6 +6616,8 @@ AGENT_SERVICE_ALLOWLIST = frozenset(
         "agent.update",
         "arvio.os_update",
         "arvio.os_status",
+        "arvio.os_cancel",
+        "arvio.reboot",
         "arvio.network_status",
         "arvio.network_set",
     }

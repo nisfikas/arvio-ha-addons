@@ -3,6 +3,7 @@
 ## 0.1.101
 
 - Κάμερες PTZ (driver ONVIF του Arvio Core): νέα εντολή `camera.ptz` με τα πεδία του `onvif.ptz` του HA (move_mode, pan, tilt, zoom, speed, distance, preset), μόνο από το relay. Το μοντέλο λέει `capabilities.ptz` και `ptz_modes`, `ptz_zoom`, `ptz_presets` στην κάμερα.
+- «Επανεκκίνηση» από μακριά: νέα εντολή `arvio.reboot` (Console και Partner) και `arvio.os_cancel` («Ακύρωση ενημέρωσης», μόνο Console), μόνο από το relay, ποτέ από το LAN. Το Arvio Core κάνει το υπόλοιπο: σε Arvio OS ξεκινά ξανά όλο το κουτί, σε NAS μόνο το Core. Θέλει εικόνα με το `arvio-reboot.path`· σε παλαιότερη απαντά `not_supported`.
 
 ## 0.1.100
 
