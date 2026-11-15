@@ -5690,6 +5690,54 @@ def call_service(
     }
 
 
+CAMERA_PTZ_MODES = ("ContinuousMove", "RelativeMove", "GotoPreset", "Stop")
+CAMERA_PTZ_DIRECTIONS = {"pan": ("LEFT", "RIGHT"), "tilt": ("UP", "DOWN"), "zoom": ("ZOOM_IN", "ZOOM_OUT")}
+CAMERA_PTZ_PRESETS_MAX = 32
+
+
+def camera_ptz_data(payload: dict) -> dict:
+    """HA's onvif.ptz fields, only these, only these values (pure; the cloud's parseCameraPtzPayload checks the same)."""
+    mode = payload.get("move_mode", "ContinuousMove")
+    if mode not in CAMERA_PTZ_MODES:
+        raise ValueError("invalid move_mode")
+    out: dict = {"move_mode": mode}
+    for key, allowed in CAMERA_PTZ_DIRECTIONS.items():
+        value = payload.get(key)
+        if value is None:
+            continue
+        if value not in allowed:
+            raise ValueError(f"invalid {key}")
+        out[key] = value
+    for key in ("speed", "distance"):
+        value = payload.get(key)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
+            raise ValueError(f"invalid {key}")
+        out[key] = value
+    if mode == "GotoPreset":
+        preset = payload.get("preset")
+        if not isinstance(preset, str) or not preset or len(preset) > 64:
+            raise ValueError("preset required")
+        out["preset"] = preset
+    if mode in ("ContinuousMove", "RelativeMove") and not any(k in out for k in CAMERA_PTZ_DIRECTIONS):
+        raise ValueError("a direction is required")
+    return out
+
+
+def camera_ptz_attrs(attrs: dict) -> dict:
+    """What the ONVIF driver says a camera can do: its moves, zoom, saved positions (bounded, names ≤ 64)."""
+    modes = [m for m in _str_list(attrs.get("ptz_modes")) if m in CAMERA_PTZ_MODES]
+    raw = attrs.get("ptz_presets")
+    presets = []
+    for p in raw[:CAMERA_PTZ_PRESETS_MAX] if isinstance(raw, list) else []:
+        if isinstance(p, dict) and isinstance(p.get("token"), str) and p["token"] and len(p["token"]) <= 64:
+            presets.append({"token": p["token"], "name": str(p.get("name") or p["token"])[:64]})
+    if not modes:
+        return {}
+    return {"ptz_modes": modes, "ptz_zoom": attrs.get("ptz_zoom") is True, "ptz_presets": presets}
+
+
 def build_service_data(action: str, entity_id: str, payload: dict) -> tuple[str, dict]:
     """Payload → HA service data for one entity (pure). Returns (service, data)."""
     domain, service = action.split(".", 1)
@@ -5739,6 +5787,8 @@ def build_service_data(action: str, entity_id: str, payload: dict) -> tuple[str,
         if not isinstance(payload.get("mode"), str) or not payload["mode"]:
             raise ValueError("mode required")
         data["mode"] = payload["mode"][:40]
+    elif action == "camera.ptz":
+        data.update(camera_ptz_data(payload))
     elif action in ("lock.lock", "lock.unlock", "lock.open") or action.startswith(
         "alarm_control_panel."
     ):
@@ -6481,6 +6531,8 @@ AGENT_SERVICE_ALLOWLIST = frozenset(
         "alarm_control_panel.alarm_arm_away",
         "alarm_control_panel.alarm_arm_night",
         "alarm_control_panel.alarm_disarm",
+        # Turning a camera (Arvio Core's ONVIF driver): the cloud checks who may, and drops a move older than 3 s.
+        "camera.ptz",
         # agent-level actions
         "arvio.model",
         "arvio.batch",
@@ -7599,7 +7651,13 @@ def entity_capabilities(domain: str, attrs: dict) -> dict:
         }
     if domain == "camera":
         sf = _int_or_none(attrs.get("supported_features")) or 0
-        return {"stream": bool(sf & CAMERA_FEATURE["STREAM"]), "power": bool(sf & CAMERA_FEATURE["ON_OFF"])}
+        ptz = camera_ptz_attrs(attrs)
+        return {
+            "stream": bool(sf & CAMERA_FEATURE["STREAM"]),
+            "power": bool(sf & CAMERA_FEATURE["ON_OFF"]),
+            # the pad: it turns while held, or it has saved positions
+            "ptz": "ContinuousMove" in ptz.get("ptz_modes", []) or bool(ptz.get("ptz_presets")),
+        }
     if domain == "vacuum":
         sf = _int_or_none(attrs.get("supported_features")) or 0
         return {
@@ -7765,6 +7823,7 @@ def typed_attrs(
         # Never emit entity_picture — HA puts an access token in the query string.
         out["platform"] = str(platform) if platform else None
         out["supported_features"] = _int_or_none(attrs.get("supported_features"))
+        out.update(camera_ptz_attrs(attrs))
     elif domain == "vacuum":
         battery = _int_or_none(attrs.get("battery_level"))
         # A negative battery is a sentinel (the Imou reports -100 while charging), never 0 %.

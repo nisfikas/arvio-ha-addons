@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Κάμερες PTZ (driver ONVIF του Arvio Core): νέα εντολή `camera.ptz` με τα πεδία του `onvif.ptz` του HA (move_mode, pan, tilt, zoom, speed, distance, preset), μόνο από το relay. Το μοντέλο λέει `capabilities.ptz` και `ptz_modes`, `ptz_zoom`, `ptz_presets` στην κάμερα.
+
 ## 0.1.100
 
 - Πάνελ τοίχου, «Σταθερή μπάρα»: ο εγκαταστάτης διαλέγει από το Partner τι δείχνει πάνω, έως τέσσερα με τη σειρά (θερμοκρασία μέσα, θερμοκρασία έξω, υγρασία, κατανάλωση ή ένας αισθητήρας), και τι κάτω (λογότυπο, σελίδες, ώρα). Ό,τι δεν ξέρει η σελίδα το αφήνει έξω, ποτέ την οθόνη. Το `arvio.list_screens` λέει `panel.bar_items`.

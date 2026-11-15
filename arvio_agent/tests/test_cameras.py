@@ -3,6 +3,7 @@ import base64
 import unittest
 from unittest import mock
 
+import helpers
 from helpers import agent, build
 
 
@@ -28,6 +29,50 @@ class CameraModelTest(unittest.TestCase):
             agent.parse_camera_entity_id({"entity_id": "light.x"})
         with self.assertRaises(ValueError):
             agent.parse_camera_entity_id({"entity_id": "camera.Front"})
+
+
+class CameraPtzTest(unittest.TestCase):
+    """camera.ptz (Arvio Core's ONVIF driver, 15/11): fields checked, the model says what the camera can do."""
+
+    def ptz_states(self, **attrs):
+        states = [s for s in helpers.STATES if s["entity_id"] != "camera.front"]
+        states.append(
+            helpers.st("camera.front", "idle", friendly_name="Είσοδος", supported_features=2, **attrs)
+        )
+        return by_id(build(states=states))["camera.front"]
+
+    def test_model_says_ptz_and_presets(self):
+        e = self.ptz_states(
+            ptz_modes=["ContinuousMove", "RelativeMove", "GotoPreset", "Stop", "Wobble"],
+            ptz_zoom=True,
+            ptz_presets=[{"token": "1", "name": "Είσοδος"}, {"token": "", "name": "x"}, "bad", {"token": "2"}],
+        )
+        self.assertTrue(e["capabilities"]["ptz"])
+        self.assertEqual(e["attrs"]["ptz_modes"], ["ContinuousMove", "RelativeMove", "GotoPreset", "Stop"])
+        self.assertTrue(e["attrs"]["ptz_zoom"])
+        self.assertEqual(e["attrs"]["ptz_presets"], [{"token": "1", "name": "Είσοδος"}, {"token": "2", "name": "2"}])
+
+    def test_fixed_camera_has_no_ptz(self):
+        e = by_id(build())["camera.front"]
+        self.assertFalse(e["capabilities"]["ptz"])
+        self.assertNotIn("ptz_modes", e["attrs"])
+
+    def test_service_data_only_known_fields(self):
+        self.assertEqual(
+            agent.build_service_data("camera.ptz", "camera.front", {"pan": "LEFT", "speed": 0.5, "client_command_id": "x", "evil": 1}),
+            ("ptz", {"entity_id": "camera.front", "move_mode": "ContinuousMove", "pan": "LEFT", "speed": 0.5}),
+        )
+        self.assertEqual(
+            agent.build_service_data("camera.ptz", "camera.front", {"move_mode": "GotoPreset", "preset": "2"})[1]["preset"], "2"
+        )
+        for bad in ({"pan": "UP"}, {"move_mode": "ContinuousMove"}, {"pan": "LEFT", "speed": 2}, {"pan": "LEFT", "speed": True},
+                    {"move_mode": "GotoPreset"}, {"move_mode": "AbsoluteMove", "pan": "LEFT"}):
+            with self.assertRaises(ValueError, msg=str(bad)):
+                agent.build_service_data("camera.ptz", "camera.front", bad)
+
+    def test_relay_only(self):
+        self.assertIn("camera.ptz", agent.AGENT_SERVICE_ALLOWLIST)
+        self.assertNotIn("camera.ptz", agent.LAN_ALLOWED_ACTIONS)
 
 
 class CameraSnapshotTest(unittest.TestCase):
