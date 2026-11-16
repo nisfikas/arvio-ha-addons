@@ -223,3 +223,39 @@ class RecordingTest(unittest.TestCase):
             self.assertEqual(agent.recording({"op": "format", "path": "/dev/sda", "last4": "0000"}), {"ok": False, "error": "serial_mismatch"})
         with mock.patch.object(agent, "ha_ws_command", side_effect=RuntimeError("Unknown command.")):
             self.assertEqual(agent.recording({"op": "status"}), {"ok": False, "error": "not_supported"})
+
+
+class CloudClipsTest(unittest.TestCase):
+    """Arvio Cloud copies: the cloud's go-ahead, Core's upload, the cloud told; stops without the add-on."""
+
+    def test_round_uploads_and_commits(self):
+        calls = []
+
+        def ws(t, extra, timeout=0):
+            calls.append(("ws", extra["op"]))
+            if extra["op"] == "cloud_pending":
+                return {"clips": [{"clip_id": "20261116T120000-0123abcd", "entity_id": "camera.front", "cause": "person", "at": 5, "size": 1008}]}
+            self.assertEqual(extra["put_url"], "https://bucket/x")
+            return {"segments": [{"d": 2, "len": 1008}]}
+
+        def call(path, body, timeout=0):
+            calls.append(("cloud", path))
+            if path == "clips/upload":
+                return 200, {"put_url": "https://bucket/x", "key_hex": "00" * 16}
+            self.assertEqual(body["segments"], [{"d": 2, "len": 1008}])
+            self.assertEqual(body["cause"], "person")
+            return 200, {"ok": True}
+
+        self.assertEqual(agent.cloud_clips_round(ws, call), agent.CLOUD_CLIPS_EVERY_S)
+        self.assertEqual(calls, [("ws", "cloud_pending"), ("cloud", "clips/upload"), ("ws", "cloud_upload"), ("cloud", "clips/commit")])
+
+    def test_no_addon_or_no_recorder_waits_an_hour(self):
+        pending = lambda t, e, timeout=0: {"clips": [{"clip_id": "x", "entity_id": "camera.front", "size": 1}]}
+        self.assertEqual(agent.cloud_clips_round(pending, lambda p, b, timeout=0: (402, {"error": "not_entitled"})), agent.CLOUD_CLIPS_IDLE_S)
+        def ha(t, e, timeout=0):
+            raise RuntimeError("Unknown command.")
+        self.assertEqual(agent.cloud_clips_round(ha, lambda p, b, timeout=0: (200, {})), agent.CLOUD_CLIPS_IDLE_S)
+        self.assertEqual(agent.cloud_clips_round(pending, lambda p, b, timeout=0: (0, None)), agent.CLOUD_CLIPS_RETRY_S)
+
+    def test_never_from_the_relay(self):
+        self.assertEqual(agent.recording({"op": "cloud_upload", "put_url": "https://evil", "clip_id": "x"}), {"ok": False, "error": "bad_op"})

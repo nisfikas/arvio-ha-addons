@@ -3,6 +3,7 @@
 ## 0.1.105
 
 - Καταγραφή καμερών (monorepo docs/plans/2026-11-16-camera-recording.md): νέα εντολή `arvio.recording` μόνο από το relay, ποτέ από το LAN. Περνά στο Arvio Core (`arvio/recording`) μόνο τα πεδία του (`op`, `cameras`, `entity_id`, `before`, `limit`, `clip_id`, `path`, `last4`): κατάσταση, ρυθμίσεις ανά κάμερα, clips, σβήσιμο clip, δίσκοι, προετοιμασία δίσκου. Τα αρχεία των clips (`/api/clips/<κάμερα>/<id>/<αρχείο>`) περνούν όπως το HLS. Σε Home Assistant απαντά `not_supported`. Θέλει εικόνα με τον recorder του Core.
+- Αντίγραφα στο Arvio Cloud: κάθε λεπτό ρωτά το Arvio Core ποια clips δεν έχουν ανέβει, ζητά από το cloud πού και με ποιο κλειδί (μόνο αν το σπίτι έχει τη συνδρομή), το Core τα κρυπτογραφεί και τα ανεβάζει, και το cloud ενημερώνεται. Χωρίς συνδρομή ή αποθήκευση ξαναρωτά σε μία ώρα. Ποτέ από το relay.
 - Αναπαραγωγή από το NVR του πελάτη: `timeline` και `replay` (με `from`, `to`) στο ίδιο `arvio.recording`, και τα αρχεία `/api/replay/<κάμερα>/<session>/<αρχείο>` όπως το HLS.
 
 ## 0.1.104

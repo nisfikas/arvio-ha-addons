@@ -813,6 +813,74 @@ def post_as_hub(path: str, body: dict, what: str) -> bool:
     return True
 
 
+def call_as_hub(path: str, body: dict, timeout: float = 20.0) -> tuple[int, dict | None]:
+    """As post_as_hub, with the cloud's answer: (status, JSON). (0, None) when the cloud could not be reached."""
+    st = load_hub()
+    hid = str(st.get("hub_id") or hub_id or "").strip()
+    pk = str(st.get("enroll_public_key") or "").strip()
+    if not hid or not pk or not CLOUD:
+        return 0, None
+    req = urllib.request.Request(
+        f"{CLOUD}/v1/hubs/{hid}/{path}",
+        data=json.dumps({"enroll_public_key": pk, **body}).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return int(r.status), json.loads(r.read(200_000) or b"{}")
+    except urllib.error.HTTPError as e:
+        try:
+            return int(e.code), json.loads(e.read(10_000) or b"{}")
+        except Exception:
+            return int(e.code), None
+    except Exception:
+        return 0, None
+
+
+# ---- Arvio Cloud copies of the hub's clips (monorepo docs/plans/2026-11-16-camera-recording.md §3) ----
+# The cloud says where and with which key, only while the house has the add-on; Arvio Core encrypts and puts the
+# clip there; the cloud is told it is up. Never from the relay: nobody else can make the hub send a clip anywhere.
+CLOUD_CLIPS_EVERY_S = 60
+CLOUD_CLIPS_IDLE_S = 3600  # no add-on, no store, or no recorder (Home Assistant): ask again in an hour
+CLOUD_CLIPS_RETRY_S = 300  # the cloud did not answer
+
+
+def cloud_clips_round(ws=None, call=None) -> int:
+    """One round: up to 3 clips. Returns how long to wait before the next."""
+    ws = ws or ha_ws_command
+    call = call or call_as_hub
+    try:
+        pending = (ws("arvio/recording", {"op": "cloud_pending"}, timeout=30.0) or {}).get("clips") or []
+    except Exception:
+        return CLOUD_CLIPS_IDLE_S
+    for c in pending:
+        status, up = call("clips/upload", {"entity_id": c.get("entity_id"), "clip_id": c.get("clip_id"), "size": c.get("size")})
+        if status in (402, 503, 401, 409):
+            return CLOUD_CLIPS_IDLE_S
+        if status != 200 or not up or not up.get("put_url"):
+            return CLOUD_CLIPS_RETRY_S
+        try:
+            done = ws("arvio/recording", {"op": "cloud_upload", "clip_id": c.get("clip_id"), "put_url": up["put_url"], "key_hex": up.get("key_hex")}, timeout=150.0) or {}
+        except Exception as e:
+            print(f"cloud clip: not uploaded ({str(e)[:40]})", flush=True)
+            return CLOUD_CLIPS_RETRY_S
+        status, _ = call("clips/commit", {"entity_id": c.get("entity_id"), "clip_id": c.get("clip_id"), "cause": c.get("cause"), "at": c.get("at"), "segments": done.get("segments")})
+        if status != 200:
+            return CLOUD_CLIPS_RETRY_S
+    return CLOUD_CLIPS_EVERY_S
+
+
+def cloud_clips_loop() -> None:
+    while True:
+        try:
+            wait = cloud_clips_round()
+        except Exception as e:
+            print(f"cloud clips: {type(e).__name__}", flush=True)
+            wait = CLOUD_CLIPS_RETRY_S
+        time.sleep(wait)
+
+
 def post_doorbell_ring(call_entity_id: str) -> None:
     """Tell the cloud so Home PWAs (iPhone/iPad included) get a Web Push. The photo comes after the
     ring is out: a slow camera never delays a doorbell. A ring nobody's phone got is at least in the log."""
@@ -10878,6 +10946,7 @@ if __name__ == "__main__":
     threading.Thread(target=relay_loop, daemon=True).start()
     # 0.1.20: registry cache, HA event push, coalescer flush, relay heartbeat.
     threading.Thread(target=registry_maintenance_loop, daemon=True).start()
+    threading.Thread(target=cloud_clips_loop, daemon=True).start()
     threading.Thread(target=ha_events_loop, daemon=True).start()
     threading.Thread(target=push_flush_loop, daemon=True).start()
     threading.Thread(target=heartbeat_loop, daemon=True).start()
