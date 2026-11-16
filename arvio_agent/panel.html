@@ -960,6 +960,8 @@
          shows the whole frame, the picture first, the video over it once it moves. */
       .tile--camera { padding: 0; background: #121212; }
       .tile--camera .cam-still { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; }
+      .tile--camera .cam-live { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; }
+      .tile--camera .cam-live.on { opacity: 1; }
       .tile--camera .cam-label {
         position: absolute; left: 0; right: 0; bottom: 0;
         padding: 0.5rem 0.8rem; color: #f2f2f2; background: rgba(0, 0, 0, 0.5); font-size: 1rem;
@@ -3777,6 +3779,7 @@
         // scrollIntoView would also scroll the Partner page around the preview.
         if (PREVIEW) pagesEl.scrollLeft = pageIx * pagesEl.clientWidth;
         else if (kids[pageIx]) kids[pageIx].scrollIntoView({ inline: "start", block: "nearest" });
+        placeTileVideos();
         fitFaces();
       }
 
@@ -3955,6 +3958,7 @@
         if (!doorbellEl.classList.contains("hidden")) return;
         const db = screen && screen.doorbell;
         closeCamView();
+        syncTileLive();
         doorbellEl.classList.remove("hidden");
         doorbellYes.classList.add("hidden");
         if (db && db.unlock_entity_id) doorbellOpen.classList.remove("hidden");
@@ -3980,8 +3984,9 @@
         renderDoorbellButtons();
       }
 
-      // Cameras on the wall (docs/plans/2026-11-08-panel-camera-tiles.md). A tile's still comes every 10 s, only
-      // for the page in view; nothing streams until someone opens one full screen, and that closes after 2 min.
+      // Cameras on the wall (docs/plans/2026-11-08-panel-camera-tiles.md). A tile on the page in view plays live
+      // (syncTileLive, Νικόλας 16/11), its still every 10 s under it until the video moves, or for good where the
+      // stream cannot open. Full screen opens its own stream and closes after 2 min.
       const CAM_TILE_MS = 10000;
       const CAMVIEW_MS = 120000;
       const camStills = {};
@@ -4017,7 +4022,7 @@
         if (PREVIEW || camTileBusy || camView || !screen || document.hidden || !doorbellEl.classList.contains("hidden")) return;
         const page = (screen.pages || [])[pageIx];
         const due = ((page && page.tiles) || [])
-          .filter((t) => t.kind === "camera" && t.ref && !(Date.now() - (camAt[t.ref] || 0) < CAM_TILE_MS))
+          .filter((t) => t.kind === "camera" && t.ref && !camTileLive(t.ref) && !(Date.now() - (camAt[t.ref] || 0) < CAM_TILE_MS))
           .map((t) => t.ref);
         camTileBusy = true;
         try {
@@ -4127,6 +4132,7 @@
         const cam = byId(eid);
         const v = { eid: eid, restarts: [], hls: null, native: false, live: false, busy: false };
         camView = v;
+        syncTileLive();
         document.getElementById("camview-title").textContent = cam ? cam.name : eid;
         camState.textContent = "Σύνδεση…";
         if (camStills[eid]) camImg.src = camStills[eid];
@@ -4162,8 +4168,128 @@
       document.getElementById("camview-close").addEventListener("click", closeCamView);
       document.addEventListener("visibilitychange", () => {
         if (document.hidden) closeCamView();
+        syncTileLive();
       });
-      setInterval(camTiles, 2000);
+
+      // Live tiles: one stream per camera on the page in view, none while the page is hidden, full screen or the
+      // doorbell is up, or the page is another. The hub only remuxes (go2rtc HLS), and panels on one camera share it.
+      // A camera whose stream does not open (a door camera that gives one stream, no HLS) stays on stills for 5 min.
+      // ponytail: at most 4 live tiles a page, for an NSPanel decoding them all; raise it if a page needs more.
+      const LIVE_TILES_MAX = 4;
+      const TILE_STILLS_MS = 300000;
+      const tileLive = {};
+      const tileStills = {};
+      function camTileLive(eid) {
+        const v = tileLive[eid];
+        return !!(v && v.video.classList.contains("on"));
+      }
+      function syncTileLive() {
+        const want = [];
+        const page = screen && (screen.pages || [])[pageIx];
+        if (!PREVIEW && screen && !camView && !document.hidden && doorbellEl.classList.contains("hidden")) {
+          ((page && page.tiles) || []).forEach((t) => {
+            if (t.kind === "camera" && t.ref && want.indexOf(t.ref) < 0 && !(tileStills[t.ref] > Date.now()) && want.length < LIVE_TILES_MAX) want.push(t.ref);
+          });
+        }
+        Object.keys(tileLive).forEach((eid) => {
+          if (want.indexOf(eid) < 0) tileStop(eid);
+        });
+        want.forEach((eid) => {
+          if (!tileLive[eid]) tileStart(eid);
+        });
+        placeTileVideos();
+      }
+      // render() rebuilds the pages every few seconds: the same <video> goes back into the new tile in the same task,
+      // so it never pauses.
+      function placeTileVideos() {
+        Object.keys(tileLive).forEach((eid) => {
+          const img = pagesEl.querySelector('img[data-cam="' + eid + '"]');
+          const video = tileLive[eid].video;
+          if (img && video.parentNode !== img.parentNode) img.parentNode.insertBefore(video, img.nextSibling);
+        });
+      }
+      function tileStart(eid) {
+        const video = document.createElement("video");
+        video.className = "cam-live";
+        video.muted = true;
+        video.autoplay = true;
+        video.setAttribute("muted", "");
+        video.setAttribute("playsinline", "");
+        video.setAttribute("webkit-playsinline", "");
+        const v = { eid: eid, video: video, hls: null, native: false, restarts: [], gone: false };
+        tileLive[eid] = v;
+        video.addEventListener("playing", () => video.classList.add("on"));
+        video.addEventListener("error", () => {
+          if (v.native) tileRestart(v);
+        });
+        tileOpen(v);
+      }
+      function tileStop(eid) {
+        const v = tileLive[eid];
+        if (!v) return;
+        delete tileLive[eid];
+        v.gone = true;
+        if (v.hls) v.hls.destroy();
+        v.hls = null;
+        v.video.removeAttribute("src");
+        v.video.load();
+        if (v.video.parentNode) v.video.parentNode.removeChild(v.video);
+      }
+      function tileGiveUp(v) {
+        if (v.gone) return;
+        tileStills[v.eid] = Date.now() + TILE_STILLS_MS;
+        tileStop(v.eid);
+      }
+      async function tileOpen(v) {
+        let url = "";
+        try {
+          const r = await screenFetch("/api/screens/camera/live", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ screen_id: screen.screen_id, entity_id: v.eid }),
+          });
+          const out = await r.json().catch(() => ({}));
+          if (r.ok && out.url) url = out.url;
+        } catch (e) {}
+        if (v.gone) return;
+        if (!url) return tileGiveUp(v);
+        const Hls = await loadHls();
+        if (v.gone) return;
+        if (Hls) {
+          // A tile plays for hours: any fatal error, a lost ticket after the hub restarted included, asks for a new stream.
+          const player = new Hls({ lowLatencyMode: false, maxBufferLength: 6 });
+          v.hls = player;
+          player.on(Hls.Events.ERROR, (ev, data) => {
+            if (data.fatal && v.hls === player) tileRestart(v);
+          });
+          player.on(Hls.Events.MANIFEST_PARSED, () => {
+            v.video.play().catch(() => {});
+          });
+          player.loadSource(url);
+          player.attachMedia(v.video);
+          return;
+        }
+        if (!v.video.canPlayType("application/vnd.apple.mpegurl")) return tileGiveUp(v);
+        v.native = true;
+        v.video.src = url;
+        v.video.play().catch(() => {});
+      }
+      function tileRestart(v) {
+        if (v.gone) return;
+        if (v.hls) v.hls.destroy();
+        v.hls = null;
+        v.native = false;
+        v.video.classList.remove("on");
+        const now = Date.now();
+        v.restarts = v.restarts.filter((t) => now - t < 60000);
+        if (v.restarts.length >= 5) return tileGiveUp(v);
+        v.restarts.push(now);
+        tileOpen(v);
+      }
+      setInterval(() => {
+        syncTileLive();
+        camTiles();
+      }, 2000);
 
       // ΡΩΤΑ ΣΤΟ ΠΑΝΕΛ: what a flow asks, until someone presses here or on another panel, or it expires.
       function syncAsk() {

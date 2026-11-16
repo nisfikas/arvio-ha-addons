@@ -1392,22 +1392,27 @@ def screen_camera_jpeg(screen_id: str, camera: str, width: int, secret: str | No
     return raw, mime or "image/jpeg"
 
 
-# Live video for a panel's full-screen camera: the player cannot sign each segment (Safari's own HLS cannot
-# send a header at all), so a ticket stands for the one stream a signed request opened, for a few minutes.
-# Whoever reads the Wi-Fi sees these bytes anyway (ADR 017, no TLS on the LAN); the ticket opens nothing else.
+# Live video for a panel's camera, a tile or full screen: the player cannot sign each segment (Safari's own HLS
+# cannot send a header at all), so a ticket stands for the one stream a signed request opened, while it is used
+# and for a few minutes after. Whoever reads the Wi-Fi sees these bytes anyway (ADR 017, no TLS on the LAN); the
+# ticket opens nothing else. A live tile plays for hours, so each request it makes keeps its ticket.
 LIVE_TICKET_S = 180
-LIVE_TICKETS_MAX = 8
+LIVE_TICKETS_MAX = 32
 LIVE_TICKETS: dict[str, dict] = {}
 LIVE_LOCK = threading.Lock()
 
 
 def screen_camera_live(screen_id: str, camera: str, secret: str | None) -> dict:
     eid = screen_camera(screen_id, camera, secret)
-    # A door camera never streams from a wall: the G4 gives one session, and a stream here stops a press's
-    # own before a phone joins it, or keeps a press from opening one. The panel stays on its stills.
+    # A door camera that gives one stream (HomeKit: the G4) never streams from a wall: a stream here stops a
+    # press's own before a phone joins it, or keeps a press from opening one. The panel stays on its stills.
+    # Arvio Core says `single_stream: false` of every other camera; without that (an older Core, or HA) every
+    # door camera is taken to give one.
     states = ha("/states") or []
-    have = {str(st.get("entity_id") or "") for st in states if isinstance(st, dict)} if isinstance(states, list) else set()
-    if any(g in have for g in doorbell_call_guesses(eid)):
+    states = [st for st in states if isinstance(st, dict)] if isinstance(states, list) else []
+    have = {str(st.get("entity_id") or "") for st in states}
+    attrs = next((st.get("attributes") or {} for st in states if st.get("entity_id") == eid), {})
+    if any(g in have for g in doorbell_call_guesses(eid)) and not (isinstance(attrs, dict) and attrs.get("single_stream") is False):
         raise LookupError("door_camera")
     out = camera_stream(None, eid)
     if not out.get("ok"):
@@ -1420,7 +1425,7 @@ def screen_camera_live(screen_id: str, camera: str, secret: str | None) -> dict:
         for old in [k for k, v in LIVE_TICKETS.items() if v["until"] < now]:
             del LIVE_TICKETS[old]
         while len(LIVE_TICKETS) >= LIVE_TICKETS_MAX:
-            del LIVE_TICKETS[next(iter(LIVE_TICKETS))]
+            del LIVE_TICKETS[min(LIVE_TICKETS, key=lambda k: LIVE_TICKETS[k]["until"])]  # the one least lately used
         LIVE_TICKETS[ticket] = {"base": base + "/", "id": (parse_qs(query).get("id") or [None])[0], "until": now + LIVE_TICKET_S}
     return {"ok": True, "url": f"/api/live/{ticket}/{name}" + (f"?{query}" if query else "")}
 
@@ -1428,12 +1433,14 @@ def screen_camera_live(screen_id: str, camera: str, secret: str | None) -> dict:
 def live_camera_path(ticket: str, rest: str, query: str) -> str | None:
     """`/api/live/<ticket>/<file>` → the Core path of that ticket's stream, or None. go2rtc names its stream
     in `?id=`, so a file of another stream is refused; Home Assistant's token is in the ticket's own path."""
+    now = time.monotonic()
     with LIVE_LOCK:
         t = LIVE_TICKETS.get(ticket)
-    if not t or t["until"] < time.monotonic():
-        return None
-    if t["id"] and (parse_qs(query).get("id") or [None])[0] != t["id"]:
-        return None
+        if not t or t["until"] < now:
+            return None
+        if t["id"] and (parse_qs(query).get("id") or [None])[0] != t["id"]:
+            return None
+        t["until"] = now + LIVE_TICKET_S
     return camera_safe_ha_path(t["base"] + rest + (f"?{query}" if query else ""))
 
 
