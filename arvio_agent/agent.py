@@ -871,14 +871,46 @@ def cloud_clips_round(ws=None, call=None) -> int:
     return CLOUD_CLIPS_EVERY_S
 
 
-def cloud_clips_loop() -> None:
-    while True:
+def cloud_rec_round(ws=None, call=None) -> int:
+    """Cloud 24/7 Lite: up to 2 runs of the sub stream's minutes, the same three steps as a clip."""
+    ws = ws or ha_ws_command
+    call = call or call_as_hub
+    try:
+        chunks = (ws("arvio/recording", {"op": "cloud_rec_pending"}, timeout=30.0) or {}).get("chunks") or []
+    except Exception:
+        return CLOUD_CLIPS_IDLE_S
+    for c in chunks:
+        ask = {"entity_id": c.get("entity_id"), "start": c.get("start"), "size": c.get("size")}
+        status, up = call("recordings/upload", ask)
+        if status in (402, 503, 401, 409):
+            return CLOUD_CLIPS_IDLE_S
+        if status != 200 or not up or not up.get("put_url"):
+            return CLOUD_CLIPS_RETRY_S
         try:
-            wait = cloud_clips_round()
+            done = ws("arvio/recording", {"op": "cloud_rec_upload", "entity_id": c.get("entity_id"), "names": c.get("names"), "put_url": up["put_url"], "key_hex": up.get("key_hex")}, timeout=150.0) or {}
         except Exception as e:
-            print(f"cloud clips: {type(e).__name__}", flush=True)
-            wait = CLOUD_CLIPS_RETRY_S
-        time.sleep(wait)
+            print(f"cloud 24/7: not uploaded ({str(e)[:40]})", flush=True)
+            return CLOUD_CLIPS_RETRY_S
+        status, _ = call("recordings/commit", {**ask, "end": c.get("end"), "segments": done.get("segments")})
+        if status != 200:
+            return CLOUD_CLIPS_RETRY_S
+    return CLOUD_CLIPS_EVERY_S
+
+
+def cloud_clips_loop() -> None:
+    """Clips and Cloud 24/7 minutes, each on its own: a house with one add-on and not the other still sends."""
+    next_at = {cloud_clips_round: 0.0, cloud_rec_round: 0.0}
+    while True:
+        for step in next_at:
+            if time.monotonic() < next_at[step]:
+                continue
+            try:
+                wait = step()
+            except Exception as e:
+                print(f"cloud copies: {type(e).__name__}", flush=True)
+                wait = CLOUD_CLIPS_RETRY_S
+            next_at[step] = time.monotonic() + wait
+        time.sleep(max(1.0, min(next_at.values()) - time.monotonic()))
 
 
 def post_doorbell_ring(call_entity_id: str) -> None:

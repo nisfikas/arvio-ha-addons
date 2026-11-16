@@ -257,5 +257,30 @@ class CloudClipsTest(unittest.TestCase):
         self.assertEqual(agent.cloud_clips_round(ha, lambda p, b, timeout=0: (200, {})), agent.CLOUD_CLIPS_IDLE_S)
         self.assertEqual(agent.cloud_clips_round(pending, lambda p, b, timeout=0: (0, None)), agent.CLOUD_CLIPS_RETRY_S)
 
+    def test_cloud_247_round(self):
+        calls = []
+        names = ["20261116-090000.ts", "20261116-090100.ts"]
+
+        def ws(t, extra, timeout=0):
+            calls.append(("ws", extra["op"]))
+            if extra["op"] == "cloud_rec_pending":
+                return {"chunks": [{"entity_id": "camera.gate", "names": names, "start": 1, "end": 120001, "size": 1024}]}
+            self.assertEqual((extra["names"], extra["put_url"]), (names, "https://bucket/r"))
+            return {"segments": [{"d": 60, "len": 512}, {"d": 60, "len": 512}]}
+
+        def call(path, body, timeout=0):
+            calls.append(("cloud", path))
+            if path == "recordings/upload":
+                self.assertEqual(body, {"entity_id": "camera.gate", "start": 1, "size": 1024})
+                return 200, {"put_url": "https://bucket/r", "key_hex": "00" * 16}
+            self.assertEqual((body["end"], len(body["segments"])), (120001, 2))
+            return 200, {"ok": True}
+
+        self.assertEqual(agent.cloud_rec_round(ws, call), agent.CLOUD_CLIPS_EVERY_S)
+        self.assertEqual(calls, [("ws", "cloud_rec_pending"), ("cloud", "recordings/upload"), ("ws", "cloud_rec_upload"), ("cloud", "recordings/commit")])
+        pending = lambda t, e, timeout=0: {"chunks": [{"entity_id": "camera.gate", "names": names, "start": 1, "end": 2, "size": 1}]}
+        self.assertEqual(agent.cloud_rec_round(pending, lambda p, b, timeout=0: (402, {})), agent.CLOUD_CLIPS_IDLE_S)
+
     def test_never_from_the_relay(self):
         self.assertEqual(agent.recording({"op": "cloud_upload", "put_url": "https://evil", "clip_id": "x"}), {"ok": False, "error": "bad_op"})
+        self.assertEqual(agent.recording({"op": "cloud_rec_upload", "put_url": "https://evil"}), {"ok": False, "error": "bad_op"})
