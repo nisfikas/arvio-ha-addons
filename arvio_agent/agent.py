@@ -65,7 +65,7 @@ RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
 # Arvio Core on the customer's own machine: the one-time code from Arvio Home (arvio docs/plans/2026-11-14-core-self-hosted.md §5).
 ACTIVATION_CODE = ""
-AGENT_VERSION = "0.1.104"
+AGENT_VERSION = "0.1.105"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -6078,6 +6078,8 @@ def execute_action(
         return camera_snapshot(payload, entity_id)
     if action == "arvio.camera_stream":
         return camera_stream(payload, entity_id)
+    if action == "arvio.recording":
+        return recording(payload)
     if action == "arvio.todo":
         return todo_action(payload, entity_id)
     if action == "arvio.list_screens":
@@ -6465,7 +6467,7 @@ MEDIA_AGENT_ACTIONS = frozenset({"arvio.media_art", "arvio.media_browse", "arvio
 # the list must not be readable or writable by anything on the network (audit 2026-09-10 #2).
 TODO_AGENT_ACTIONS = frozenset({"arvio.todo"})
 CAMERA_AGENT_ACTIONS = frozenset(
-    {"arvio.camera_setup", "arvio.camera_snapshot", "arvio.camera_stream", "arvio.ring_photo", "arvio.ring_photos", "arvio.activity"}
+    {"arvio.camera_setup", "arvio.camera_snapshot", "arvio.camera_stream", "arvio.ring_photo", "arvio.ring_photos", "arvio.activity", "arvio.recording"}
 )
 INTEGRATION_AGENT_ACTIONS = frozenset(
     {
@@ -8798,12 +8800,38 @@ def camera_safe_ha_path(raw: str) -> str | None:
         if q and not re.fullmatch(r"\?[A-Za-z0-9._=&%+\-]*", q):
             return None
         return path + q
+    # An event clip on Arvio Core (monorepo services/core/src/recording-api.ts): no query.
+    if CLIP_PATH_RE.fullmatch(path):
+        return None if q else path
     m = re.fullmatch(r"/api/camera_proxy/(camera\.[a-z0-9_]+)", path)
     if not m:
         return None
     if q and not re.fullmatch(r"\?[A-Za-z0-9._=&%+\-]*", q):
         return None
     return path + q
+
+
+# Same as packages/domain CLIP_PATH_RE.
+CLIP_PATH_RE = re.compile(r"/api/clips/camera\.[a-z0-9_]+/[0-9]{8}T[0-9]{6}-[0-9a-f]{8}/(index\.m3u8|[0-9]{3}\.ts|poster\.jpg)")
+RECORDING_OPS = frozenset({"status", "settings_set", "clips", "delete", "disks", "format", "format_result"})
+RECORDING_FIELDS = ("cameras", "entity_id", "before", "limit", "clip_id", "path", "last4")
+
+
+def recording(payload: dict | None = None) -> dict:
+    """arvio.recording → Arvio Core's `arvio/recording` (event clips, the recording disk). Core checks every field;
+    here only which ones pass, so a payload never sets the websocket message's own `id` or `type`."""
+    p = payload if isinstance(payload, dict) else {}
+    op = p.get("op")
+    if op not in RECORDING_OPS:
+        return {"ok": False, "error": "bad_op"}
+    extra = {"op": op, **{k: p[k] for k in RECORDING_FIELDS if k in p}}
+    try:
+        return {"ok": True, "result": ha_ws_command("arvio/recording", extra, timeout=30.0)}
+    except Exception as e:
+        # Core's own refusal (`serial_mismatch`, `not_found`, …) is a code; anything else is a box without a
+        # recorder (Home Assistant) or a Core that did not answer.
+        code = str(e)
+        return {"ok": False, "error": code if re.fullmatch(r"[a-z_]{2,40}", code) else "not_supported"}
 
 
 def clamp_camera_width(raw) -> int:

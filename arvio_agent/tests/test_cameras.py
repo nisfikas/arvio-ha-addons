@@ -186,3 +186,30 @@ class CameraStreamTest(unittest.TestCase):
         url = opener.call_args[0][0]
         self.assertTrue(str(url.full_url).startswith("http://supervisor/core/api/camera_proxy/camera.front"))
         self.assertNotIn("homeassistant:8123", str(url.full_url))
+
+
+class RecordingTest(unittest.TestCase):
+    """arvio.recording (event clips on Arvio Core, agent 0.1.105): only known fields reach Core, never LAN."""
+
+    CLIP = "/api/clips/camera.front/20261116T120000-0123abcd"
+
+    def test_clip_paths(self):
+        self.assertEqual(agent.camera_safe_ha_path(f"{self.CLIP}/index.m3u8"), f"{self.CLIP}/index.m3u8")
+        self.assertEqual(agent.camera_safe_ha_path(f"{self.CLIP}/012.ts"), f"{self.CLIP}/012.ts")
+        for bad in (f"{self.CLIP}/clip.json", f"{self.CLIP}/index.m3u8?x=1", "/api/clips/camera.front/../index.m3u8", f"{self.CLIP}"):
+            self.assertIsNone(agent.camera_safe_ha_path(bad), bad)
+
+    def test_forwards_known_fields_only(self):
+        self.assertNotIn("arvio.recording", agent.LAN_ALLOWED_ACTIONS)
+        self.assertIn("arvio.recording", agent.AGENT_SERVICE_ALLOWLIST)
+        with mock.patch.object(agent, "ha_ws_command", return_value={"clips": []}) as ws:
+            out = agent.recording({"op": "clips", "entity_id": "camera.front", "id": 9, "type": "auth"})
+        self.assertEqual(out, {"ok": True, "result": {"clips": []}})
+        ws.assert_called_once_with("arvio/recording", {"op": "clips", "entity_id": "camera.front"}, timeout=30.0)
+        self.assertEqual(agent.recording({"op": "rm -rf"}), {"ok": False, "error": "bad_op"})
+
+    def test_core_refusal_and_home_assistant(self):
+        with mock.patch.object(agent, "ha_ws_command", side_effect=RuntimeError("serial_mismatch")):
+            self.assertEqual(agent.recording({"op": "format", "path": "/dev/sda", "last4": "0000"}), {"ok": False, "error": "serial_mismatch"})
+        with mock.patch.object(agent, "ha_ws_command", side_effect=RuntimeError("Unknown command.")):
+            self.assertEqual(agent.recording({"op": "status"}), {"ok": False, "error": "not_supported"})
