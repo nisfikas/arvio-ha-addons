@@ -65,7 +65,7 @@ RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
 # Arvio Core on the customer's own machine: the one-time code from Arvio Home (arvio docs/plans/2026-11-14-core-self-hosted.md §5).
 ACTIVATION_CODE = ""
-AGENT_VERSION = "0.1.102"
+AGENT_VERSION = "0.1.104"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -584,7 +584,12 @@ def doorbell_button_views(buttons: list, states_by_id: dict, door_relays: set) -
 SCREEN_BAR_TOP_ITEMS = ("inside", "outside", "humidity", "power")
 SCREEN_BAR_TOP_MAX = 4
 SCREEN_BAR_DOCK_ITEMS = ("mark", "pages", "time")
-BAR_SENSOR_RE = re.compile(r"sensor\.[a-z0-9_]{1,100}")
+SCREEN_BAR_DOCK_ENTITIES_MAX = 6
+# A device in the bar (2026-11-16, arvio screens.ts BAR_ENTITY_RE): what an entity or scene tile may hold, and any
+# sensor to read. Never a lock, the alarm or a camera: a tap goes the tile's way, on the same LAN allow-list.
+BAR_ENTITY_RE = re.compile(
+    r"(?:sensor|binary_sensor|light|switch|cover|climate|media_player|vacuum|scene)\.[a-z0-9_]{1,100}|script\.arvio_[a-z0-9_]{1,100}"
+)
 
 
 def parse_screen_theme(raw) -> dict | None:
@@ -622,12 +627,17 @@ def parse_screen_theme(raw) -> dict | None:
     if isinstance(top, list):
         keep = []
         for v in top:
-            if isinstance(v, str) and (v in SCREEN_BAR_TOP_ITEMS or BAR_SENSOR_RE.fullmatch(v)) and v not in keep:
+            if isinstance(v, str) and (v in SCREEN_BAR_TOP_ITEMS or BAR_ENTITY_RE.fullmatch(v)) and v not in keep:
                 keep.append(v)
         out["bar_top"] = keep[:SCREEN_BAR_TOP_MAX]
     dock = raw.get("bar_dock")
     if isinstance(dock, list):
-        out["bar_dock"] = [k for k in SCREEN_BAR_DOCK_ITEMS if k in dock]
+        # The three in their order, then the devices between the mark and the time, in Partner's (2026-11-16).
+        devices = []
+        for v in dock:
+            if isinstance(v, str) and BAR_ENTITY_RE.fullmatch(v) and v not in devices:
+                devices.append(v)
+        out["bar_dock"] = [k for k in SCREEN_BAR_DOCK_ITEMS if k in dock] + devices[:SCREEN_BAR_DOCK_ENTITIES_MAX]
     return out
 
 
@@ -2239,7 +2249,8 @@ def list_wall_screens() -> dict:
         "bar": True,
         # A partner's own theme on top of its base (parse_screen_custom); an older agent draws the base.
         "custom": True,
-        "bar_items": list(SCREEN_BAR_TOP_ITEMS) + ["sensor"],
+        # "entity": any device of the house above and below (2026-11-16); before it, only a sensor above.
+        "bar_items": list(SCREEN_BAR_TOP_ITEMS) + ["sensor", "entity"],
     }
     return {"ok": True, "screens": screens, "panel": can}
 
@@ -2722,7 +2733,9 @@ def panel_snapshot(screen_id: str | None = None, secret: str | None = None) -> d
     weather = None
     states = []
     door_relays = door_relay_ids()  # no tile and no entity: the LAN path refuses them, the doorbell opens them
-    bar_sensors = {v for v in ((row.get("theme") or {}).get("bar_top") or []) if str(v).startswith("sensor.")}
+    theme = row.get("theme") or {}
+    # What this panel's «Σταθερή μπάρα» shows: the sensors, binary sensors and scripts below reach it for that alone.
+    bar_ids = {str(v) for v in (theme.get("bar_top") or []) + (theme.get("bar_dock") or []) if "." in str(v)}
     marked = door_marks() or set()  # a marked door is never drawn as a light, whatever its icon
     try:
         snap = registries_for_commands()
@@ -2793,10 +2806,10 @@ def panel_snapshot(screen_id: str | None = None, secret: str | None = None) -> d
             attrs = st.get("attributes") if isinstance(st.get("attributes"), dict) else {}
             if domain == "binary_sensor":
                 dc = str(attrs.get("device_class") or "")
-                if dc not in HOME_BINARY_SENSOR_DEVICE_CLASSES:
+                if dc not in HOME_BINARY_SENSOR_DEVICE_CLASSES and eid not in bar_ids:
                     continue
-            elif domain == "sensor":
-                if eid not in bar_sensors:  # only the ones this panel's «Σταθερή μπάρα» shows
+            elif domain in ("sensor", "script"):
+                if eid not in bar_ids:  # only the ones this panel's «Σταθερή μπάρα» shows
                     continue
             elif domain not in ("camera", "scene"):
                 continue
@@ -2825,6 +2838,11 @@ def panel_snapshot(screen_id: str | None = None, secret: str | None = None) -> d
         {**page, "tiles": [t for t in page.get("tiles") or [] if t.get("ref") not in door_relays]}
         for page in screens[0]["pages"]
     ]
+    # A doorbell's door is opened by the doorbell alone, from the bar no more than from a tile.
+    shown = screens[0].get("theme") or {}  # public_screen parsed it afresh: ours to change
+    for k in ("bar_top", "bar_dock"):
+        if isinstance(shown.get(k), list):
+            shown[k] = [v for v in shown[k] if v not in door_relays]
     if restart:
         screens[0]["restart"] = True
     if shot:

@@ -324,16 +324,24 @@ class ScreenStoreTest(unittest.TestCase):
         """Partner picks what the bar shows (2026-11-14): a sensor among four at most above, the dock's parts below.
         What this page does not know is left out, never the whole screen."""
         page = {"id": "pg_aaaaaaaa", "tiles": [{"kind": "clock"}]}
-        theme = {"preset": "afisa", "bar": True, "bar_top": ["sensor.stardust_20l_humidity", "outside", "rain", "light.x", "outside", "power", "inside"],
+        theme = {"preset": "afisa", "bar": True, "bar_top": ["sensor.stardust_20l_humidity", "outside", "rain", "lock.x", "outside", "power", "inside"],
                  "bar_dock": ["time", "pages", "clock"]}
         out = agent.put_wall_screen(self._row(pages=[page], theme=theme))["screen"]
         self.assertEqual(out["theme"]["bar_top"], ["sensor.stardust_20l_humidity", "outside", "power", "inside"])
         self.assertEqual(out["theme"]["bar_dock"], ["pages", "time"])
+        # Any device of the house (2026-11-16): not a lock, the alarm, a camera or someone's script; six below at most.
+        theme = {"preset": "afisa", "bar": True, "bar_top": ["light.saloni", "camera.x", "climate.ac"],
+                 "bar_dock": ["cover.rolo", "time", "alarm_control_panel.x", "script.x", "script.arvio_vradi", "mark",
+                              "light.a", "light.b", "light.c", "light.d", "light.e"]}
+        out = agent.put_wall_screen(self._row(pages=[page], theme=theme))["screen"]
+        self.assertEqual(out["theme"]["bar_top"], ["light.saloni", "climate.ac"])
+        self.assertEqual(out["theme"]["bar_dock"], ["mark", "time", "cover.rolo", "script.arvio_vradi", "light.a", "light.b", "light.c", "light.d"])
         out = agent.put_wall_screen(self._row(pages=[page], theme={"preset": "afisa", "bar": True, "bar_top": [], "bar_dock": []}))["screen"]
         self.assertEqual((out["theme"]["bar_top"], out["theme"]["bar_dock"]), ([], []))
         out = agent.put_wall_screen(self._row(pages=[page], theme={"preset": "afisa", "bar": True}))["screen"]
         self.assertNotIn("bar_top", out["theme"])
         self.assertIn("sensor", agent.list_wall_screens()["panel"]["bar_items"])
+        self.assertIn("entity", agent.list_wall_screens()["panel"]["bar_items"])
 
     def test_floor3d_needs_ref(self):
         with self.assertRaises(ValueError) as cm:
@@ -828,11 +836,16 @@ class ScreenLanHttpTest(unittest.TestCase):
                 "name": "Πάνελ",
                 "hardware": "generic_square",
                 "orientation": "square",
-                "theme": {"preset": "afisa", "bar": True, "bar_top": ["sensor.stardust_20l_humidity"]},
+                "theme": {"preset": "afisa", "bar": True, "bar_top": ["sensor.stardust_20l_humidity"],
+                          "bar_dock": ["binary_sensor.plyntirio", "script.arvio_vradi"]},
                 "pages": [{"id": "pg_pppppppp", "tiles": [{"kind": "clock"}]}],
             }
         )
         states = [
+            # Below, from the bar alone: a binary sensor of a kind Home does not show, and an Arvio script.
+            {"entity_id": "binary_sensor.plyntirio", "state": "on", "attributes": {"friendly_name": "Πλυντήριο", "device_class": "running"}},
+            {"entity_id": "script.arvio_vradi", "state": "off", "attributes": {"friendly_name": "Βράδυ"}},
+            {"entity_id": "script.arvio_proi", "state": "off", "attributes": {"friendly_name": "Πρωί"}},
             {"entity_id": "sensor.stardust_20l_humidity", "state": "56",
              "attributes": {"friendly_name": "Υγρασία σαλονιού", "device_class": "humidity", "unit_of_measurement": "%"}},
             {"entity_id": "sensor.power", "state": "430", "attributes": {"friendly_name": "Ισχύς", "unit_of_measurement": "W"}},
@@ -846,6 +859,9 @@ class ScreenLanHttpTest(unittest.TestCase):
         hum = by_id["sensor.stardust_20l_humidity"]
         self.assertEqual((hum["state"], hum["device_class"], hum["unit_of_measurement"]), ("56", "humidity", "%"))
         self.assertNotIn("sensor.power", by_id)
+        self.assertEqual(by_id["binary_sensor.plyntirio"]["name"], "Πλυντήριο")
+        self.assertEqual(by_id["script.arvio_vradi"]["name"], "Βράδυ")
+        self.assertNotIn("script.arvio_proi", by_id)
 
     def test_panel_snapshot_includes_hourly_weather(self):
         states = [
