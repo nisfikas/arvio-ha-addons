@@ -1484,6 +1484,33 @@
         font-weight: var(--w-name);
       }
       .bar-page[aria-current="page"] { background: var(--pick-bg); color: var(--pick-ink); border-color: transparent; }
+      .bar-cell.on { background: var(--on-bg); box-shadow: var(--on-shadow); }
+      .bar-cell.on b { color: var(--on); }
+      /* A device below: its glyph, and a reading while there is room. Margins, not gap: old iPads. */
+      .bar-ent {
+        display: flex;
+        align-items: center;
+        flex: 0 0 auto;
+        justify-content: center;
+        min-width: 2.2rem;
+        height: 2.6rem;
+        height: clamp(2.2rem, 10vmin, 3.2rem);
+        margin: 0 0.12rem;
+        padding: 0 0.4rem;
+        border-radius: var(--r);
+        border: var(--tile-border);
+        background: transparent;
+        color: var(--ink);
+        font-weight: var(--w-name);
+      }
+      /* Centred by its own margins, not justify-content: what does not fit is cut on the right, never the home page. */
+      .bar-pages { justify-content: flex-start; }
+      .bar-pages > :first-child { margin-left: auto; }
+      .bar-pages > :last-child { margin-right: auto; }
+      .bar-page + .bar-ent { margin-left: 0.8rem; }
+      .bar-ent .glyph { flex: 0 0 auto; }
+      .bar-ent span { margin-left: 0.25rem; font-size: 0.9rem; white-space: nowrap; }
+      .bar-ent.on { background: var(--on-bg); box-shadow: var(--on-shadow); color: var(--on); }
       .bar-time {
         font-family: var(--f-display);
         font-weight: var(--w-face-bold);
@@ -3628,10 +3655,13 @@
           if (k === "humidity") return barCell("weather", "Υγρασία έξω", humid || "—");
           if (k === "power") return barCell("energy", "Κατανάλωση", power || "—");
           const e = byId(k);
-          return barCell("", e && e.name ? e.name : k, sensorText(e));
+          return (
+            '<button type="button" class="bar-cell' + (barOn(e) ? " on" : "") + '"' + (barTaps(e) ? ' data-bar-ent="' + esc(k) + '"' : "") +
+            "><small>" + esc(e.name || k) + "</small><b>" + esc(barValue(e)) + "</b></button>"
+          );
         }
         barTop.innerHTML = Array.isArray(t.bar_top)
-          ? t.bar_top.map(topCell).join("")
+          ? t.bar_top.filter(barHas).map(topCell).join("")
           : (inside.length
               ? barCell("", "Θερμοκρασία", insideText)
               : w && w.temperature != null
@@ -3643,6 +3673,19 @@
         const mark = document.querySelector(".gate-mark");
         const dock = Array.isArray(t.bar_dock) ? t.bar_dock : ["mark", "pages", "time"];
         const has = (k) => dock.indexOf(k) >= 0;
+        // Devices between the mark and the time (2026-11-16): the glyph, lit when on, and a sensor's reading. No
+        // names, and no climate's reading: four would not fit a 480 px panel. The name is its label.
+        const ents = dock
+          .filter((k) => k.indexOf(".") > 0 && barHas(k))
+          .map((k) => {
+            const e = byId(k);
+            const read = e.domain === "sensor" ? barValue(e) : "";
+            return (
+              '<button type="button" class="bar-ent' + (barOn(e) ? " on" : "") + '"' + (barTaps(e) ? ' data-bar-ent="' + esc(k) + '"' : "") +
+              ' aria-label="' + esc(e.name || k) + '">' + ico(barGlyph(e), 20) + (read ? "<span>" + esc(read) + "</span>" : "") + "</button>"
+            );
+          })
+          .join("");
         barDock.innerHTML = !dock.length
           ? ""
           : (has("mark") ? '<img class="bar-mark" alt="Arvio" src="' + (mark ? mark.getAttribute("src") : "") + '" />' : "<span></span>") +
@@ -3656,6 +3699,7 @@
                   )
                   .join("")
               : "") +
+            ents +
             "</span>" +
             (has("time") ? '<b class="bar-time" data-clock="1">' + clockFaceHtml(clockText(), true) + "</b>" : "<span></span>");
       }
@@ -3668,6 +3712,37 @@
         if (e.device_class === "humidity" || unit === "%") return Math.round(v) + "%";
         return new Intl.NumberFormat("el-GR", { maximumFractionDigits: 1 }).format(v) + (unit ? " " + unit : "");
       }
+      /** A device the bar shows: one the hub still has. A sensor reads, anything else is its tile's tap. */
+      function barHas(k) {
+        return k.indexOf(".") < 0 || !!byId(k);
+      }
+      function barTaps(e) {
+        return e.domain !== "sensor" && e.domain !== "binary_sensor";
+      }
+      function barOn(e) {
+        return e.domain === "binary_sensor" ? e.state === "on" : tileOn({ kind: "entity", ref: e.entity_id });
+      }
+      function barValue(e) {
+        if (e.domain === "sensor") return sensorText(e);
+        if (e.domain === "climate" && isFinite(num(e.current_temperature))) return formatTemp(num(e.current_temperature));
+        if (e.domain === "scene" || e.domain === "script") return e.state === "on" ? "τρέχει" : "πάτα";
+        if (e.domain === "binary_sensor" && !/^(door|window|opening|garage_door)$/.test(e.device_class || "")) {
+          return e.state === "on" ? "ενεργό" : e.state === "off" ? "ανενεργό" : "—";
+        }
+        return entityWord(e) || "—";
+      }
+      function barGlyph(e) {
+        const picked = customIcon(e.icon) || pickedGlyph(e.icon);
+        if (picked) return picked;
+        const c = e.device_class || "";
+        if (e.domain === "scene" || e.domain === "script") return "scene";
+        if (e.domain === "sensor") return c === "humidity" ? "drop" : c === "temperature" ? "thermometer" : c === "power" || c === "energy" ? "bolt" : "sensor";
+        if (e.domain === "binary_sensor") return c === "door" || c === "garage_door" ? "door" : c === "window" ? "window" : c === "motion" || c === "occupancy" ? "motion" : "sensor";
+        return glyphForEntity(e);
+      }
+      function barTap(id) {
+        tap(/^(scene|script)\./.test(id) ? { kind: "scene", ref: id } : { kind: "entity", ref: id });
+      }
       function markBarPage() {
         barDock.querySelectorAll("[data-bar-page]").forEach((b) => {
           if (Number(b.getAttribute("data-bar-page")) === pageIx) b.setAttribute("aria-current", "page");
@@ -3677,8 +3752,12 @@
       barTop.addEventListener("click", (ev) => {
         const part = ev.target.closest ? ev.target.closest("[data-sum]") : null;
         if (part) openSheet({ kind: part.getAttribute("data-sum") });
+        const ent = ev.target.closest ? ev.target.closest("[data-bar-ent]") : null;
+        if (ent) barTap(ent.getAttribute("data-bar-ent"));
       });
       barDock.addEventListener("click", (ev) => {
+        const ent = ev.target.closest ? ev.target.closest("[data-bar-ent]") : null;
+        if (ent) barTap(ent.getAttribute("data-bar-ent"));
         const b = ev.target.closest ? ev.target.closest("[data-bar-page]") : null;
         if (!b) return;
         // Straight to the page, as a render puts it back: one jump, not a swipe through the pages between.
