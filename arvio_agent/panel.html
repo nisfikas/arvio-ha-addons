@@ -279,19 +279,19 @@
       .tile--clock .face, .tile--weather .face {
         line-height: 0.88;
         font-size: 9vw; /* before container units (Safari 16): close to 38cqh on a panel */
-        font-size: clamp(2.8rem, 38cqh, 9rem);
+        font-size: clamp(1.4rem, 38cqh, 9rem);
       }
       .tile--clock[data-size="m"] .face, .tile--weather[data-size="m"] .face {
         font-size: 28vw;
         font-size: clamp(3.8rem, 28vw, 12rem);
-        font-size: clamp(3.8rem, 46cqh, 12rem);
+        font-size: clamp(1.6rem, 46cqh, 12rem);
       }
       .tile--clock[data-size="l"] .face, .tile--weather[data-size="l"] .face {
         font-size: 28vw;
         font-size: clamp(6.2rem, 28vw, 14rem);
-        font-size: clamp(6.2rem, 54cqh, 16rem);
+        font-size: clamp(2.4rem, 54cqh, 16rem);
       }
-      .tile--clock .kicker, .tile--weather .kicker { font-size: 1.05rem; font-size: clamp(1.05rem, 7cqh, 1.5rem); }
+      .tile--clock .kicker, .tile--weather .kicker { font-size: 1.05rem; font-size: clamp(0.8rem, 7cqh, 1.5rem); }
       .tile--clock .state { font-size: 1.05rem; font-size: clamp(1.05rem, 8cqh, 1.65rem); }
       .tile--clock .kicker, .tile--clock .face, .tile--clock .state,
       .tile--weather .kicker, .tile--weather .face { position: relative; z-index: 1; }
@@ -1155,9 +1155,9 @@
 
       /* Αφίσα, the factory look, as on Σπίτι: hairlines, poster capitals, one flat colour. The narrow face can be huge. */
       html[data-preset="afisa"] .name { font-size: 7vw; font-size: clamp(1.7rem, 7vw, 2.6rem); line-height: 1; }
-      html[data-preset="afisa"] .tile--clock .face, html[data-preset="afisa"] .tile--weather .face { line-height: 0.82; font-size: 18vw; font-size: clamp(4rem, 60cqh, 12rem); }
-      html[data-preset="afisa"] .tile--clock[data-size="m"] .face, html[data-preset="afisa"] .tile--weather[data-size="m"] .face { font-size: 36vw; font-size: clamp(5rem, 70cqh, 18rem); }
-      html[data-preset="afisa"] .tile--clock[data-size="l"] .face, html[data-preset="afisa"] .tile--weather[data-size="l"] .face { font-size: 44vw; font-size: clamp(8rem, 66cqh, 24rem); }
+      html[data-preset="afisa"] .tile--clock .face, html[data-preset="afisa"] .tile--weather .face { line-height: 0.82; font-size: 18vw; font-size: clamp(1.5rem, 60cqh, 12rem); }
+      html[data-preset="afisa"] .tile--clock[data-size="m"] .face, html[data-preset="afisa"] .tile--weather[data-size="m"] .face { font-size: 36vw; font-size: clamp(1.8rem, 70cqh, 18rem); }
+      html[data-preset="afisa"] .tile--clock[data-size="l"] .face, html[data-preset="afisa"] .tile--weather[data-size="l"] .face { font-size: 44vw; font-size: clamp(2.6rem, 66cqh, 24rem); }
       html[data-preset="afisa"] .clima-target { font-size: 24vw; font-size: clamp(5rem, 24vw, 7.5rem); }
       html[data-preset="afisa"] .wx-temp { font-size: 22vw; font-size: clamp(4.8rem, 22vw, 7.5rem); }
       html[data-preset="afisa"] #sheet-title { font-size: 2.2rem; }
@@ -1310,8 +1310,8 @@
         --on-face: #ffffff;
         --on-shadow: 0 0 34px rgba(255, 74, 36, 0.55);
       }
-      html[data-preset="vasaltis"] .tile--clock .face, html[data-preset="vasaltis"] .tile--weather .face { line-height: 0.85; font-size: 16vw; font-size: clamp(3.6rem, 56cqh, 11rem); }
-      html[data-preset="vasaltis"] .tile--clock[data-size="m"] .face, html[data-preset="vasaltis"] .tile--weather[data-size="m"] .face { font-size: 32vw; font-size: clamp(4.6rem, 66cqh, 16rem); }
+      html[data-preset="vasaltis"] .tile--clock .face, html[data-preset="vasaltis"] .tile--weather .face { line-height: 0.85; font-size: 16vw; font-size: clamp(1.5rem, 56cqh, 11rem); }
+      html[data-preset="vasaltis"] .tile--clock[data-size="m"] .face, html[data-preset="vasaltis"] .tile--weather[data-size="m"] .face { font-size: 32vw; font-size: clamp(1.8rem, 66cqh, 16rem); }
       html[data-preset="vasaltis"] .name { font-size: 7vw; font-size: clamp(1.7rem, 7vw, 2.5rem); line-height: 1; }
       html[data-preset="vasaltis"] .wx-sky .wx-orb { background: radial-gradient(circle at 40% 36%, #ffb36a, #ff4a24 62%); box-shadow: 0 0 42px rgba(255, 74, 36, 0.6); }
       html[data-preset="vasaltis"] .lamp.on { box-shadow: 0 0 26px rgba(255, 74, 36, 0.5); }
