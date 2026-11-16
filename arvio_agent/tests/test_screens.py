@@ -1281,20 +1281,25 @@ class ScreenLanHttpTest(unittest.TestCase):
                 "/api/live/nope/playlist.m3u8?id=abc123",
             ):
                 self.assertEqual(self.request("GET", bad)[0], 404, bad)
+            # each use keeps the ticket: a live tile plays for hours
+            agent.LIVE_TICKETS[ticket]["until"] = time.monotonic() + 1
+            self.assertEqual(self.request("GET", url)[0], 200)
+            self.assertGreater(agent.LIVE_TICKETS[ticket]["until"], time.monotonic() + agent.LIVE_TICKET_S - 5)
             agent.LIVE_TICKETS[ticket]["until"] = 0
             self.assertEqual(self.request("GET", url)[0], 404)
-            self.assertEqual(len(files), 2)
+            self.assertEqual(len(files), 3)
             # a camera that is not one of this panel's tiles
             status, _ = self.request("POST", "/api/screens/camera/live", {"screen_id": self.SID, "entity_id": "camera.other"}, secret=secret)
             self.assertEqual(status, 404)
 
-    def test_a_door_camera_never_streams_from_the_panel(self):
+    def test_a_door_camera_streams_on_the_panel_too(self):
+        """Νικόλας 16/11: the G4 plays live on the wall as well, with the risk to a press's picture."""
         secret = self._paired(pages=self.CAM_TILES)
         call = [{"entity_id": "binary_sensor.g4_doorbell", "state": "off", "attributes": {}}]
-        with mock.patch.object(agent, "ha", return_value=call), mock.patch.object(agent, "camera_stream") as stream:
-            status, raw = self.request("POST", "/api/screens/camera/live", {"screen_id": self.SID, "entity_id": "camera.g4"}, secret=secret)
-        self.assertEqual((status, json.loads(raw)["error"]), (409, "door_camera"))
-        stream.assert_not_called()
+        stream = {"ok": True, "entity_id": "camera.g4", "playlist_path": "/api/hls/playlist.m3u8?id=abc123"}
+        with mock.patch.object(agent, "ha", return_value=call), mock.patch.object(agent, "camera_stream", return_value=stream):
+            status, _ = self.request("POST", "/api/screens/camera/live", {"screen_id": self.SID, "entity_id": "camera.g4"}, secret=secret)
+        self.assertEqual(status, 200)
 
     def test_hub_serves_the_signing_code_for_both_pages(self):
         status, raw = self.request("GET", "/panel/lan-sign.js")
@@ -1711,7 +1716,7 @@ class ScreenLanHttpTest(unittest.TestCase):
         self.assertEqual(re.findall(r'(?<![A-Za-z])fetch\(\s*"/api/screens', html), [])
         self.assertNotIn("url('/api/screens", html)
         self.assertNotRegex(html, r'\.src\s*=\s*"/api/screens')
-        self.assertEqual(len(re.findall(r'screen(?:Fetch|BlobUrl)\(\s*"/api/screens', html)), 10)  # + camera.jpg, camera/live, ring, ask
+        self.assertEqual(len(re.findall(r'screen(?:Fetch|BlobUrl)\(\s*"/api/screens', html)), 11)  # + camera.jpg, camera/live ×2, ring, ask
         self.assertNotRegex(html, r'[?&]secret=')
         # the hub's refusals become calm Greek lines, not silence
         self.assertIn("repair_required:", html)
@@ -1720,7 +1725,7 @@ class ScreenLanHttpTest(unittest.TestCase):
         self.assertIn("found.pairing_pending", html)
 
     def test_panel_camera_streams_only_while_someone_looks(self):
-        """docs/plans/2026-11-08-panel-camera-tiles.md: stills on the wall, a stream only full screen, for 2 min."""
+        """docs/plans/2026-11-08-panel-camera-tiles.md: tiles live on the page in view, full screen for 2 min."""
         html = (ROOT / "panel.html").read_text(encoding="utf-8")
         js = html[html.index("const CAM_TILE_MS") : html.index("async function load(keepPage)")]
         self.assertIn("const CAM_TILE_MS = 10000;", js)
@@ -1733,6 +1738,20 @@ class ScreenLanHttpTest(unittest.TestCase):
         # the stream ends with the view: on «Κλείσιμο», a hidden page, the doorbell, a lost pairing
         self.assertIn('getElementById("camview-close").addEventListener("click", closeCamView)', js)
         self.assertIn("if (document.hidden) closeCamView();", js)
+        # live tiles: only the page in view, none while hidden, full screen or the doorbell; the same <video> back
+        # into each new render; a stream that will not open, stills for 5 min
+        live = html[html.index("function syncTileLive()") : html.index("function placeTileVideos()")]
+        self.assertIn("!PREVIEW && screen && !camView && !document.hidden && doorbellEl.classList.contains(\"hidden\")", live)
+        self.assertIn("(screen.pages || [])[pageIx]", live)
+        self.assertIn("want.length < LIVE_TILES_MAX", live)
+        self.assertIn("closeCamView();\n        syncTileLive();", html[html.index("function showDoorbell()") :])
+        self.assertIn("camView = v;\n        syncTileLive();", js)
+        self.assertIn("placeTileVideos();\n        fitFaces();", html)
+        self.assertIn("if (v.restarts.length >= 5) return tileGiveUp(v);", js)
+        self.assertIn("tileStills[v.eid] = Date.now() + TILE_STILLS_MS;", js)
+        stop = js[js.index("function tileStop(eid)") : js.index("function tileGiveUp(v)")]
+        self.assertIn("v.hls.destroy();", stop)
+        self.assertIn("!camTileLive(t.ref)", tiles)
         show = html[html.index("function showDoorbell()") : html.index("function syncDoorbell()")]
         self.assertIn("closeCamView();", show)
         close = js[js.index("function closeCamView()") :]
