@@ -1403,17 +1403,9 @@ LIVE_LOCK = threading.Lock()
 
 
 def screen_camera_live(screen_id: str, camera: str, secret: str | None) -> dict:
+    # Every camera plays, door cameras too (Νικόλας 16/11, «Yes, G4 live too»): the G4 gives one stream, so a panel
+    # watching it can leave a press's call without a picture. The panel drops its streams the moment it rings.
     eid = screen_camera(screen_id, camera, secret)
-    # A door camera that gives one stream (HomeKit: the G4) never streams from a wall: a stream here stops a
-    # press's own before a phone joins it, or keeps a press from opening one. The panel stays on its stills.
-    # Arvio Core says `single_stream: false` of every other camera; without that (an older Core, or HA) every
-    # door camera is taken to give one.
-    states = ha("/states") or []
-    states = [st for st in states if isinstance(st, dict)] if isinstance(states, list) else []
-    have = {str(st.get("entity_id") or "") for st in states}
-    attrs = next((st.get("attributes") or {} for st in states if st.get("entity_id") == eid), {})
-    if any(g in have for g in doorbell_call_guesses(eid)) and not (isinstance(attrs, dict) and attrs.get("single_stream") is False):
-        raise LookupError("door_camera")
     out = camera_stream(None, eid)
     if not out.get("ok"):
         raise LookupError(str(out.get("error") or "no_hls"))

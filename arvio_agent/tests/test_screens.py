@@ -1292,26 +1292,14 @@ class ScreenLanHttpTest(unittest.TestCase):
             status, _ = self.request("POST", "/api/screens/camera/live", {"screen_id": self.SID, "entity_id": "camera.other"}, secret=secret)
             self.assertEqual(status, 404)
 
-    def test_a_door_camera_never_streams_from_the_panel(self):
+    def test_a_door_camera_streams_on_the_panel_too(self):
+        """Νικόλας 16/11: the G4 plays live on the wall as well, with the risk to a press's picture."""
         secret = self._paired(pages=self.CAM_TILES)
         call = [{"entity_id": "binary_sensor.g4_doorbell", "state": "off", "attributes": {}}]
-        with mock.patch.object(agent, "ha", return_value=call), mock.patch.object(agent, "camera_stream") as stream:
-            status, raw = self.request("POST", "/api/screens/camera/live", {"screen_id": self.SID, "entity_id": "camera.g4"}, secret=secret)
-        self.assertEqual((status, json.loads(raw)["error"]), (409, "door_camera"))
-        stream.assert_not_called()
-
-    def test_a_door_camera_that_gives_more_streams_plays_on_the_panel(self):
-        """Arvio Core says `single_stream: false` of a camera that is not HomeKit (Dahua, ONVIF): it plays live.
-        `true` (the G4), or nothing said (an older Core, HA), keeps the panel on stills."""
-        secret = self._paired(pages=self.CAM_TILES)
         stream = {"ok": True, "entity_id": "camera.g4", "playlist_path": "/api/hls/playlist.m3u8?id=abc123"}
-        body = {"screen_id": self.SID, "entity_id": "camera.g4"}
-        for single, code in ((False, 200), (True, 409), (None, 409)):
-            attrs = {} if single is None else {"single_stream": single}
-            states = [{"entity_id": "binary_sensor.g4_doorbell", "state": "off", "attributes": {}},
-                      {"entity_id": "camera.g4", "state": "idle", "attributes": attrs}]
-            with mock.patch.object(agent, "ha", return_value=states), mock.patch.object(agent, "camera_stream", return_value=stream):
-                self.assertEqual(self.request("POST", "/api/screens/camera/live", body, secret=secret)[0], code, single)
+        with mock.patch.object(agent, "ha", return_value=call), mock.patch.object(agent, "camera_stream", return_value=stream):
+            status, _ = self.request("POST", "/api/screens/camera/live", {"screen_id": self.SID, "entity_id": "camera.g4"}, secret=secret)
+        self.assertEqual(status, 200)
 
     def test_hub_serves_the_signing_code_for_both_pages(self):
         status, raw = self.request("GET", "/panel/lan-sign.js")

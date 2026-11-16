@@ -4173,7 +4173,7 @@
 
       // Live tiles: one stream per camera on the page in view, none while the page is hidden, full screen or the
       // doorbell is up, or the page is another. The hub only remuxes (go2rtc HLS), and panels on one camera share it.
-      // A camera whose stream does not open (a door camera that gives one stream, no HLS) stays on stills for 5 min.
+      // A camera whose stream does not open (no HLS, a lost pairing) stays on stills for 5 min.
       // ponytail: at most 4 live tiles a page, for an NSPanel decoding them all; raise it if a page needs more.
       const LIVE_TILES_MAX = 4;
       const TILE_STILLS_MS = 300000;
