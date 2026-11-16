@@ -202,6 +202,9 @@ class RecordingTest(unittest.TestCase):
         self.assertEqual(agent.camera_safe_ha_path(f"{replay}/003.ts"), f"{replay}/003.ts")
         self.assertIsNone(agent.camera_safe_ha_path(f"{replay}/poster.jpg"))
         self.assertIsNone(agent.camera_safe_ha_path("/api/replay/camera.front/xyz/index.m3u8"))
+        archive = "/api/archive/camera.front/1763287200000"
+        self.assertEqual(agent.camera_safe_ha_path(f"{archive}/20261116-100000.ts"), f"{archive}/20261116-100000.ts")
+        self.assertIsNone(agent.camera_safe_ha_path(f"{archive}/x.ts"))
 
     def test_forwards_known_fields_only(self):
         self.assertNotIn("arvio.recording", agent.LAN_ALLOWED_ACTIONS)
