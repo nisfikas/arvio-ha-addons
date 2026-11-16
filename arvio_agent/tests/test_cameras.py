@@ -198,6 +198,10 @@ class RecordingTest(unittest.TestCase):
         self.assertEqual(agent.camera_safe_ha_path(f"{self.CLIP}/012.ts"), f"{self.CLIP}/012.ts")
         for bad in (f"{self.CLIP}/clip.json", f"{self.CLIP}/index.m3u8?x=1", "/api/clips/camera.front/../index.m3u8", f"{self.CLIP}"):
             self.assertIsNone(agent.camera_safe_ha_path(bad), bad)
+        replay = "/api/replay/camera.front/0123456789abcdef"
+        self.assertEqual(agent.camera_safe_ha_path(f"{replay}/003.ts"), f"{replay}/003.ts")
+        self.assertIsNone(agent.camera_safe_ha_path(f"{replay}/poster.jpg"))
+        self.assertIsNone(agent.camera_safe_ha_path("/api/replay/camera.front/xyz/index.m3u8"))
 
     def test_forwards_known_fields_only(self):
         self.assertNotIn("arvio.recording", agent.LAN_ALLOWED_ACTIONS)
@@ -207,6 +211,9 @@ class RecordingTest(unittest.TestCase):
         self.assertEqual(out, {"ok": True, "result": {"clips": []}})
         ws.assert_called_once_with("arvio/recording", {"op": "clips", "entity_id": "camera.front"}, timeout=30.0)
         self.assertEqual(agent.recording({"op": "rm -rf"}), {"ok": False, "error": "bad_op"})
+        with mock.patch.object(agent, "ha_ws_command", return_value={"path": "/api/replay/x"}) as ws:
+            agent.recording({"op": "replay", "entity_id": "camera.front", "from": 1, "to": 2})
+        ws.assert_called_once_with("arvio/recording", {"op": "replay", "entity_id": "camera.front", "from": 1, "to": 2}, timeout=30.0)
 
     def test_core_refusal_and_home_assistant(self):
         with mock.patch.object(agent, "ha_ws_command", side_effect=RuntimeError("serial_mismatch")):

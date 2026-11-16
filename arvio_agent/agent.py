@@ -8811,10 +8811,13 @@ def camera_safe_ha_path(raw: str) -> str | None:
     return path + q
 
 
-# Same as packages/domain CLIP_PATH_RE.
-CLIP_PATH_RE = re.compile(r"/api/clips/camera\.[a-z0-9_]+/[0-9]{8}T[0-9]{6}-[0-9a-f]{8}/(index\.m3u8|[0-9]{3}\.ts|poster\.jpg)")
-RECORDING_OPS = frozenset({"status", "settings_set", "clips", "delete", "disks", "format", "format_result"})
-RECORDING_FIELDS = ("cameras", "entity_id", "before", "limit", "clip_id", "path", "last4")
+# Same as packages/domain CLIP_PATH_RE and REPLAY_PATH_RE (playback from the customer's recorder).
+CLIP_PATH_RE = re.compile(
+    r"/api/clips/camera\.[a-z0-9_]+/[0-9]{8}T[0-9]{6}-[0-9a-f]{8}/(index\.m3u8|[0-9]{3}\.ts|poster\.jpg)"
+    r"|/api/replay/camera\.[a-z0-9_]+/[0-9a-f]{16}/(index\.m3u8|[0-9]{3}\.ts)"
+)
+RECORDING_OPS = frozenset({"status", "settings_set", "clips", "delete", "disks", "format", "format_result", "timeline", "replay"})
+RECORDING_FIELDS = ("cameras", "entity_id", "before", "limit", "clip_id", "path", "last4", "from", "to")
 
 
 def recording(payload: dict | None = None) -> dict:
