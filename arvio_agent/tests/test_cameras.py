@@ -281,6 +281,33 @@ class CloudClipsTest(unittest.TestCase):
         pending = lambda t, e, timeout=0: {"chunks": [{"entity_id": "camera.gate", "names": names, "start": 1, "end": 2, "size": 1}]}
         self.assertEqual(agent.cloud_rec_round(pending, lambda p, b, timeout=0: (402, {})), agent.CLOUD_CLIPS_IDLE_S)
 
+    def test_archive_byte_range_passes_through(self):
+        seen = {}
+
+        class Resp:
+            status = 206
+            headers = {"Content-Type": "video/mp2t", "Content-Range": "bytes 0-9/100", "Accept-Ranges": "bytes"}
+
+            def read(self, n):
+                return b"0123456789"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def opener(req, timeout=0):
+            seen["range"] = req.get_header("Range")
+            return Resp()
+
+        path = "/api/archive/camera.front/1794898290000/20261117-065100.ts"
+        with mock.patch.object(agent, "TOKEN", "t"), mock.patch.object(agent.urllib.request, "urlopen", opener):
+            status, headers, _, body = agent.ha_ui_http_via_core("GET", path, "", {"range": "bytes=0-9"}, b"")
+            self.assertEqual((status, headers.get("content-range"), body, seen["range"]), (206, "bytes 0-9/100", b"0123456789", "bytes=0-9"))
+            agent.ha_ui_http_via_core("GET", path, "", {"Range": "bytes=0-9, 20-30"}, b"")
+            self.assertIsNone(seen["range"], "only one plain range")
+
     def test_never_from_the_relay(self):
         self.assertEqual(agent.recording({"op": "cloud_upload", "put_url": "https://evil", "clip_id": "x"}), {"ok": False, "error": "bad_op"})
         self.assertEqual(agent.recording({"op": "cloud_rec_upload", "put_url": "https://evil"}), {"ok": False, "error": "bad_op"})

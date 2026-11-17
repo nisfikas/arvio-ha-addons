@@ -65,7 +65,7 @@ RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
 # Arvio Core on the customer's own machine: the one-time code from Arvio Home (arvio docs/plans/2026-11-14-core-self-hosted.md §5).
 ACTIVATION_CODE = ""
-AGENT_VERSION = "0.1.107"
+AGENT_VERSION = "0.1.108"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -10051,8 +10051,12 @@ def _rewrite_ha_set_cookie(value: str) -> str:
     return "; ".join(parts)
 
 
-def camera_http_via_supervisor(method: str, cam_path: str) -> tuple[int, dict[str, str], list[str], bytes]:
-    """GET/HEAD camera_proxy + HLS through Supervisor with the add-on token — never HA UI cookies."""
+CAMERA_RANGE_RE = re.compile(r"bytes=\d{1,12}-\d{0,12}")
+
+
+def camera_http_via_supervisor(method: str, cam_path: str, rng: str = "") -> tuple[int, dict[str, str], list[str], bytes]:
+    """GET/HEAD camera_proxy + HLS through Supervisor with the add-on token — never HA UI cookies. A byte range
+    passes through (the archive's playlist asks one GOP of a recorded minute at a time)."""
     global TOKEN
     method_u = str(method or "GET").upper()
     if method_u not in ("GET", "HEAD"):
@@ -10063,16 +10067,19 @@ def camera_http_via_supervisor(method: str, cam_path: str) -> tuple[int, dict[st
         TOKEN = read_token()
     if not TOKEN:
         return 502, {"content-type": "text/plain; charset=utf-8"}, [], b"missing token"
-    req = urllib.request.Request(
-        core_resource(cam_path),
-        headers={"Authorization": f"Bearer {TOKEN}"},
-        method=method_u,
-    )
+    hdrs = {"Authorization": f"Bearer {TOKEN}"}
+    if rng and CAMERA_RANGE_RE.fullmatch(rng):
+        hdrs["Range"] = rng
+    req = urllib.request.Request(core_resource(cam_path), headers=hdrs, method=method_u)
+    extra: dict[str, str] = {}
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
             raw = b"" if method_u == "HEAD" else r.read(HA_UI_MAX_BYTES + 1)
             ctype = r.headers.get("Content-Type") or "application/octet-stream"
             status = int(r.status)
+            for h in ("Content-Range", "Accept-Ranges"):
+                if r.headers.get(h):
+                    extra[h.lower()] = str(r.headers.get(h))
     except urllib.error.HTTPError as e:
         detail = b""
         try:
@@ -10084,7 +10091,7 @@ def camera_http_via_supervisor(method: str, cam_path: str) -> tuple[int, dict[st
         return 502, {"content-type": "text/plain; charset=utf-8"}, [], str(e).encode("utf-8")[:500]
     if len(raw) > HA_UI_MAX_BYTES:
         return 502, {"content-type": "text/plain; charset=utf-8"}, [], b"too large"
-    headers = {"content-type": str(ctype).split(";", 1)[0].strip() or "application/octet-stream"}
+    headers = {"content-type": str(ctype).split(";", 1)[0].strip() or "application/octet-stream", **extra}
     return status, headers, [], raw
 
 
@@ -10105,7 +10112,8 @@ def ha_ui_http_via_core(
     q = ha_ui_safe_query(query)
     cam = camera_safe_ha_path(safe + (f"?{q}" if q else ""))
     if cam:
-        return camera_http_via_supervisor(method_u, cam)
+        rng = next((str(v) for k, v in (headers or {}).items() if str(k).lower() == "range"), "")
+        return camera_http_via_supervisor(method_u, cam, rng)
     parsed = urlparse(ha_ui_origin())
     host = parsed.hostname or "homeassistant"
     port = parsed.port or 8123
