@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.106
+
+- Αντίγραφα στο cloud: χωρίς συνδρομή ή χωρίς καταγραφή ξαναρωτά σε 5 λεπτά, όχι σε μία ώρα, για να ξεκινά αμέσως μόλις ανοίξει η συνδρομή ή μπει το νέο Core.
+
 ## 0.1.105
 
 - Καταγραφή καμερών (monorepo docs/plans/2026-11-16-camera-recording.md): νέα εντολή `arvio.recording` μόνο από το relay, ποτέ από το LAN. Περνά στο Arvio Core (`arvio/recording`) μόνο τα πεδία του (`op`, `cameras`, `entity_id`, `before`, `limit`, `clip_id`, `path`, `last4`): κατάσταση, ρυθμίσεις ανά κάμερα, clips, σβήσιμο clip, δίσκοι, προετοιμασία δίσκου. Τα αρχεία των clips (`/api/clips/<κάμερα>/<id>/<αρχείο>`) περνούν όπως το HLS. Σε Home Assistant απαντά `not_supported`. Θέλει εικόνα με τον recorder του Core.

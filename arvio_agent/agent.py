@@ -65,7 +65,7 @@ RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
 # Arvio Core on the customer's own machine: the one-time code from Arvio Home (arvio docs/plans/2026-11-14-core-self-hosted.md §5).
 ACTIVATION_CODE = ""
-AGENT_VERSION = "0.1.105"
+AGENT_VERSION = "0.1.106"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -842,7 +842,7 @@ def call_as_hub(path: str, body: dict, timeout: float = 20.0) -> tuple[int, dict
 # The cloud says where and with which key, only while the house has the add-on; Arvio Core encrypts and puts the
 # clip there; the cloud is told it is up. Never from the relay: nobody else can make the hub send a clip anywhere.
 CLOUD_CLIPS_EVERY_S = 60
-CLOUD_CLIPS_IDLE_S = 3600  # no add-on, no store, or no recorder (Home Assistant): ask again in an hour
+CLOUD_CLIPS_IDLE_S = 300  # no add-on, no store, or no recorder yet: ask again in 5 minutes (an hour hid a fresh subscription)
 CLOUD_CLIPS_RETRY_S = 300  # the cloud did not answer
 
 
