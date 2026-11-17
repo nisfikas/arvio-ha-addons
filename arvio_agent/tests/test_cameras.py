@@ -276,7 +276,8 @@ class CloudClipsTest(unittest.TestCase):
             self.assertEqual((body["end"], len(body["segments"])), (120001, 2))
             return 200, {"ok": True}
 
-        self.assertEqual(agent.cloud_rec_round(ws, call), agent.CLOUD_CLIPS_EVERY_S)
+        self.assertEqual(agent.cloud_rec_round(ws, call), agent.CLOUD_REC_SENT_S, "sent: look again soon, a backlog drains")
+        self.assertEqual(agent.cloud_rec_round(lambda t, e, timeout=0: {"chunks": []}, call), agent.CLOUD_REC_EVERY_S, "nothing ready: 15″")
         self.assertEqual(calls, [("ws", "cloud_rec_pending"), ("cloud", "recordings/upload"), ("ws", "cloud_rec_upload"), ("cloud", "recordings/commit")])
         pending = lambda t, e, timeout=0: {"chunks": [{"entity_id": "camera.gate", "names": names, "start": 1, "end": 2, "size": 1}]}
         self.assertEqual(agent.cloud_rec_round(pending, lambda p, b, timeout=0: (402, {})), agent.CLOUD_CLIPS_IDLE_S)

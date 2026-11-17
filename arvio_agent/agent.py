@@ -65,7 +65,7 @@ RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
 # Arvio Core on the customer's own machine: the one-time code from Arvio Home (arvio docs/plans/2026-11-14-core-self-hosted.md §5).
 ACTIVATION_CODE = ""
-AGENT_VERSION = "0.1.109"
+AGENT_VERSION = "0.1.110"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -844,6 +844,10 @@ def call_as_hub(path: str, body: dict, timeout: float = 20.0) -> tuple[int, dict
 CLOUD_CLIPS_EVERY_S = 60
 CLOUD_CLIPS_IDLE_S = 300  # no add-on, no store, or no recorder yet: ask again in 5 minutes (an hour hid a fresh subscription)
 CLOUD_CLIPS_RETRY_S = 300  # the cloud did not answer
+# Cloud 24/7: Core cuts 30″ runs, so the cloud is under a minute behind only if they leave at once. Asking Core what
+# is ready costs nothing (a local call): every 15″, and again 10″ after a round that sent (a backlog drains).
+CLOUD_REC_EVERY_S = 15
+CLOUD_REC_SENT_S = 10
 
 
 def cloud_clips_round(ws=None, call=None) -> int:
@@ -879,6 +883,8 @@ def cloud_rec_round(ws=None, call=None) -> int:
         chunks = (ws("arvio/recording", {"op": "cloud_rec_pending"}, timeout=30.0) or {}).get("chunks") or []
     except Exception:
         return CLOUD_CLIPS_IDLE_S
+    if not chunks:
+        return CLOUD_REC_EVERY_S
     for c in chunks:
         ask = {"entity_id": c.get("entity_id"), "start": c.get("start"), "size": c.get("size")}
         status, up = call("recordings/upload", ask)
@@ -894,7 +900,7 @@ def cloud_rec_round(ws=None, call=None) -> int:
         status, _ = call("recordings/commit", {**ask, "end": c.get("end"), "segments": done.get("segments")})
         if status != 200:
             return CLOUD_CLIPS_RETRY_S
-    return CLOUD_CLIPS_EVERY_S
+    return CLOUD_REC_SENT_S
 
 
 def cloud_clips_loop() -> None:
