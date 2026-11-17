@@ -65,7 +65,7 @@ RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
 # Arvio Core on the customer's own machine: the one-time code from Arvio Home (arvio docs/plans/2026-11-14-core-self-hosted.md §5).
 ACTIVATION_CODE = ""
-AGENT_VERSION = "0.1.106"
+AGENT_VERSION = "0.1.107"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -861,7 +861,7 @@ def cloud_clips_round(ws=None, call=None) -> int:
         if status != 200 or not up or not up.get("put_url"):
             return CLOUD_CLIPS_RETRY_S
         try:
-            done = ws("arvio/recording", {"op": "cloud_upload", "clip_id": c.get("clip_id"), "put_url": up["put_url"], "key_hex": up.get("key_hex")}, timeout=150.0) or {}
+            done = ws("arvio/recording", {"op": "cloud_upload", "clip_id": c.get("clip_id"), "put_url": up["put_url"], "key_hex": up.get("key_hex")}, timeout=660.0) or {}
         except Exception as e:
             print(f"cloud clip: not uploaded ({str(e)[:40]})", flush=True)
             return CLOUD_CLIPS_RETRY_S
@@ -887,7 +887,7 @@ def cloud_rec_round(ws=None, call=None) -> int:
         if status != 200 or not up or not up.get("put_url"):
             return CLOUD_CLIPS_RETRY_S
         try:
-            done = ws("arvio/recording", {"op": "cloud_rec_upload", "entity_id": c.get("entity_id"), "names": c.get("names"), "put_url": up["put_url"], "key_hex": up.get("key_hex")}, timeout=150.0) or {}
+            done = ws("arvio/recording", {"op": "cloud_rec_upload", "entity_id": c.get("entity_id"), "names": c.get("names"), "put_url": up["put_url"], "key_hex": up.get("key_hex")}, timeout=660.0) or {}
         except Exception as e:
             print(f"cloud 24/7: not uploaded ({str(e)[:40]})", flush=True)
             return CLOUD_CLIPS_RETRY_S
