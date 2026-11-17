@@ -65,7 +65,7 @@ RELAY_URL = "https://relay.arvio.systems"
 RELAY_TOKEN = ""
 # Arvio Core on the customer's own machine: the one-time code from Arvio Home (arvio docs/plans/2026-11-14-core-self-hosted.md §5).
 ACTIVATION_CODE = ""
-AGENT_VERSION = "0.1.108"
+AGENT_VERSION = "0.1.109"
 SHARE_DIR = Path("/share/arvio")
 UPDATE_REQUEST = SHARE_DIR / "update_request.json"
 
@@ -9368,7 +9368,11 @@ def integration_setup(payload: dict | None = None) -> dict:
 def camera_stream(payload: dict | None = None, entity_id: str = "") -> dict:
     """arvio.camera_stream → HA websocket camera/stream format=hls. Returns Core-relative playlist path."""
     eid = parse_camera_entity_id(payload, entity_id)
-    result = ha_ws_command("camera/stream", {"entity_id": eid, "format": "hls"}, timeout=25.0)
+    extra = {"entity_id": eid, "format": "hls"}
+    # «Χαμηλή» in Home: Arvio Core opens the camera's smaller profile (Home Assistant ignores it)
+    if isinstance(payload, dict) and payload.get("quality") == "low":
+        extra["quality"] = "low"
+    result = ha_ws_command("camera/stream", extra, timeout=25.0)
     url = str(result.get("url") or "") if isinstance(result, dict) else ""
     path = None
     if url.startswith("/"):
