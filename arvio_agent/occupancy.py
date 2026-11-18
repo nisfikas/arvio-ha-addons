@@ -300,8 +300,11 @@ def fuse_home_occupancy(profile: dict, trackers: list[dict], prev: dict | None, 
         phase = prev_phase
         since = prev_since
     elif prev_phase == "unknown":
-        phase = "unknown"
-        since = prev_since
+        # Every phone that answers says away: nobody is here. Straight to away, with no «έφυγε ο τελευταίος»
+        # (nobody was seen leaving), so the next arrival is «ήρθε ο πρώτος». Before 0.1.111 it stayed unknown and
+        # the arrival found nothing to change (SFK HQ 18/11).
+        phase = "away"
+        since = now_ms
     elif prev_phase == "home":
         phase = "leaving"
         since = now_ms

@@ -47,6 +47,27 @@ class OccupancyFusionTest(unittest.TestCase):
         self.assertFalse(gone["occupied"])
         self.assertEqual(gone["event"], "home_left")
 
+    def test_unknown_then_everyone_away_then_first_arrives(self):
+        occ = agent.occupancy
+        p = occ.parse_profile(PROFILE)
+        t0 = 1_000_000
+        away_tr = [
+            {"entity_id": "device_tracker.nick", "state": "not_home", "last_changed_ms": t0},
+            {"entity_id": "device_tracker.maria", "state": "not_home", "last_changed_ms": t0},
+        ]
+        gone = occ.fuse_home_occupancy(p, away_tr, {"phase": "unknown", "since_ms": t0 - 60_000}, t0)
+        self.assertEqual(gone["phase"], "away")
+        self.assertFalse(gone["occupied"])
+        self.assertNotIn("event", gone)
+        back = occ.fuse_home_occupancy(
+            p,
+            [{"entity_id": "device_tracker.nick", "state": "home", "last_changed_ms": t0}, away_tr[1]],
+            gone,
+            t0 + 60_000,
+        )
+        self.assertEqual(back["phase"], "home")
+        self.assertEqual(back["event"], "home_entered")
+
     def test_private_mac_ignored(self):
         occ = agent.occupancy
         p = occ.parse_profile({

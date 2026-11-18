@@ -4451,6 +4451,15 @@ def place_program_check(payload: dict | None = None) -> dict:
 
 
 OCCUPANCY_LOCK = threading.Lock()
+# One occupancy read-fuse-save at a time: the 15″ tick and a burst of phone reports (the cloud sends a word
+# again on retry) used to run side by side, and one read a half-written file as «no phones» (SFK HQ 18/11).
+OCCUPANCY_REFRESH_LOCK = threading.Lock()
+
+
+def _write_atomic(path, text: str) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
 _OCCUPANCY_TRACKERS: dict[str, dict] = {}
 
 
@@ -4516,7 +4525,7 @@ def presence_report(payload: dict | None = None) -> dict:
         else:
             row = {"state": rep["state"], "name": rep["name"], "at": rep["at"]}
             rows[member_id] = row
-        GEOFENCE_FILE.write_text(json.dumps(rows), encoding="utf-8")
+        _write_atomic(GEOFENCE_FILE, json.dumps(rows))
         _OCCUPANCY_TRACKERS[eid] = {"entity_id": eid, "state": row["state"], "last_changed_ms": int(time.time() * 1000)}
     geofence_publish(member_id, row)
     out = occupancy_refresh()
@@ -4540,7 +4549,7 @@ def load_occupancy_state() -> dict:
 
 
 def save_occupancy_state(snap: dict) -> None:
-    OCCUPANCY_STATE.write_text(json.dumps(snap), encoding="utf-8")
+    _write_atomic(OCCUPANCY_STATE, json.dumps(snap))
 
 
 def occupancy_publish(snap: dict, *, emit_event: bool) -> dict:
@@ -4600,6 +4609,11 @@ def occupancy_collect_trackers(profile: dict) -> list[dict]:
 
 
 def occupancy_refresh(*, force: bool = False, restore: bool = False) -> dict:
+    with OCCUPANCY_REFRESH_LOCK:
+        return _occupancy_refresh(force=force, restore=restore)
+
+
+def _occupancy_refresh(*, force: bool, restore: bool) -> dict:
     profile = load_occupancy_profile()
     if not profile:
         return {"ok": True, "skipped": "no_profile"}
