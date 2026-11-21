@@ -1493,8 +1493,11 @@ class ScreenLanHttpTest(unittest.TestCase):
         self.assertIn('history.replaceState(null, "", location.pathname + location.search)', html)
         self.assertIn("await pairWith({ token: pairToken }", html)
         # the app's hang check: a heartbeat every 30 s, harmless in a browser
-        self.assertIn("const beat = () => window.ArvioPanel && window.ArvioPanel.alive(!!pairing.get(KEY));", html)
+        self.assertIn("const send = () => window.ArvioPanel.alive(!!pairing.get(KEY));", html)
         self.assertIn("setInterval(beat, 30000);", html)
+        # only from a painted frame (Κρέσνα 2026-11-20: a still screen while the script beat on)
+        self.assertIn("else requestAnimationFrame(send);", html)
+        self.assertIn("if (document.hidden) send();", html)
 
     def raw(self, path):
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}")
@@ -1689,6 +1692,8 @@ class ScreenLanHttpTest(unittest.TestCase):
         html = (ROOT / "panel.html").read_text(encoding="utf-8")
         # the 04:00 fresh start holds in the app too
         self.assertIn("const nightly = new Date().getHours() === 4", html)
+        # …and in the app it is a real restart, never a reload of the same WebView
+        self.assertIn("if (nightly && window.ArvioPanel && window.ArvioPanel.reboot) window.ArvioPanel.reboot();", html)
         watch = html[html.index("async function pageIsBlack()") : html.index("</script>", html.index("async function pageIsBlack()"))]
         self.assertIn("await pageShot()", watch)
         self.assertIn("if (paintMisses < 2) return;", watch)  # one black picture is not enough

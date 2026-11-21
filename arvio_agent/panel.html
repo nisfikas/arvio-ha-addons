@@ -4927,7 +4927,15 @@
       // Arvio Panel app (docs/ADR/012): a heartbeat; without it for 2 min the app replaces a
       // hung page. A browser has no ArvioPanel, so this does nothing there.
       // alive(true) once paired: the app (device owner, release build) then locks ADB away.
-      const beat = () => window.ArvioPanel && window.ArvioPanel.alive(!!pairing.get(KEY));
+      // The beat leaves only from a painted frame: on the Κρέσνα panel (2026-11-20) the screen stood on
+      // yesterday's clock while the script beat on, so the app never stepped in. A frame that never
+      // comes is now a missed beat, and the app gives the panel a new WebView after 2 min.
+      const beat = () => {
+        if (!window.ArvioPanel) return;
+        const send = () => window.ArvioPanel.alive(!!pairing.get(KEY));
+        if (document.hidden) send(); // no frames while hidden: not a hang
+        else requestAnimationFrame(send);
+      };
       beat();
       setInterval(beat, 30000);
 
@@ -4946,7 +4954,10 @@
           if (!r.ok) return;
           const v = (await r.json()).agent_version || "";
           if (!pageVersion) pageVersion = v;
-          if (stale || nightly || (v && v !== pageVersion)) location.reload();
+          // In the app the night's fresh start is a real one (the tablet, or a new WebView where Android
+          // refuses): a reload keeps the same WebView, and a WebView that stopped painting stays stopped.
+          if (nightly && window.ArvioPanel && window.ArvioPanel.reboot) window.ArvioPanel.reboot();
+          else if (stale || nightly || (v && v !== pageVersion)) location.reload();
         } catch (e) {}
       }, 60000);
 
